@@ -8,6 +8,10 @@
 *.so
 *.dylib
 
+# Cross-compiled ferry binaries ARE committed (install.sh selects one by uname).
+# Keep this un-ignore so any future bin/ ignore rule cannot block them.
+!bin/ferry-*
+
 # Test binary, built with `go test -c`
 *.test
 
