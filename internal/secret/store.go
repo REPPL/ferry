@@ -92,6 +92,15 @@ func (s *Store) Put(ref, value string) error {
 	if err != nil {
 		return err
 	}
+	// Symlink-harden the store dir BEFORE creating or writing it: a blocked secret
+	// must NEVER land in a store that has been symlinked into the repo worktree (or
+	// anywhere else). HardenStoreDir refuses if any component from $HOME down to the
+	// store dir is a symlink; a test store rooted at a t.TempDir() (not under $HOME)
+	// is a no-op, so the real-path store is hardened while tests keep working. The
+	// check is lexical and never touches ~/.ssh.
+	if err := paths.HardenStoreDir(s.root); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.root, 0o700); err != nil {
 		return fmt.Errorf("create secret store dir %s: %w", s.root, err)
 	}
@@ -125,6 +134,15 @@ func (s *Store) Get(ref string) (string, bool, error) {
 // readDomain loads a domain file into a flat key->value map. A missing file
 // yields an empty map (not an error): an absent domain simply has no secrets.
 func (s *Store) readDomain(domain string) (map[string]string, error) {
+	// Symlink-harden the store dir BEFORE reading any domain file. readDomain is the
+	// lowest read layer (reached from Store.Get, and thus from RenderPlaceholders on
+	// the apply/diff/status render path, as well as from Put). Hardening here means a
+	// secrets-local symlinked into ~/.ssh or the repo worktree can never be read
+	// through, regardless of caller. HardenStoreDir is lexical, creates nothing, never
+	// touches ~/.ssh, and is a no-op for a t.TempDir() store, so tests keep working.
+	if err := paths.HardenStoreDir(s.root); err != nil {
+		return nil, err
+	}
 	path := s.domainFile(domain)
 	data, err := os.ReadFile(path)
 	if err != nil {

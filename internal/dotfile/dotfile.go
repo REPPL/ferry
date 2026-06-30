@@ -20,6 +20,28 @@ type Backuper interface {
 	BackupAndWrite(target string, content []byte, perm os.FileMode) error
 }
 
+// OverlayMode is how a domain's per-machine `.local` overlay composes onto the
+// shared content (PLAN.md "Per-domain overlay strategy"). It tells the apply
+// command which overlay path a target takes; the dotfile domain itself never
+// composes the overlay (that is the cmd/apply.go owner's job), it only reports
+// the safe mode for each target.
+type OverlayMode string
+
+const (
+	// OverlayIncludeSidecar: the domain has a real include/append point (zsh:
+	// shared ~/.zshrc `source`s ~/.zshrc.local last). The shared file is always
+	// deployed, and the per-machine overlay is materialized as a SEPARATE sidecar
+	// home file (~/.<bare>.local) that the shared file pulls in. Hunk-level
+	// `[l]ocal` routing is allowed.
+	OverlayIncludeSidecar OverlayMode = "include-sidecar"
+	// OverlayWholeFileReplace: a generic dotfile WITHOUT an include mechanism
+	// (e.g. .gitconfig) has NO safe merge point, so `.local` is WHOLE-FILE: a
+	// per-machine full copy in local/<domain>/ is deployed INSTEAD OF the shared
+	// content (local wins). When no local copy exists the shared content is
+	// deployed. Hunk-level `[l]ocal` routing is DISALLOWED for these.
+	OverlayWholeFileReplace OverlayMode = "whole-file-replace"
+)
+
 // Target is a single declared dotfile: the repo-side source path and the home
 // destination it materializes to. The name (e.g. "zshrc") is the bare key under
 // the repo's dotfiles/ directory.
@@ -27,6 +49,16 @@ type Target struct {
 	Name string // bare key, e.g. "zshrc"
 	Repo string // absolute repo-side source path, e.g. <repo>/dotfiles/zshrc
 	Home string // absolute home destination, e.g. ~/.zshrc
+
+	// Overlay is the per-machine `.local` overlay mode for this target's domain
+	// (PLAN.md "Per-domain overlay strategy"). TargetFor defaults it to
+	// OverlayWholeFileReplace — the safe default for a GENERIC dotfile with no
+	// include point: there is no merge point, so the local copy (if any) replaces
+	// the shared file. An include-style domain (zsh) is built with
+	// IncludeSidecarTarget so its overlay is a sidecar instead. The apply command
+	// reads this to choose the overlay path; ApplyWholeFileOverlay implements the
+	// whole-file-replace path in this package.
+	Overlay OverlayMode
 }
 
 // defaultPerm is the file mode used when materializing a target whose home
@@ -38,8 +70,34 @@ const defaultPerm os.FileMode = 0o644
 // RepoSubdir is the repo subdirectory that holds dotfile sources.
 const RepoSubdir = "dotfiles"
 
+// sshDirName is the one directory ferry must NEVER manage: the absolute,
+// most-important security contract is that ferry never reads, copies, captures,
+// or modifies anything under ~/.ssh/. TargetFor is the single enforcement point
+// for that hands-off contract — see ErrForbiddenSSHPath.
+const sshDirName = ".ssh"
+
+// ErrForbiddenSSHPath is returned by TargetFor when a declared dotfile name
+// resolves to a home target that IS, or is under, ~/.ssh/. ferry's top security
+// invariant is that it never touches ~/.ssh/, and this is the boundary that
+// makes a Target under ~/.ssh/ impossible to construct: apply/capture/status all
+// route through TargetFor, so a manifest declaring `.ssh/config` or
+// `.ssh/id_ed25519` is refused here, before any read/back-up/write can happen.
+var ErrForbiddenSSHPath = errors.New("dotfile: refusing a target under ~/.ssh (ferry never touches ~/.ssh)")
+
+// ErrPathEscapesHome is returned by TargetFor when a declared dotfile name does
+// not resolve to a path strictly within $HOME — an absolute path, or one that
+// climbs out via `..`. A managed dotfile must live inside $HOME; anything else
+// is a path-traversal attempt and is refused before a Target is produced.
+var ErrPathEscapesHome = errors.New("dotfile: dotfile name escapes $HOME")
+
 // TargetFor builds the repo<->home mapping for a single dotfile name, given the
-// repo root and the home directory.
+// repo root and the home directory. It is the SECURITY BOUNDARY for the
+// "ferry never touches ~/.ssh" contract and for path-traversal: it refuses any
+// name whose resolved home target is ~/.ssh itself or under it
+// (ErrForbiddenSSHPath), and any name that does not resolve strictly within
+// $HOME (ErrPathEscapesHome) — an absolute path or a `..` climb. Because
+// apply/capture/status all obtain their Target through TargetFor, a Target under
+// ~/.ssh or outside $HOME is IMPOSSIBLE to construct.
 //
 // Name convention (the single contract between config and this domain): the
 // canonical internal name is the BARE name (e.g. "zshrc"). The manifest is
@@ -52,14 +110,74 @@ const RepoSubdir = "dotfiles"
 //
 // This keeps the repo layout `dotfiles/zshrc` and never produces `dotfiles/.zshrc`
 // or a double-dotted `~/..zshrc`. Callers that need a non-dotted or
-// differently-named home path construct a Target directly.
-func TargetFor(repoRoot, home, name string) Target {
-	bare := strings.TrimPrefix(name, ".")
-	return Target{
-		Name: bare,
-		Repo: filepath.Join(repoRoot, RepoSubdir, bare),
-		Home: filepath.Join(home, "."+bare),
+// differently-named home path construct a Target directly (and are themselves
+// responsible for honouring the ~/.ssh contract).
+//
+// The returned Target defaults Overlay to OverlayWholeFileReplace, the safe mode
+// for a generic dotfile with no include point. Use IncludeSidecarTarget for an
+// include-style domain (zsh).
+func TargetFor(repoRoot, home, name string) (Target, error) {
+	// An absolute declared name is a traversal attempt: a dotfile must be a
+	// relative name under $HOME, never an absolute path.
+	if filepath.IsAbs(name) {
+		return Target{}, ErrPathEscapesHome
 	}
+	bare := strings.TrimPrefix(name, ".")
+
+	// Resolve the home destination the same way it materializes (<home>/.bare),
+	// then validate the CLEANED path so `..` and absolute names cannot escape.
+	homeDest := filepath.Join(home, "."+bare)
+	if err := validateHomeTarget(home, homeDest); err != nil {
+		return Target{}, err
+	}
+
+	return Target{
+		Name:    bare,
+		Repo:    filepath.Join(repoRoot, RepoSubdir, bare),
+		Home:    homeDest,
+		Overlay: OverlayWholeFileReplace,
+	}, nil
+}
+
+// IncludeSidecarTarget is TargetFor for an include-style domain (zsh): the same
+// ~/.ssh + traversal validation, but the Target's Overlay is
+// OverlayIncludeSidecar so the apply command materializes the overlay as a
+// sidecar (~/.<bare>.local) alongside the always-deployed shared file rather
+// than replacing it.
+func IncludeSidecarTarget(repoRoot, home, name string) (Target, error) {
+	t, err := TargetFor(repoRoot, home, name)
+	if err != nil {
+		return Target{}, err
+	}
+	t.Overlay = OverlayIncludeSidecar
+	return t, nil
+}
+
+// validateHomeTarget enforces the two boundary rules on a resolved home target:
+// it must sit strictly within $HOME (no `..` climb, no absolute escape) and must
+// NOT be ~/.ssh or anything under it. home and dest are both cleaned before
+// comparison so `.ssh/../.ssh/config`-style tricks cannot slip through.
+func validateHomeTarget(home, dest string) error {
+	cleanHome := filepath.Clean(home)
+	cleanDest := filepath.Clean(dest)
+
+	// Must be strictly within $HOME: the path from HOME to dest may not start
+	// with "..", and dest may not equal HOME itself.
+	rel, err := filepath.Rel(cleanHome, cleanDest)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return ErrPathEscapesHome
+	}
+
+	// Must not be ~/.ssh nor under it. Compare the first path segment of the
+	// HOME-relative path: ".ssh" itself, or ".ssh/<anything>".
+	first := rel
+	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
+		first = rel[:i]
+	}
+	if first == sshDirName {
+		return ErrForbiddenSSHPath
+	}
+	return nil
 }
 
 // hashBytes returns the lowercase hex sha256 of content. This is the canonical

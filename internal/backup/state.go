@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"time"
 )
 
 // PathKind classifies the prior state of a managed path.
@@ -29,6 +30,14 @@ type PathState struct {
 	Mode    os.FileMode `json:"mode,omitempty"`     // file mode (KindFile only)
 	Target  string      `json:"target,omitempty"`   // link target (KindSymlink only)
 	HasBlob bool        `json:"has_blob,omitempty"` // a content payload exists in the store
+	// ModTime is the original modification time, captured once with the baseline
+	// and immutable like the rest of the state. Restore stamps it back via
+	// os.Chtimes so a reverted file is mtime-identical to its pre-ferry original
+	// (the "leaves no trace" promise), not freshly timestamped. Zero/irrelevant
+	// for KindAbsent. It is metadata only — content-addressed blobs are keyed by
+	// bytes alone, so two files with identical content but different mtimes share
+	// one blob yet keep distinct ModTimes here.
+	ModTime time.Time `json:"mod_time,omitempty"`
 	// Blob, when set, is the sha256 (hex) of the content payload. The immutable
 	// baseline store is CONTENT-ADDRESSED: the blob lives at blobs/<Blob>, so two
 	// racers capturing the same original bytes write byte-identical content under
@@ -56,7 +65,10 @@ func captureState(path string) (PathState, []byte, error) {
 		if err != nil {
 			return PathState{}, nil, err
 		}
-		return PathState{Path: path, Kind: KindSymlink, Target: target}, nil, nil
+		// fi is from Lstat, so ModTime() here is the LINK's own mtime (not its
+		// target's). Recorded for completeness; restore preserves it best-effort
+		// (see restoreState's symlink note for the portability limit).
+		return PathState{Path: path, Kind: KindSymlink, Target: target, ModTime: fi.ModTime()}, nil, nil
 	case fi.Mode().IsRegular():
 		content, err := os.ReadFile(path)
 		if err != nil {
@@ -67,6 +79,7 @@ func captureState(path string) (PathState, []byte, error) {
 			Kind:    KindFile,
 			Mode:    fi.Mode().Perm(),
 			HasBlob: true,
+			ModTime: fi.ModTime(),
 		}, content, nil
 	default:
 		// Directories, devices, sockets etc. are out of scope for the file
@@ -102,7 +115,20 @@ func restoreState(state PathState, blob []byte) error {
 	case KindAbsent:
 		return nil // pre-ferry nothing -> leave nothing.
 	case KindSymlink:
-		return os.Symlink(state.Target, state.Path)
+		if err := os.Symlink(state.Target, state.Path); err != nil {
+			return err
+		}
+		// Stamp the LINK's OWN mtime back so a restored symlink is mtime-identical
+		// to its pre-ferry original (the "leaves no trace" promise), not freshly
+		// timestamped. os.Chtimes FOLLOWS the link and would stamp the target, so we
+		// use a NOFOLLOW primitive (lutimes / utimensat+AT_SYMLINK_NOFOLLOW via
+		// golang.org/x/sys/unix Lutimes) that exists on both supported platforms
+		// (darwin + linux). A zero ModTime (e.g. a legacy baseline recorded before
+		// this field existed) leaves the just-created link mtime.
+		if !state.ModTime.IsZero() {
+			return lchtimes(state.Path, state.ModTime)
+		}
+		return nil
 	case KindFile:
 		// Write with the preserved (possibly stricter than 0600) original mode.
 		// The live home file's mode is the user's, not the secret-store default.
@@ -110,7 +136,18 @@ func restoreState(state PathState, blob []byte) error {
 			return err
 		}
 		// WriteFile is subject to umask; force the exact recorded mode.
-		return os.Chmod(state.Path, state.Mode.Perm())
+		if err := os.Chmod(state.Path, state.Mode.Perm()); err != nil {
+			return err
+		}
+		// Stamp the original modification time back so the restored file is
+		// mtime-identical to its pre-ferry original, not freshly timestamped.
+		// atime is set to the same recorded instant; only mtime is observable in
+		// the "leaves no trace" promise. A zero ModTime (e.g. a legacy baseline
+		// recorded before this field existed) leaves the just-written mtime.
+		if !state.ModTime.IsZero() {
+			return os.Chtimes(state.Path, state.ModTime, state.ModTime)
+		}
+		return nil
 	default:
 		return &UnsupportedKindError{Path: state.Path, Mode: state.Mode}
 	}

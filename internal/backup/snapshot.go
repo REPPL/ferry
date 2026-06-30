@@ -94,9 +94,14 @@ func (e *Engine) captureForSnapshot(p string) (PathState, []byte, error) {
 		if !ok {
 			return PathState{}, nil, fmt.Errorf("backup: no resource registered for domain %q", domainForResourcePath(p))
 		}
-		blob, err := res.Backup()
+		blob, absent, err := res.Backup()
 		if err != nil {
 			return PathState{}, nil, err
+		}
+		// Mirror the baseline: a currently-absent domain snapshots as KindAbsent so
+		// undoing a restore returns it to absent (delete), not an empty import.
+		if absent {
+			return PathState{Path: p, Kind: KindAbsent}, nil, nil
 		}
 		return PathState{Path: p, Kind: KindFile, Mode: filePerm, HasBlob: true}, blob, nil
 	}

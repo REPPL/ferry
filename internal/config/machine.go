@@ -35,9 +35,25 @@ func LoadMachineConfig() (MachineConfig, error) {
 	return loadMachineConfigFrom(path)
 }
 
+// LoadMachineConfigFrom reads and parses a machine config.toml from an explicit
+// path, symlink-hardening its directory first. It is exported so a tolerant
+// fallback reader (e.g. cmd/context.go) can re-read ~/.config/ferry/config.toml
+// through the SAME hardening as LoadMachineConfig instead of calling
+// toml.DecodeFile directly and bypassing the symlink check.
+func LoadMachineConfigFrom(path string) (MachineConfig, error) {
+	return loadMachineConfigFrom(path)
+}
+
 // loadMachineConfigFrom is the testable core: it reads config.toml from an
 // explicit path so tests can point at a fake home without touching real ~.
 func loadMachineConfigFrom(path string) (MachineConfig, error) {
+	// Symlink-harden ~/.config/ferry BEFORE reading config.toml: if the config dir
+	// is a symlink into ~/.ssh or a system/admin location, refuse rather than read
+	// through it. HardenStoreDir is lexical, creates nothing, never touches ~/.ssh,
+	// and is a no-op for a test path whose dir is not under $HOME (t.TempDir()).
+	if err := paths.HardenStoreDir(filepath.Dir(path)); err != nil {
+		return MachineConfig{}, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Propagate os.ErrNotExist verbatim so errors.Is works for first-run.
@@ -86,6 +102,12 @@ func SaveMachineConfig(mc MachineConfig) error {
 func saveMachineConfigTo(path string, mc MachineConfig) error {
 	if err := mc.validate(); err != nil {
 		return fmt.Errorf("machine config: %w", err)
+	}
+	// Symlink-harden ~/.config/ferry BEFORE creating/truncating config.toml so a
+	// config dir symlinked into ~/.ssh or a system location is refused, never
+	// written through. Lexical, no-op for a test temp path. See loadMachineConfigFrom.
+	if err := paths.HardenStoreDir(filepath.Dir(path)); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir for %s: %w", path, err)

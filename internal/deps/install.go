@@ -3,6 +3,7 @@ package deps
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -92,10 +93,17 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 
 	before, beforeOK := brewInstalledSet(runner)
 
+	// Resolve+guard the Brewfiles BEFORE the install runs: a symlinked manifest is
+	// refused here, so brew is never invoked on it.
+	bundleFiles, err := m.bundleFiles()
+	if err != nil {
+		return res, err
+	}
+
 	// Shared manifest first, then the per-machine overlay LAST (local wins / is
 	// layered after shared). brew bundle is idempotent: already-present formulae
 	// are left alone, so re-running is safe.
-	for _, file := range m.bundleFiles() {
+	for _, file := range bundleFiles {
 		if _, err := runner.Run(brewBin, "bundle", "--file="+file); err != nil {
 			return res, fmt.Errorf("deps: brew bundle --file=%s: %w", file, err)
 		}
@@ -114,15 +122,31 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 // files that EXIST contribute: an absent shared Brewfile or overlay is skipped
 // rather than handed to `brew bundle` (which would fail on a missing file). The
 // shared file is layered before the per-machine overlay.
-func (m Manifest) bundleFiles() []string {
+//
+// Each repo-side Brewfile is symlink-guarded BEFORE it is os.Stat'd or handed to
+// `brew bundle --file`: a symlinked manifest (e.g. deps/Brewfile.darwin ->
+// ~/.ssh/config) OR a symlinked deps/ directory (deps -> ~/.ssh) is refused, so
+// brew never reads through it. The guard walks from the REPO ROOT (deps/'s parent)
+// so the deps component itself is Lstat'd. A refused file contributes nothing (it
+// is skipped like an absent one) — the install proceeds with the safe files;
+// install() surfaces the refusal via err.
+func (m Manifest) bundleFiles() ([]string, error) {
 	var files []string
-	if m.Shared != "" && fileExists(m.Shared) {
-		files = append(files, m.Shared)
+	for _, f := range []string{m.Shared, m.Local} {
+		if f == "" {
+			continue
+		}
+		// repoRoot = <repo> (deps/'s parent): walking from here Lstats the deps
+		// component, catching a symlinked deps/ directory, not just a symlinked file.
+		safe, err := safeRepoManifest(filepath.Dir(filepath.Dir(f)), f)
+		if err != nil {
+			return nil, err
+		}
+		if fileExists(safe) {
+			files = append(files, safe)
+		}
 	}
-	if m.Local != "" && fileExists(m.Local) {
-		files = append(files, m.Local)
-	}
-	return files
+	return files, nil
 }
 
 // brewInstalledSet returns the set of currently installed brew leaves+casks and

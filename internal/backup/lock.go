@@ -38,6 +38,11 @@ func (e *ErrLockHeld) Error() string {
 	return fmt.Sprintf("backup: apply lock held by pid %d since %s", e.OwnerPID, e.AcquiredAt.Format(time.RFC3339))
 }
 
+// syncFile fsyncs the lockfile after its metadata is written. It is a package
+// var (not a direct f.Sync() call) only so a test can inject a Sync failure to
+// exercise the post-creation cleanup path; production always uses (*os.File).Sync.
+var syncFile = (*os.File).Sync
+
 // lockInfo is the JSON payload written into the lockfile.
 type lockInfo struct {
 	PID        int       `json:"pid"`
@@ -76,8 +81,14 @@ func (e *Engine) lockWithAlive(aliveFn func(int) bool) (*Lock, error) {
 				_ = os.Remove(e.lockPath)
 				return nil, werr
 			}
-			if serr := f.Sync(); serr != nil {
+			if serr := syncFile(f); serr != nil {
+				// We created the lockfile but cannot return a usable *Lock, so the caller
+				// has nothing to Unlock. Remove the just-created file (and close the fd)
+				// before returning, or it is orphaned: it records THIS live PID, so a
+				// later apply would wedge behind a lock "owned" by a running process that
+				// no longer holds it. Clean up on every post-creation error path.
 				f.Close()
+				_ = os.Remove(e.lockPath)
 				return nil, serr
 			}
 			f.Close()

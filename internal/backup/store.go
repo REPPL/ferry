@@ -48,6 +48,15 @@ func NewAt(root string) (*Engine, error) {
 	if root == "" {
 		return nil, fmt.Errorf("backup: empty state root")
 	}
+	// Symlink-harden the state store dir BEFORE creating baseline/journal/snapshots:
+	// apply/restore must NEVER write through a state dir that has been symlinked into
+	// ~/.ssh or a system path. HardenStoreDir refuses if any component from $HOME
+	// down to root is a symlink; a test root at a t.TempDir() (not under $HOME) is a
+	// no-op, so the real-path engine is hardened while tests keep working. The check
+	// is lexical and never touches ~/.ssh.
+	if err := paths.HardenStoreDir(root); err != nil {
+		return nil, err
+	}
 	e := &Engine{
 		root:        root,
 		baselineDir: filepath.Join(root, "baseline"),

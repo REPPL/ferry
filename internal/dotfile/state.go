@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/REPPL/ferry/internal/paths"
 )
@@ -28,13 +29,20 @@ const (
 // Store is the persisted last-applied map (target name -> content hash). The
 // zero value is not usable; build it with OpenStore (real state dir) or
 // OpenStoreAt (an explicit dir, for tests with t.TempDir()).
+//
+// A store opened read-only (OpenStoreReadOnly / OpenStoreAtReadOnly) has
+// readOnly=true: it never creates the state dir and refuses to persist. This is
+// the path status/diff use so that read-only commands create no ferry state.
 type Store struct {
-	path    string
-	applied map[string]string // target name -> last-applied content hash
+	path     string
+	applied  map[string]string // target name -> last-applied content hash
+	readOnly bool              // true for a status/diff store: no mkdir, no save
 }
 
 // OpenStore opens the last-applied store under ferry's real state dir
-// (~/.local/state/ferry), resolved via internal/paths.
+// (~/.local/state/ferry), resolved via internal/paths. It creates the state dir
+// if absent (the mutating apply/capture path); use OpenStoreReadOnly for the
+// write-free status/diff path.
 func OpenStore() (*Store, error) {
 	dir, err := paths.StateDir()
 	if err != nil {
@@ -43,22 +51,64 @@ func OpenStore() (*Store, error) {
 	return OpenStoreAt(dir)
 }
 
-// OpenStoreAt opens the last-applied store under an explicit state dir. Tests
-// pass a t.TempDir() so the real ~ is never touched. A missing file is an empty
-// store, not an error (first run on a machine).
+// OpenStoreReadOnly opens the last-applied store under ferry's real state dir
+// WITHOUT creating it. It is the path read-only commands (status, diff) use:
+// classification needs the last-applied hashes but must not create
+// ~/.local/state/ferry. An absent state dir or record yields an empty store
+// (every target reads as first-touch), not an error. A read-only store refuses
+// to persist (set/CommitLastApplied return an error), so it can never mutate state.
+func OpenStoreReadOnly() (*Store, error) {
+	dir, err := paths.StateDir()
+	if err != nil {
+		return nil, err
+	}
+	return OpenStoreAtReadOnly(dir)
+}
+
+// OpenStoreAt opens the last-applied store under an explicit state dir, creating
+// it if absent. Tests pass a t.TempDir() so the real ~ is never touched. A
+// missing file is an empty store, not an error (first run on a machine).
 func OpenStoreAt(stateDir string) (*Store, error) {
+	return openStoreAt(stateDir, false)
+}
+
+// OpenStoreAtReadOnly opens the last-applied store under an explicit state dir
+// WITHOUT creating it (the read-only status/diff path). Tests pass a t.TempDir().
+// A missing dir or file yields an empty store; the store refuses to persist.
+func OpenStoreAtReadOnly(stateDir string) (*Store, error) {
+	return openStoreAt(stateDir, true)
+}
+
+func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 	if stateDir == "" {
 		return nil, errors.New("dotfile: empty state dir")
 	}
-	if err := os.MkdirAll(stateDir, dirPerm); err != nil {
+	// Symlink-harden the state dir BEFORE any mkdir/read/write/rename — for the
+	// read-only path too. HardenStoreDir refuses if any component from $HOME down
+	// to the state dir is a symlink, so neither a status/diff read (OpenStoreReadOnly,
+	// reached from buildPlan, terminal HasBaselineReadOnly, restore baseline check)
+	// nor an apply/capture write can read or write through a ~/.local/state/ferry that
+	// has been symlinked into ~/.ssh or a system path. The check is lexical, creates
+	// no dirs, never touches ~/.ssh, and a test store rooted at t.TempDir() (not under
+	// $HOME) is a no-op, so the explicit-root test constructors keep working.
+	if err := paths.HardenStoreDir(stateDir); err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(stateDir, dirPerm); err != nil {
-		return nil, err
+	if !readOnly {
+		// Mutating path: ensure the owner-only state dir exists before we may
+		// persist into it. The read-only path skips this so status/diff create
+		// no ferry state — an absent dir simply reads as "no last-applied records".
+		if err := os.MkdirAll(stateDir, dirPerm); err != nil {
+			return nil, err
+		}
+		if err := os.Chmod(stateDir, dirPerm); err != nil {
+			return nil, err
+		}
 	}
 	s := &Store{
-		path:    filepath.Join(stateDir, stateFileName),
-		applied: map[string]string{},
+		path:     filepath.Join(stateDir, stateFileName),
+		applied:  map[string]string{},
+		readOnly: readOnly,
 	}
 	data, err := os.ReadFile(s.path)
 	if errors.Is(err, fs.ErrNotExist) {
@@ -84,8 +134,26 @@ func (s *Store) LastApplied(name string) (hash string, ok bool) {
 	return h, ok
 }
 
-// set records a new last-applied hash for a target and persists the store.
+// RecordedNames returns the bare names of every dotfile with a last-applied
+// record on this machine — the keys of the store's applied map — sorted for
+// determinism. An empty or absent store yields an empty slice (not nil-vs-len
+// confusion is irrelevant to callers, but it is never an error). It works on
+// both the normal and read-only store: enumeration is a pure read.
+func (s *Store) RecordedNames() []string {
+	names := make([]string, 0, len(s.applied))
+	for name := range s.applied {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// set records a new last-applied hash for a target and persists the store. It
+// errors on a read-only store (status/diff), which must never mutate state.
 func (s *Store) set(name, hash string) error {
+	if s.readOnly {
+		return errors.New("dotfile: cannot persist last-applied on a read-only store")
+	}
 	s.applied[name] = hash
 	return s.save()
 }
@@ -94,6 +162,11 @@ func (s *Store) set(name, hash string) error {
 func (s *Store) save() error {
 	data, err := json.MarshalIndent(s.applied, "", "  ")
 	if err != nil {
+		return err
+	}
+	// Re-harden at the lowest write layer so no future caller of save() can write
+	// into a state dir that became a symlink after open. No-op for a t.TempDir().
+	if err := paths.HardenStoreDir(filepath.Dir(s.path)); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".dotfile-state-*.tmp")

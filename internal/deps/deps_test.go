@@ -461,6 +461,65 @@ func TestReDump_Brew_TargetsOnlyDetectedFile(t *testing.T) {
 	}
 }
 
+// TestReDump_Brew_RefusesSymlinkTarget: a SYMLINK at deps/Brewfile.<goos> must be
+// refused — brew is NEVER invoked and the symlink's target is left byte-identical
+// (the guard never writes through it, mimicking a repo Brewfile.darwin -> ~/.ssh/config).
+func TestReDump_Brew_RefusesSymlinkTarget(t *testing.T) {
+	dir := t.TempDir()
+	depsDir := filepath.Join(dir, "deps")
+	if err := os.MkdirAll(depsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Sentinel stands in for ~/.ssh/config: a regular file OUTSIDE the deps tree
+	// that the symlink points at. It must stay byte-identical.
+	sentinel := filepath.Join(dir, "secret-config")
+	const sentinelBody = "Host *\n  IdentityFile ~/.ssh/id_ed25519\n"
+	if err := os.WriteFile(sentinel, []byte(sentinelBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(depsDir, "Brewfile.darwin")
+	if err := os.Symlink(sentinel, target); err != nil {
+		t.Fatal(err)
+	}
+
+	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: target}
+	r := newFakeRunner()
+	if _, err := reDump(m, r); err == nil {
+		t.Fatal("reDump with symlink target: want refusal error, got nil")
+	}
+	if r.invoked("bundle dump") || r.invoked("dump") {
+		t.Errorf("reDump invoked brew on a symlink target — must refuse before brew: %v", r.calls)
+	}
+	// The symlink target (sentinel) must be untouched.
+	got, err := os.ReadFile(sentinel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != sentinelBody {
+		t.Errorf("symlink target was modified: got %q want %q", got, sentinelBody)
+	}
+}
+
+// TestReDump_Brew_AbsentTargetDumps: an absent (to-be-created) regular target
+// re-dumps normally — the fake runner records the `brew bundle dump` call.
+func TestReDump_Brew_AbsentTargetDumps(t *testing.T) {
+	dir := t.TempDir()
+	depsDir := filepath.Join(dir, "deps") // not yet created
+	target := filepath.Join(depsDir, "Brewfile.darwin")
+	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: target}
+	r := newFakeRunner()
+	got, err := reDump(m, r)
+	if err != nil {
+		t.Fatalf("reDump absent target: %v", err)
+	}
+	if got != target {
+		t.Errorf("reDump returned %q want %q", got, target)
+	}
+	if !r.invoked("bundle dump") || !r.invoked("--file="+target) {
+		t.Errorf("reDump did not invoke `brew bundle dump --file=%s`: %v", target, r.calls)
+	}
+}
+
 func TestReDump_NoManager_Reports(t *testing.T) {
 	m := Manifest{Manager: platform.ManagerNone}
 	r := newFakeRunner()

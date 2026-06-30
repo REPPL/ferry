@@ -1,10 +1,11 @@
 module github.com/REPPL/ferry
 
-go 1.25
+go 1.25.0
 
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/spf13/cobra v1.10.2
+	golang.org/x/sys v0.46.0
 )
 
 require (

@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/REPPL/ferry/internal/paths"
 )
 
 // Baseline entry layout under baselineDir:
@@ -66,6 +68,38 @@ func validKind(k PathKind) bool {
 // means. A partial/corrupt entry reads as absent so the true baseline is still
 // captured on the next touch.
 func (e *Engine) HasBaseline(absPath string) bool {
+	_, ok, err := e.Baseline(absPath)
+	return ok && err == nil
+}
+
+// HasBaselineReadOnly reports whether a COMPLETE, valid immutable baseline exists
+// for absPath under stateRoot, WITHOUT creating the state directory or any of its
+// subdirs. It is the write-free counterpart to New()+HasBaseline for read-only
+// previews (diff / status / apply --dry-run): New()/NewAt() eagerly mkdir+chmod
+// baseline/, blobs/, journal/, snapshots/, which would mutate the filesystem on a
+// machine that only has the state ROOT (or nothing). This path stats the baseline
+// metadata only, reusing the SAME completeness semantics as HasBaseline (parse,
+// non-empty Path, valid Kind, blob present for KindFile) so a partial/corrupt entry
+// reads as absent here exactly as it does on the mutating path. Returns false if
+// the state dir is absent — a never-applied machine has no baseline.
+func HasBaselineReadOnly(stateRoot, absPath string) bool {
+	if stateRoot == "" {
+		return false
+	}
+	// Symlink-harden the state ROOT BEFORE any os.ReadFile/os.Stat below, so this
+	// read-only probe is structurally safe for EVERY caller (diff/status/apply
+	// --dry-run terminal baseline check, restore baseline enumeration): a
+	// ~/.local/state/ferry symlinked into ~/.ssh or a system path is refused, never
+	// read through. The check is lexical, creates no dirs, never touches ~/.ssh, and
+	// is a no-op for a test root not under $HOME (t.TempDir()). A refused root reads
+	// as "no baseline" — the safe answer for a poisoned store.
+	if err := paths.HardenStoreDir(stateRoot); err != nil {
+		return false
+	}
+	// Construct only the path fields; do NOT call NewAt (which would mkdir/chmod
+	// the store layout). Baseline reads e.baselineDir via baselineMetaPath and
+	// e.baselineBlobsDir, both pure path joins, so this is fully read-only.
+	e := &Engine{baselineDir: filepath.Join(stateRoot, "baseline")}
 	_, ok, err := e.Baseline(absPath)
 	return ok && err == nil
 }

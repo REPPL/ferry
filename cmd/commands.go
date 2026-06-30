@@ -1,29 +1,25 @@
 package cmd
 
 import (
-	"fmt"
-
 	"github.com/spf13/cobra"
 )
 
-// notImplemented is the stub RunE for every A0 command. Real logic lands in
-// later waves; until then each verb resolves, parses its flags, and reports
-// that it is not yet implemented.
-func notImplemented(c *cobra.Command, _ []string) error {
-	return fmt.Errorf("%s: not yet implemented", c.Name())
-}
+// Each command's RunE is implemented in its own cmd/<name>.go file
+// (runInit, runApply, runCapture, runStatus, runDoctor, runDiff, runRestore)
+// so Wave-2 command workers edit separate files without colliding on this one.
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "First-run setup: locate/clone the config repo and write ferry's config",
 	Long: `First-run, once-per-machine setup.
 
-init locates or clones your config repo, writes ferry's config file
-(~/.config/ferry/config.toml), confirms this machine's manifest before any
-mutation, and optionally scaffolds your dev directory tree (with explicit
-confirmation). It ends by running apply, which shows the plan and asks for
-confirmation.`,
-	RunE: notImplemented,
+init locates or clones your config repo (over HTTPS — no SSH key needed),
+writes ferry's config file (~/.config/ferry/config.toml), creates or confirms
+this machine's ferry.local.toml manifest before any mutation, and optionally
+scaffolds your ~/ABCDevelopment dev tree (with explicit confirmation). It then
+SHOWS the apply plan and stops; pass --apply (with --yes to skip the prompt)
+to actually reconcile this machine.`,
+	RunE: runInit,
 }
 
 var applyCmd = &cobra.Command{
@@ -35,7 +31,7 @@ apply deploys in-scope dotfiles and terminal settings, layering the per-machine
 .local overlay last. It is idempotent and safe to re-run after every git pull.
 By default it reconciles files only and runs unattended; dependency installs are
 a separate, gated step run with --deps.`,
-	RunE: notImplemented,
+	RunE: runApply,
 }
 
 var captureCmd = &cobra.Command{
@@ -47,7 +43,7 @@ capture is interactive and selective: it shows you each change and lets you
 approve it, then route it shared (synced everywhere) or local (this machine
 only). Only declared targets are visible, and a secret scan blocks sensitive
 values from ever reaching the repo.`,
-	RunE: notImplemented,
+	RunE: runCapture,
 }
 
 var statusCmd = &cobra.Command{
@@ -58,7 +54,7 @@ var statusCmd = &cobra.Command{
 status compares the live machine against the repo and reports what has changed
 (git-status-like), classifying each managed target as clean, locally drifted,
 repo-ahead, or in conflict.`,
-	RunE: notImplemented,
+	RunE: runStatus,
 }
 
 var doctorCmd = &cobra.Command{
@@ -68,7 +64,7 @@ var doctorCmd = &cobra.Command{
 
 doctor checks that required tools (git, zsh, a package manager) are present and
 reports anything that needs attention, with the recommended next step.`,
-	RunE: notImplemented,
+	RunE: runDoctor,
 }
 
 var diffCmd = &cobra.Command{
@@ -78,7 +74,7 @@ var diffCmd = &cobra.Command{
 
 diff is read-only: it shows what apply would change on this machine without
 writing anything.`,
-	RunE: notImplemented,
+	RunE: runDiff,
 }
 
 var restoreCmd = &cobra.Command{
@@ -86,9 +82,11 @@ var restoreCmd = &cobra.Command{
 	Short: "Reverse ferry's changes, returning to the pre-ferry state from backup",
 	Long: `Reverse ferry's changes.
 
-restore returns managed files to their pre-ferry state from ferry's automatic
-backup, snapshotting current state first. It reverses files only.`,
-	RunE: notImplemented,
+restore reverts managed files AND registered terminal preference domains to the
+pre-ferry baseline from ferry's automatic backup, snapshotting current state
+first so the revert is itself reversible. restore <domain> scopes it to one
+target. --packages additionally uninstalls only the packages ferry installed.`,
+	RunE: runRestore,
 }
 
 func init() {

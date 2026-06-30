@@ -75,20 +75,21 @@ func (e *Engine) restorePaths(absPaths []string) (string, error) {
 // incomplete-run rollback.
 func (e *Engine) applyState(state PathState, blob []byte) error {
 	if isResourcePath(state.Path) {
-		return e.restoreResource(domainForResourcePath(state.Path), blob)
+		return e.restoreResource(domainForResourcePath(state.Path), blob, state.Kind == KindAbsent)
 	}
 	return restoreState(state, blob)
 }
 
-// restoreResource drives a registered preference-domain Resource's own restore
-// for the given previously captured blob. The engine stores domain blobs the
-// same secret-safe way as file blobs.
-func (e *Engine) restoreResource(domain string, blob []byte) error {
+// restoreResource drives a registered preference-domain Resource's own restore.
+// When absent is true the baseline recorded the domain as not existing pre-ferry,
+// so the resource REMOVES/clears it (e.g. `defaults delete`); otherwise blob (the
+// captured state, stored the same secret-safe way as file blobs) is re-applied.
+func (e *Engine) restoreResource(domain string, blob []byte, absent bool) error {
 	r, ok := e.resources[domain]
 	if !ok {
 		return fmt.Errorf("backup: no resource registered for domain %q", domain)
 	}
-	return r.Restore(blob)
+	return r.Restore(blob, absent)
 }
 
 // baselinePaths returns every absolute path that has a baseline entry, read from

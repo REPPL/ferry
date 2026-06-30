@@ -17,13 +17,20 @@ import "fmt"
 //     ScopedRestore and by Register.
 //   - Backup captures the resource's CURRENT state into an opaque, restorable
 //     blob (e.g. the bytes of `defaults export <domain> -`). It must run BEFORE
-//     the resource is mutated.
-//   - Restore re-applies a previously captured blob (e.g. `defaults import`),
-//     returning the resource to that state.
+//     the resource is mutated. A resource that does NOT yet exist pre-ferry (a
+//     fresh machine where the domain was never configured) reports absent=true
+//     with a nil blob — a normal expected state, NOT an error — so the engine
+//     records an absent baseline (analogous to KindAbsent for files) and apply
+//     can still proceed to create it. err is reserved for real failures.
+//   - Restore returns the resource to a previously captured state. When absent
+//     is true the baseline recorded the resource as not existing pre-ferry, so
+//     Restore REMOVES/clears it (e.g. `defaults delete <domain>`) rather than
+//     importing a blob; when absent is false it re-applies blob (e.g.
+//     `defaults import`).
 type Resource interface {
 	Domain() string
-	Backup() (blob []byte, err error)
-	Restore(blob []byte) error
+	Backup() (blob []byte, absent bool, err error)
+	Restore(blob []byte, absent bool) error
 }
 
 // ResourcePath maps a preference domain to the synthetic store "path" used to
@@ -62,15 +69,19 @@ func (e *Engine) BackupResource(r *run, domain string) error {
 	if !ok {
 		return fmt.Errorf("backup: no resource registered for domain %q", domain)
 	}
-	blob, err := res.Backup()
+	blob, absent, err := res.Backup()
 	if err != nil {
 		return err
 	}
-	state := PathState{
-		Path:    ResourcePath(domain),
-		Kind:    KindFile,
-		Mode:    filePerm,
-		HasBlob: true,
+	// An absent resource records a KindAbsent baseline — "this domain did not
+	// exist pre-ferry" — exactly like an absent file path. Restore then REMOVES
+	// the domain to return to that state. Apply is NOT aborted: absence is the
+	// expected state on a fresh machine, not a Backup failure.
+	state := PathState{Path: ResourcePath(domain), Kind: KindAbsent}
+	if !absent {
+		state.Kind = KindFile
+		state.Mode = filePerm
+		state.HasBlob = true
 	}
 	// (1) Immutable baseline — write-once true pre-ferry resource state.
 	if !e.HasBaseline(state.Path) {

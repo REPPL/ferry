@@ -10,19 +10,32 @@ type State string
 const (
 	// StateClean: live == repo == last-applied. Nothing to do.
 	StateClean State = "clean"
-	// StateRepoAhead: live == last-applied (no local edits) but repo changed.
-	// apply will update the home target. (Includes the not-yet-deployed case
-	// where the home file is absent and last-applied is recorded — apply writes
-	// it.)
+	// StateRepoAhead: apply will write the repo content to the home target
+	// (backing up the prior state first). This covers three cases that all
+	// resolve to "deploy the repo content":
+	//   - live == last-applied (no local edits) but repo changed — a normal update;
+	//   - the not-yet-deployed case where the home file is absent and last-applied
+	//     is recorded — apply writes it;
+	//   - FIRST-TOUCH ADOPTION: a pre-existing home file ferry has never managed
+	//     (no last-applied record) that DIFFERS from the repo. apply adopts it by
+	//     backing the live file up to the immutable baseline (via the Backuper)
+	//     and then deploying the repo content. This is deliberately NOT a conflict:
+	//     first-ever apply of an in-scope dotfile takes ownership rather than
+	//     refusing. The backup-then-write keeps it reversible (restore leaves no
+	//     trace); if the backup cannot be made, BackupAndWrite errors and nothing
+	//     is deployed.
 	StateRepoAhead State = "repo-ahead"
 	// StateLocallyDrifted: live differs from last-applied but the repo has NOT
 	// moved past last-applied (repo == last-applied). The local edit is a
 	// capture candidate; apply leaves it alone (no repo change to push).
 	StateLocallyDrifted State = "locally-drifted"
-	// StateConflict: live differs from last-applied AND the repo also moved
-	// (repo != last-applied), OR the home target exists with managed-looking
-	// content but ferry has no last-applied record for it. Both directions want
-	// the file; apply refuses without --force.
+	// StateConflict: ferry HAS a last-applied record for the target AND the live
+	// file differs from it (the user edited a file ferry previously managed
+	// without capturing) AND the repo also moved past last-applied. Both
+	// directions want the file; apply refuses without --force. This is the only
+	// conflict case: a pre-existing file ferry has never managed is NOT a conflict
+	// (see StateRepoAhead first-touch adoption) — conflict is reserved for the
+	// genuine uncaptured-edit-to-a-managed-file case.
 	StateConflict State = "conflict"
 	// StateMissing: the home target is absent and ferry has no last-applied
 	// record — a fresh, never-deployed target. apply will create it.
@@ -72,6 +85,41 @@ func Classify(t Target, store *Store) (Status, error) {
 	return st, nil
 }
 
+// ClassifyContent computes the SAME three-way state as Classify, but takes the
+// effective desired content as in-memory bytes instead of reading the repo
+// source at t.Repo. It writes NOTHING to disk: the effective bytes are hashed in
+// memory (no temp file), the live file at t.Home is read, and the last-applied
+// hash comes from the store. This is the path read-only previews (status, diff,
+// apply --dry-run) take so they never stage the (possibly secret-rendered)
+// effective content to a temp file.
+//
+// `effective` is the repo-equivalent content the caller already composed
+// (shared⊕local, secret-rendered); it stands in for the repo source side of the
+// comparison. The live-file symlink/regular checks and the first-touch adoption
+// rule are identical to Classify — both delegate to the same pure classify
+// decision table, so file-based and in-memory classification can never diverge
+// for identical content.
+func ClassifyContent(t Target, effective []byte, store *Store) (Status, error) {
+	repoHash := hashBytes(effective)
+
+	liveHash, liveExists, err := hashFile(t.Home)
+	if err != nil {
+		return Status{}, err
+	}
+	appliedHash, hasApplied := store.LastApplied(t.Name)
+
+	st := Status{
+		Target:      t,
+		LiveExists:  liveExists,
+		LiveHash:    liveHash,
+		RepoHash:    repoHash,
+		AppliedHash: appliedHash,
+		HasApplied:  hasApplied,
+	}
+	st.State = classify(liveExists, liveHash, repoHash, appliedHash, hasApplied)
+	return st, nil
+}
+
 // classify is the pure decision table over the three hashes.
 func classify(liveExists bool, liveHash, repoHash, appliedHash string, hasApplied bool) State {
 	if !liveExists {
@@ -85,13 +133,18 @@ func classify(liveExists bool, liveHash, repoHash, appliedHash string, hasApplie
 	}
 
 	if !hasApplied {
-		// Home file exists but ferry never applied it. If it already matches the
-		// repo, treat it as clean (adopting an identical pre-existing file is
-		// safe). Otherwise overwriting would clobber unmanaged content -> conflict.
+		// Home file exists but ferry never applied it (first-ever touch). If it
+		// already matches the repo, treat it as clean (adopting an identical
+		// pre-existing file is safe). Otherwise this is FIRST-TOUCH ADOPTION:
+		// ferry takes ownership by backing the live file up to the baseline and
+		// deploying the repo content. That deploy path is exactly StateRepoAhead,
+		// so classify it as such — NOT a conflict. (A conflict requires a
+		// last-applied record; without one there is no "uncaptured edit" to
+		// protect, only an unmanaged file we are adopting for the first time.)
 		if liveHash == repoHash {
 			return StateClean
 		}
-		return StateConflict
+		return StateRepoAhead
 	}
 
 	switch {

@@ -100,6 +100,17 @@ func parseManifestFile(path string, mgr platform.PackageManager) ([]string, erro
 	if path == "" {
 		return nil, nil
 	}
+	// Symlink-guard the repo-side manifest BEFORE os.ReadFile: a symlinked apt.txt
+	// or Brewfile (e.g. deps/apt.txt -> ~/.ssh/config), OR a symlinked deps/
+	// directory (deps -> ~/.ssh), is refused, never read through. ferry only writes
+	// regular files under deps/, so a symlink is illegitimate. The guard walks from
+	// the REPO ROOT (deps/'s parent, = filepath.Dir(filepath.Dir(path))) so the deps
+	// component itself is Lstat'd, not just the manifest file.
+	safe, err := safeRepoManifest(filepath.Dir(filepath.Dir(path)), path)
+	if err != nil {
+		return nil, err
+	}
+	path = safe
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

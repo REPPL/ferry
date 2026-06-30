@@ -110,7 +110,17 @@ type Scope struct {
 // their merge. ferry.toml is required (it is the committed shared baseline);
 // ferry.local.toml is optional (absent = no per-machine overrides).
 func LoadScope(repoPath string) (Scope, error) {
-	shared, err := loadManifestFile(filepath.Join(repoPath, SharedManifestName))
+	// Guard each repo-side scope file at the LOWEST read layer: a ferry.toml or
+	// ferry.local.toml that is a symlink (or sits under a symlinked component)
+	// resolving out of the repo / under ~/.ssh would otherwise be os.ReadFile'd
+	// through. ferry only writes regular files here, so a symlink is illegitimate
+	// and refused BEFORE the read. This protects every command that loadContext
+	// drives (apply/diff/status/capture/restore).
+	sharedPath, err := safeRepoRead(repoPath, SharedManifestName)
+	if err != nil {
+		return Scope{}, err
+	}
+	shared, err := loadManifestFile(sharedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Scope{}, fmt.Errorf("shared manifest %s not found in repo %s", SharedManifestName, repoPath)
@@ -118,7 +128,11 @@ func LoadScope(repoPath string) (Scope, error) {
 		return Scope{}, err
 	}
 
-	local, err := loadManifestFile(filepath.Join(repoPath, LocalManifestName))
+	localPath, err := safeRepoRead(repoPath, LocalManifestName)
+	if err != nil {
+		return Scope{}, err
+	}
+	local, err := loadManifestFile(localPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Scope{}, err
 	}

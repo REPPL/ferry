@@ -624,6 +624,17 @@ func TestRestoreRoundTripByteAndModeIdentical(t *testing.T) {
 	mustWrite(t, fileA, []byte("AAA"), 0o600)
 	mustWrite(t, fileB, []byte("BBB"), 0o400) // stricter mode
 
+	// Stamp a known, fixed past mtime on each original so we can assert restore
+	// returns the file mtime-identical (not freshly timestamped).
+	wantMtimeA := time.Date(2021, 3, 14, 9, 26, 53, 0, time.UTC)
+	wantMtimeB := time.Date(2019, 7, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(fileA, wantMtimeA, wantMtimeA); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(fileB, wantMtimeB, wantMtimeB); err != nil {
+		t.Fatal(err)
+	}
+
 	r, err := e.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -656,6 +667,22 @@ func TestRestoreRoundTripByteAndModeIdentical(t *testing.T) {
 	if m := statMode(t, fileB); m != 0o400 {
 		t.Errorf("B mode = %o, want 0400 (stricter original restored)", m)
 	}
+	if got := mtimeOf(t, fileA); !got.Equal(wantMtimeA) {
+		t.Errorf("A mtime = %v, want original %v", got, wantMtimeA)
+	}
+	if got := mtimeOf(t, fileB); !got.Equal(wantMtimeB) {
+		t.Errorf("B mtime = %v, want original %v", got, wantMtimeB)
+	}
+}
+
+// mtimeOf returns the modification time of path (no symlink follow).
+func mtimeOf(t *testing.T, path string) time.Time {
+	t.Helper()
+	fi, err := os.Lstat(path)
+	if err != nil {
+		t.Fatalf("lstat %s: %v", path, err)
+	}
+	return fi.ModTime()
 }
 
 func TestRestoreRemovesPathThatDidNotExist(t *testing.T) {
@@ -716,6 +743,54 @@ func TestRestoreSymlinkRoundTrip(t *testing.T) {
 	tgt, _ := os.Readlink(link)
 	if tgt != "/orig/target" {
 		t.Errorf("symlink target = %q, want /orig/target", tgt)
+	}
+}
+
+// TestRestoreSymlinkRestampsOwnMtime asserts a restored symlink gets its ORIGINAL
+// link mtime back (lstat, NOFOLLOW) — not a fresh timestamp. os.Chtimes follows the
+// link and cannot set a link's own mtime, so restore uses lchtimes (unix.Lutimes /
+// utimensat+AT_SYMLINK_NOFOLLOW) on the supported platforms.
+func TestRestoreSymlinkRestampsOwnMtime(t *testing.T) {
+	e, home := newEngine(t)
+	link := filepath.Join(home, "link")
+	if err := os.Symlink("/orig/target", link); err != nil {
+		t.Fatal(err)
+	}
+	// Stamp a known past mtime on the symlink's OWN node (NOFOLLOW). On platforms
+	// where lchtimes is a no-op there is nothing meaningful to assert.
+	wantMtime := time.Date(2020, 5, 4, 8, 15, 16, 0, time.UTC)
+	if err := lchtimes(link, wantMtime); err != nil {
+		t.Fatalf("lchtimes seed: %v", err)
+	}
+	if got := mtimeOf(t, link); !got.Equal(wantMtime) {
+		t.Skipf("platform cannot set a link's own mtime (got %v); restamp not asserted", got)
+	}
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace the symlink with a regular file, capturing the original link state.
+	if err := e.BackupAndWrite(r, link, []byte("now a file"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("restored path is not a symlink")
+	}
+	if got := mtimeOf(t, link); !got.Equal(wantMtime) {
+		t.Errorf("restored symlink own mtime = %v, want original %v", got, wantMtime)
 	}
 }
 
@@ -853,26 +928,76 @@ func TestLockReclaimsCorruptLock(t *testing.T) {
 	_ = l.Unlock()
 }
 
+// TestLockSyncFailureLeavesNoOrphan asserts the post-creation cleanup: when the
+// lockfile is created but the fsync fails, Lock must return an error AND remove
+// the just-created lockfile. Otherwise the file is orphaned recording THIS live
+// PID, and a later apply would wedge behind a lock no one actually holds (no
+// *Lock was returned, so nobody can Unlock it).
+func TestLockSyncFailureLeavesNoOrphan(t *testing.T) {
+	e, _ := newEngine(t)
+
+	injected := errors.New("injected sync failure")
+	orig := syncFile
+	syncFile = func(*os.File) error { return injected }
+	defer func() { syncFile = orig }()
+
+	l, err := e.Lock()
+	if err == nil {
+		t.Fatal("Lock succeeded despite injected Sync failure")
+	}
+	if !errors.Is(err, injected) {
+		t.Errorf("err = %v, want injected sync failure", err)
+	}
+	if l != nil {
+		t.Error("Lock returned a non-nil *Lock on the failure path")
+	}
+	if _, statErr := os.Stat(e.lockPath); !os.IsNotExist(statErr) {
+		t.Fatalf("lockfile orphaned after failed Lock: stat err = %v, want not-exist", statErr)
+	}
+
+	// And a subsequent Lock (sync restored) must succeed — no wedge behind an orphan.
+	syncFile = orig
+	l2, err := e.Lock()
+	if err != nil {
+		t.Fatalf("Lock after cleaned-up failure: %v", err)
+	}
+	_ = l2.Unlock()
+}
+
 // --- resource (plist-domain) backup/restore -------------------------------
 
 // fakeResource is an in-memory Resource: Backup returns its current state,
-// Restore overwrites it. It records how many times each is called.
+// Restore overwrites it. When absent is true the resource models a domain that
+// does not exist (Backup reports absent; Restore with absent=true deletes it).
+// It records how many times each is called.
 type fakeResource struct {
 	domain   string
 	state    []byte
+	absent   bool // current "domain does not exist" state
 	backups  int
 	restores int
+	deletes  int // Restore(absent=true) calls — domain removed
 }
 
 func (f *fakeResource) Domain() string { return f.domain }
-func (f *fakeResource) Backup() ([]byte, error) {
+func (f *fakeResource) Backup() ([]byte, bool, error) {
 	f.backups++
+	if f.absent {
+		return nil, true, nil
+	}
 	out := make([]byte, len(f.state))
 	copy(out, f.state)
-	return out, nil
+	return out, false, nil
 }
-func (f *fakeResource) Restore(blob []byte) error {
+func (f *fakeResource) Restore(blob []byte, absent bool) error {
 	f.restores++
+	if absent {
+		f.deletes++
+		f.state = nil
+		f.absent = true
+		return nil
+	}
+	f.absent = false
 	f.state = make([]byte, len(blob))
 	copy(f.state, blob)
 	return nil
@@ -910,6 +1035,52 @@ func TestBackupResourceCapturesAndRestoreReapplies(t *testing.T) {
 	}
 	if res.restores < 1 {
 		t.Errorf("Restore called %d times, want >=1", res.restores)
+	}
+}
+
+// TestBackupResourceAbsentRecordsAbsentBaselineAndRestoreDeletes covers the
+// fresh-machine path: a domain that does not exist pre-ferry must NOT abort the
+// backup; instead an absent (KindAbsent) baseline is recorded, and a later
+// restore REMOVES the domain (delete), returning the machine to pre-ferry.
+func TestBackupResourceAbsentRecordsAbsentBaselineAndRestoreDeletes(t *testing.T) {
+	e, _ := newEngine(t)
+	res := &fakeResource{domain: "com.googlecode.iterm2", absent: true}
+	e.Register(res)
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Absence must NOT be a Backup failure that aborts apply.
+	if err := e.BackupResource(r, res.domain); err != nil {
+		t.Fatalf("BackupResource aborted on an absent domain: %v", err)
+	}
+	if err := r.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The recorded baseline says "this domain did not exist pre-ferry".
+	st, ok, err := e.Baseline(ResourcePath(res.domain))
+	if err != nil || !ok {
+		t.Fatalf("absent resource baseline missing: ok=%v err=%v", ok, err)
+	}
+	if st.Kind != KindAbsent {
+		t.Fatalf("absent resource baseline Kind = %q, want %q", st.Kind, KindAbsent)
+	}
+
+	// Simulate apply having created/configured the domain afterwards.
+	res.absent = false
+	res.state = []byte("FERRY-CONFIGURED-PREFS")
+
+	// Restore must DELETE the domain (back to absent), not import a blob.
+	if _, err := e.Restore(); err != nil {
+		t.Fatal(err)
+	}
+	if res.deletes < 1 {
+		t.Errorf("restore of an absent baseline made %d deletes, want >=1", res.deletes)
+	}
+	if !res.absent {
+		t.Errorf("after restore domain absent = false, want true (deleted)")
 	}
 }
 
