@@ -77,6 +77,13 @@ See [Getting started](docs/getting-started.md) for the full happy path.
   Machine-specific settings live in a gitignored `.local` layer that always wins, so
   deliberate per-machine differences are never overwritten.
 - **Reversible** — every change is backed up first; `ferry restore` leaves no trace.
+<!-- FERRY-REVIEW -->
+  > ⚠️ **FERRY-REVIEW — CONFIRM:** As built, default `ferry restore` reverts your
+  > *managed* files and terminal preferences to their pre-ferry state, but deliberately
+  > keeps ferry's own backup/state store (so the restore is itself reversible). Use
+  > `ferry restore --purge` to also remove ferry's config/state once you're done.
+  > So "leaves no trace" is true of the *machine's managed config*, not of ferry's
+  > backup store unless `--purge`. Confirm this wording and I'll refine the doc.
 - **No admin assumed** — ferry installs to `~/.local/bin` and never requires `sudo` or
   root, so it works on any account, including locked-down or managed machines. It never
   edits your shell on its own.

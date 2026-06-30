@@ -67,8 +67,16 @@ never captured.
 
 ## Existing: set up another machine
 
+<!-- FERRY-REVIEW -->
+> ⚠️ **FERRY-REVIEW — CONFIRM:** The built `ferry init` clones an existing repo only
+> when given the repo as a positional argument (`ferry init <repo-url-or-path>`, HTTPS
+> or a local/`file://` path). A bare `ferry init` with no configured repo sets up a
+> **new** repo (the "Fresh" path). The example below shows a bare `ferry init` for the
+> existing-machine case; as implemented it should be `ferry init https://…/ferry.git`.
+> Confirm the intended UX (positional source vs a flag) and I'll align the docs + help.
+
 ```bash
-ferry init                # clones your ferry repo over HTTPS, writes ferry's config
+ferry init <repo-url>     # clones your ferry repo over HTTPS, writes ferry's config
 ferry diff                # preview what will change on this machine (optional)
 ferry apply               # reconcile this machine to the repo
 ferry apply --deps        # install dependencies (separate, explicit step)
