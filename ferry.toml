@@ -1,0 +1,7 @@
+# ferry.toml — SHARED defaults (committed).
+# The baseline scope that applies to every machine unless a gitignored
+# ferry.local.toml overrides it. See docs/configuration.md.
+
+[manage]
+dotfiles = [".zshrc"]
+brew     = true           # `ferry apply --deps` installs from deps/Brewfile.<goos>

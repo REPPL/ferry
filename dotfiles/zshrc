@@ -1,0 +1,224 @@
+# ============================================================================
+# PATH & ENVIRONMENT
+# ============================================================================
+export PATH="$HOME/.local/bin:$PATH"
+export EDITOR='emacs -nw'
+export VISUAL='emacs -nw'
+export CLICOLOR=1
+export LSCOLORS=ExGxBxDxCxEgEdxbxgxcxd  # Better ls colours
+
+
+# ============================================================================
+# HOMEBREW PREFIX (detected, not hardcoded)
+# ============================================================================
+# Resolve the Homebrew prefix at runtime so this config works on Apple Silicon
+# (/opt/homebrew), Intel macOS (/usr/local), and Linuxbrew
+# (/home/linuxbrew/.linuxbrew) without editing. Empty if brew is absent.
+if command -v brew >/dev/null 2>&1; then
+    BREW_PREFIX="$(brew --prefix)"
+else
+    for _brew_candidate in /opt/homebrew /usr/local /home/linuxbrew/.linuxbrew; do
+        if [ -x "$_brew_candidate/bin/brew" ]; then
+            BREW_PREFIX="$_brew_candidate"
+            break
+        fi
+    done
+    unset _brew_candidate
+fi
+
+
+# ============================================================================
+# ZSH OPTIONS
+# ============================================================================
+# History
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=10000
+setopt SHARE_HISTORY          # Share history between sessions
+setopt HIST_IGNORE_DUPS       # Don't record duplicate commands
+setopt HIST_IGNORE_SPACE      # Don't record commands starting with space
+setopt HIST_VERIFY            # Show command before executing from history
+
+# Directory navigation
+setopt AUTO_CD                # cd by just typing directory name
+setopt AUTO_PUSHD            # Push directories onto stack
+setopt PUSHD_IGNORE_DUPS     # Don't push duplicates
+setopt PUSHD_SILENT          # Don't print directory stack
+
+# Completion
+setopt COMPLETE_IN_WORD       # Complete from cursor position
+setopt AUTO_MENU             # Show completion menu on tab
+setopt LIST_AMBIGUOUS        # List options on ambiguous completion
+setopt MENU_COMPLETE         # Cycle through completions with tab
+
+# Other useful options
+setopt INTERACTIVE_COMMENTS   # Allow comments in interactive shell
+setopt NO_BEEP               # Disable beeping
+setopt EXTENDED_GLOB         # Enhanced globbing
+
+
+# ============================================================================
+# KEYBINDINGS
+# ============================================================================
+bindkey -e                    # Emacs keybindings
+
+# Additional Emacs-style bindings
+bindkey '^[[1;5C' forward-word       # Ctrl+Right
+bindkey '^[[1;5D' backward-word      # Ctrl+Left
+bindkey '^U' backward-kill-line      # Ctrl+U kills to beginning
+bindkey '^K' kill-line               # Ctrl+K kills to end
+bindkey '^W' backward-kill-word      # Ctrl+W kills word
+bindkey '^R' history-incremental-search-backward  # Ctrl+R for history search
+
+
+# ============================================================================
+# COMPLETION SYSTEM
+# ============================================================================
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Z}'  # Case-insensitive
+zstyle ':completion:*' list-colors ${(s.:.)LS_COLORS}
+zstyle ':completion:*:descriptions' format '%B%F{yellow}── %d ──%f%b'
+zstyle ':completion:*:warnings' format '%B%F{red}No matches%f%b'
+
+
+# ============================================================================
+# PROMPT
+# ============================================================================
+# Git integration
+autoload -Uz vcs_info
+precmd_vcs_info() { vcs_info }
+precmd_functions+=( precmd_vcs_info )
+setopt PROMPT_SUBST
+zstyle ':vcs_info:git:*' formats ' %F{yellow}(%b)%f'
+zstyle ':vcs_info:git:*' actionformats ' %F{yellow}(%b|%a)%f'
+
+# Your prompt with fixes and git integration
+precmd() {
+    print ""  # Your blank line preference
+}
+PROMPT='%F{blue}[%1~]%F{magenta}@%F{blue}%n%f${vcs_info_msg_0_}> '
+
+# Optional: Right-side prompt with time
+RPROMPT='%F{240}%*%f'
+
+
+# ============================================================================
+# ALIASES
+# ============================================================================
+# Enhanced ls
+alias ls='ls --color=auto'
+alias ll='ls -lh'
+alias la='ls -lah'
+alias l='ls -CF'
+
+# Directory navigation
+alias ..='cd ..'
+alias ...='cd ../..'
+alias ....='cd ../../..'
+alias ~='cd ~'
+alias -- -='cd -'
+
+# Safety nets
+alias rm='rm -i'
+alias cp='cp -i'
+alias mv='mv -i'
+alias mkdir='mkdir -pv'
+
+# Shortcuts
+alias h='history'
+alias j='jobs -l'
+alias which='type -a'
+alias path='echo -e ${PATH//:/\\n}'
+alias reload='source ~/.zshrc'
+
+# Emacs shortcuts (keeping your preference)
+alias e='emacs -nw'
+alias eq='emacs -nw -Q'  # Quick start without init file
+
+# Git aliases (if you use git)
+alias gs='git status'
+alias ga='git add'
+alias gc='git commit'
+alias gp='git push'
+alias gl='git log --oneline --graph --decorate'
+
+# Manuscript management
+alias manuscript='~/Development/Sandboxed/Manuscripts/init'
+
+
+# ============================================================================
+# FUNCTIONS
+# ============================================================================
+# Create directory and cd into it
+mkcd() {
+    mkdir -p "$1" && cd "$1"
+}
+
+# Quick backup
+backup() {
+    cp "$1" "$1.bak-$(date +%Y%m%d-%H%M%S)"
+}
+
+# Extract archives
+extract() {
+    case "$1" in
+        *.tar.bz2) tar xjf "$1" ;;
+        *.tar.gz) tar xzf "$1" ;;
+        *.bz2) bunzip2 "$1" ;;
+        *.gz) gunzip "$1" ;;
+        *.tar) tar xf "$1" ;;
+        *.zip) unzip "$1" ;;
+        *.Z) uncompress "$1" ;;
+        *) echo "'$1' cannot be extracted" ;;
+    esac
+}
+
+
+# ============================================================================
+# iTerm2 INTEGRATION (if installed)
+# ============================================================================
+test -e "${HOME}/.iterm2_shell_integration.zsh" && source "${HOME}/.iterm2_shell_integration.zsh"
+
+
+# ============================================================================
+# SHELL ENHANCEMENTS (guarded — no-op on machines without the plugin)
+# ============================================================================
+# Syntax highlighting (install: brew install zsh-syntax-highlighting)
+[ -n "$BREW_PREFIX" ] && [ -f "$BREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" ] \
+    && source "$BREW_PREFIX/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
+
+# Auto-suggestions (install: brew install zsh-autosuggestions)
+[ -n "$BREW_PREFIX" ] && [ -f "$BREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh" ] \
+    && source "$BREW_PREFIX/share/zsh-autosuggestions/zsh-autosuggestions.zsh"
+
+# Better directory jumping (install: brew install zoxide)
+command -v zoxide >/dev/null 2>&1 && eval "$(zoxide init zsh)"
+
+
+# ============================================================================
+# TOOL INTEGRATIONS (guarded — activate only where the tool is installed)
+# ============================================================================
+# Antigravity
+[ -d "$HOME/.antigravity/antigravity/bin" ] && export PATH="$HOME/.antigravity/antigravity/bin:$PATH"
+
+# bun
+export BUN_INSTALL="$HOME/.bun"
+[ -d "$BUN_INSTALL/bin" ] && export PATH="$BUN_INSTALL/bin:$PATH"
+# bun completions
+[ -s "$BUN_INSTALL/_bun" ] && source "$BUN_INSTALL/_bun"
+
+# opencode
+[ -d "$HOME/.opencode/bin" ] && export PATH="$HOME/.opencode/bin:$PATH"
+
+# direnv - auto-load .envrc when entering directories
+command -v direnv >/dev/null 2>&1 && eval "$(direnv hook zsh)"
+
+
+# ============================================================================
+# MACHINE-SPECIFIC OVERRIDES (per-machine, gitignored, sourced last)
+# ============================================================================
+# Anything that should NOT sync to every machine lives in ~/.zshrc.local
+# (machine-only tool paths, personal tokens, per-box tweaks). ferry
+# materialises this from local/zsh/zshrc.local. Sourced LAST so it always wins.
+[ -f ~/.zshrc.local ] && source ~/.zshrc.local

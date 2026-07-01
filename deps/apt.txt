@@ -1,0 +1,41 @@
+# deps/apt.txt — Debian/Ubuntu packages for Homebrew-less Linux machines.
+#
+# Used only when ferry detects `apt` as the active manager (no Homebrew present).
+# One package per line; blank lines and `#` comments are ignored, and an inline
+# trailing `#` comment is stripped. Installed by the gated `ferry apply --deps`
+# step via apt-get. There is no per-machine `.local` overlay for apt.
+#
+# This is a hand-curated set, not a machine dump: apt has no clean "dump the
+# installed set" equivalent, so `ferry capture` treats apt as apply-only and
+# never rewrites this file.
+
+# --- Shell ---
+zsh
+zsh-autosuggestions
+zsh-syntax-highlighting
+direnv
+
+# NOTE: zoxide is NOT packaged on older Debian/Ubuntu releases. On recent
+# releases `apt install zoxide` works; on older ones install it out-of-band
+# (cargo install zoxide, or the upstream install script). Left here for
+# recent releases; harmless to remove if unavailable.
+zoxide
+
+# --- Core CLI ---
+coreutils
+git
+git-lfs
+gh
+ripgrep
+tmux
+pandoc
+
+# --- Languages / runtimes ---
+golang
+nodejs
+pipx
+
+# --- Dev tooling ---
+shellcheck
+bats
+pre-commit

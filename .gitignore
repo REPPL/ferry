@@ -40,3 +40,12 @@ go.work.sum
 
 # Local-only working material (notes, drafts, plans, issues log)
 .work/
+
+# Per-machine dependency overlays (never synced; layered by `apply --deps`)
+deps/Brewfile.*.local
+
+# Per-machine scope overrides (merged over ferry.toml at apply/capture time)
+ferry.local.toml
+
+# Per-machine dotfile/domain overlay (never synced; see docs/configuration.md)
+local/

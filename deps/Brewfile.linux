@@ -1,0 +1,63 @@
+# deps/Brewfile.linux — Linuxbrew (Homebrew on Linux) manifest.
+#
+# Selected on Linux (runtime.GOOS == "linux") when Homebrew is the active
+# manager. Installed ONLY by the gated `ferry apply --deps` step.
+#
+# NO casks and NO fonts: Homebrew casks are macOS-only, and font installation on
+# Linux is a separate later concern. This file is therefore the CROSS-PLATFORM
+# subset of Brewfile.darwin — the same CLI tools, minus everything darwin-only.
+#
+# Per-machine additions go in deps/Brewfile.linux.local (gitignored), which
+# `apply --deps` layers on top of this file. On a Homebrew-less Debian/Ubuntu
+# machine ferry uses deps/apt.txt instead.
+
+# --- Shell (installed so `apply --deps` provides the login shell) ---
+brew "zsh"
+# Shell extension to navigate your filesystem faster
+brew "zoxide"
+# Load/unload environment variables based on $PWD
+brew "direnv"
+# Fish-like fast/unobtrusive autosuggestions for zsh
+brew "zsh-autosuggestions"
+# Fish shell like syntax highlighting for zsh
+brew "zsh-syntax-highlighting"
+
+# --- Core CLI ---
+# GNU File, Shell, and Text utilities
+brew "coreutils"
+# Distributed revision control system
+brew "git"
+# Git extension for versioning large files
+brew "git-lfs"
+# Quickly rewrite git repository history
+brew "git-filter-repo"
+# GitHub command-line tool
+brew "gh"
+# Search tool like grep and The Silver Searcher
+brew "ripgrep"
+# Terminal multiplexer
+brew "tmux"
+# Render markdown on the CLI
+brew "glow"
+# Swiss-army knife of markup format conversion
+brew "pandoc"
+
+# --- Languages / runtimes ---
+# Open source programming language to build simple/reliable/efficient software
+brew "go"
+# Open-source, cross-platform JavaScript runtime environment
+brew "node"
+# Execute binaries from Python packages in isolated environments
+brew "pipx"
+
+# --- Dev tooling ---
+# Task is a task runner/build tool that aims to be simpler and easier to use
+brew "go-task"
+# Framework for managing multi-language pre-commit hooks
+brew "pre-commit"
+# Static analysis and lint tool, for (ba)sh scripts
+brew "shellcheck"
+# Bash Automated Testing System
+brew "bats-core"
+# Audit git repos for secrets
+brew "gitleaks"
