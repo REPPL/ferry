@@ -46,7 +46,7 @@ const maxSymlinkHops = 40
 //     equality with homeSSH or a descendant => under ssh.
 //
 // This catches: relative paths, "."/".." segments, a symlinked ancestor (e.g.
-// ~/ABCDevelopment -> ~/.ssh — Readlink reads the link text, lexical resolution
+// ~/.config -> ~/.ssh — Readlink reads the link text, lexical resolution
 // shows it lands under ~/.ssh, detected by string compare WITHOUT stating
 // ~/.ssh), and a direct ~/.ssh/x candidate (detected by string compare BEFORE
 // any stat under ssh). A path that cannot be resolved (e.g. UserHomeDir fails)
@@ -219,7 +219,7 @@ func rejectIfUnderSSH(label, path string) error {
 // ever read or written before the guard has cleared it. The guard itself is
 // symlink-aware (it resolves each component LEXICALLY via os.Readlink, never
 // EvalSymlinks) and never reads, stats, or enumerates ~/.ssh, so a symlinked
-// ancestor (e.g. ~/ABCDevelopment -> ~/.ssh) is caught — by string compare on
+// ancestor (e.g. ~/.config -> ~/.ssh) is caught — by string compare on
 // the link's lexically-resolved target — without the guard ever touching ~/.ssh.
 func guardRepoPath(label, path string) (string, error) {
 	if err := rejectIfUnderSSH(label, path); err != nil {

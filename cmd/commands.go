@@ -13,12 +13,13 @@ var initCmd = &cobra.Command{
 	Short: "First-run setup: locate/clone the config repo and write ferry's config",
 	Long: `First-run, once-per-machine setup.
 
-init locates or clones your config repo (over HTTPS — no SSH key needed),
-writes ferry's config file (~/.config/ferry/config.toml), creates or confirms
-this machine's ferry.local.toml manifest before any mutation, and optionally
-scaffolds your ~/ABCDevelopment dev tree (with explicit confirmation). It then
-SHOWS the apply plan and stops; pass --apply (with --yes to skip the prompt)
-to actually reconcile this machine.`,
+init locates or clones your config repo (over HTTPS — no SSH key needed) into
+ferry's own space (~/.config/ferry/repo by default), writes ferry's config file
+(~/.config/ferry/config.toml), and creates or confirms this machine's
+ferry.local.toml manifest before any mutation. A bare "ferry init" starts a
+fresh repo at that default location; "ferry init --fresh <dir>" places it
+elsewhere. It then SHOWS the apply plan and stops; pass --apply (with --yes to
+skip the prompt) to actually reconcile this machine.`,
 	RunE: runInit,
 }
 

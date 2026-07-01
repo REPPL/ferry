@@ -4,7 +4,11 @@ TARGETS := darwin/arm64 darwin/amd64 linux/arm64 linux/amd64
 # Build version stamped into `ferry --version`. Defaults to the in-source dev value;
 # the release workflow passes the git tag (VERSION=vX.Y.Z). SemVer, v-prefixed.
 VERSION ?=
-LDFLAGS := $(if $(VERSION),-ldflags "-X github.com/REPPL/ferry/cmd.version=$(VERSION)",)
+# -s -w strips the symbol table and DWARF debug info; -X stamps the version.
+# -trimpath (in the build recipe) rewrites absolute source paths to module paths so
+# no local filesystem path is embedded in the binary. Together these produce a
+# smaller, path-clean binary suitable for public distribution.
+LDFLAGS := -s -w$(if $(VERSION), -X github.com/REPPL/ferry/cmd.version=$(VERSION),)
 
 .PHONY: build test vet clean checksums release-prep pin-checksums release
 
@@ -16,7 +20,7 @@ build:
 		goos=$${target%/*}; goarch=$${target#*/}; \
 		out=$(BINDIR)/$(BINARY)-$$goos-$$goarch; \
 		echo "building $$out"; \
-		GOOS=$$goos GOARCH=$$goarch go build $(LDFLAGS) -o $$out . || exit 1; \
+		GOOS=$$goos GOARCH=$$goarch go build -trimpath -ldflags "$(LDFLAGS)" -o $$out . || exit 1; \
 	done
 
 test:

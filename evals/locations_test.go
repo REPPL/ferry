@@ -18,9 +18,8 @@ import (
 // clone (recording only one is insufficient). The docs name ~/.config/ferry/ only;
 // no XDG_CONFIG_HOME behaviour is promised, so none is asserted.
 //
-// TODO(contract): a fully non-interactive init path is not doc-pinned; init "asks
-// before scaffolding". We feed empty stdin (declines prompts) and an existing repo
-// so init's documented job — writing config.toml — can complete.
+// We feed empty stdin (declines the closing apply prompt) and an existing repo so
+// init's documented job — writing config.toml — can complete non-interactively.
 func TestConfigTOML_AC_loc_config_toml(t *testing.T) {
 	t.Parallel()
 	s := NewSandbox(t)
@@ -29,8 +28,8 @@ func TestConfigTOML_AC_loc_config_toml(t *testing.T) {
 
 	// Run init AGAINST the seeded repo (existing-clone path) so a path-recording
 	// impl has a concrete repo to record. We pass s.Repo both as an argument and via
-	// stdin; empty-following stdin declines any scaffold prompt. The setup flow must
-	// COMPLETE successfully (exit 0) before we inspect the files it wrote — a CLI
+	// stdin; empty-following stdin declines the closing apply prompt. The setup flow
+	// must COMPLETE successfully (exit 0) before we inspect the files it wrote — a CLI
 	// that writes config.toml but exits non-zero must NOT pass.
 	if _, errOut, code := s.FerryWithInput(s.Repo+"\n", "init", s.Repo); code != 0 {
 		t.Fatalf("AC-loc-config-toml: `ferry init <repo>` setup exited %d (must complete successfully)\n%s", code, errOut)

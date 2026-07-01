@@ -20,33 +20,42 @@ import (
 
 func init() {
 	// init-only flags, registered here (not commands.go, which the skeleton wave owns).
-	//   --fresh    force the fresh path (new repo) even if a source arg looks present
-	//   --scaffold create the ~/ABCDevelopment dev tree without prompting (opt-in)
-	//   --yes      assume "yes" for prompts (scaffold + the closing apply)
+	//   --fresh    force the fresh path (new repo) even if a source arg looks present;
+	//              optionally takes a positional dir to place the repo (see below)
+	//   --yes      assume "yes" for the closing apply confirmation
 	//   --apply    actually run apply at the end (default: show the plan and stop)
 	initCmd.Flags().Bool("fresh", false, "set up a NEW config repo (capture this machine) instead of cloning")
-	initCmd.Flags().Bool("scaffold", false, "create the ~/ABCDevelopment dev tree (opt-in; only missing dirs)")
-	initCmd.Flags().Bool("yes", false, "assume yes for confirmations (scaffold and the closing apply)")
+	initCmd.Flags().Bool("yes", false, "assume yes for the closing apply confirmation")
 	initCmd.Flags().Bool("apply", false, "run apply at the end of init (default: show the plan and stop)")
 }
 
-// defaultRepoSubpath is where init lands the config repo when the user does not
-// already have one at a chosen location: ~/ABCDevelopment/Settings/ferry. Ferry is
-// otherwise clone-location-agnostic; this is just the documented default home.
-var defaultRepoSubpath = []string{"ABCDevelopment", "Settings", "ferry"}
+// defaultRepoDir returns ferry's neutral, ferry-owned default location for a
+// fresh/cloned config repo: ~/.config/ferry/repo, a subdir of the config dir ferry
+// already owns and hardens. No personal folder taxonomy is baked in and no prompt
+// is needed — ferry owns this path in its own config space by default. An explicit
+// override (a positional dir after --fresh, or an existing-repo clone destination
+// argument handling) is layered on by the callers.
+func defaultRepoDir() (string, error) {
+	cfgDir, err := paths.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(cfgDir, "repo"), nil
+}
 
 // runInit is the once-per-machine first-run setup. It preflights git, then takes
 // one of two starting points:
 //
 //   - Existing: `ferry init <repo-url-or-path>` clones the given repo (over HTTPS
 //     for a remote — no SSH key needed; file:// or a local path is the offline
-//     fast-path) into a working tree and records that clone.
-//   - Fresh:    `ferry init` (no arg) or `ferry init --fresh` initialises a NEW
+//     fast-path) into a working tree under ferry's own space and records that clone.
+//   - Fresh:    `ferry init` (no arg) or `ferry init --fresh [dir]` initialises a NEW
 //     config repo (git init + a minimal ferry.toml) so "capture this machine" works.
+//     With no dir it lands at ferry's neutral default (~/.config/ferry/repo); an
+//     optional positional dir places it elsewhere.
 //
-// It writes ~/.config/ferry/config.toml (hostname + repo path), optionally
-// scaffolds ~/ABCDevelopment (opt-in, confirmed), and ends by showing the apply
-// plan (only mutating when --apply --yes). It never reads or requires ~/.ssh.
+// It writes ~/.config/ferry/config.toml (hostname + repo path) and ends by showing
+// the apply plan (only mutating when --apply --yes). It never reads or requires ~/.ssh.
 func runInit(c *cobra.Command, args []string) error {
 	out := c.OutOrStdout()
 	in := bufio.NewReader(c.InOrStdin())
@@ -58,9 +67,18 @@ func runInit(c *cobra.Command, args []string) error {
 	}
 
 	fresh, _ := c.Flags().GetBool("fresh")
-	source := ""
+	arg := ""
 	if len(args) > 0 {
-		source = strings.TrimSpace(args[0])
+		arg = strings.TrimSpace(args[0])
+	}
+	// With --fresh, a positional arg is an OPTIONAL destination dir for the new repo
+	// (not a clone source). Without --fresh, it is an existing-repo clone source.
+	source := ""
+	freshDir := ""
+	if fresh {
+		freshDir = arg
+	} else {
+		source = arg
 	}
 
 	home, err := os.UserHomeDir()
@@ -71,11 +89,11 @@ func runInit(c *cobra.Command, args []string) error {
 	// 2. Resolve the repo. Priority:
 	//    a. an explicit source argument (clone a URL / wire an existing local clone),
 	//    b. an already-configured repo (config.toml from a prior init or the harness),
-	//    c. otherwise initialise a fresh repo.
+	//    c. otherwise initialise a fresh repo (at the neutral default or an explicit dir).
 	var repoPath string
 	switch {
 	case source != "" && !fresh:
-		repoPath, err = cloneExisting(out, source, home)
+		repoPath, err = cloneExisting(out, source)
 	case !fresh:
 		if existing, ok := existingConfiguredRepo(); ok {
 			// Guard the configured repo path BEFORE runInit reads/writes it via
@@ -86,10 +104,10 @@ func runInit(c *cobra.Command, args []string) error {
 			}
 			fmt.Fprintf(out, "using already-configured config repo at %s\n", repoPath)
 		} else {
-			repoPath, err = initFresh(out, home)
+			repoPath, err = initFresh(out, freshDir)
 		}
 	default:
-		repoPath, err = initFresh(out, home)
+		repoPath, err = initFresh(out, freshDir)
 	}
 	if err != nil {
 		return err
@@ -121,13 +139,7 @@ func runInit(c *cobra.Command, args []string) error {
 		return err
 	}
 
-	// 5. Opt-in dev-tree scaffold. Confirmed before any creation; only missing dirs
-	//    are created; existing content is never touched.
-	if err := maybeScaffold(c, in, out, home); err != nil {
-		return err
-	}
-
-	// 6. End by surfacing the apply plan. By default init is non-mutating: it shows
+	// 5. End by surfacing the apply plan. By default init is non-mutating: it shows
 	//    the plan and stops (safe on a non-tty / empty stdin). It only applies when
 	//    --apply is given (and confirmed, or --yes).
 	if err := finishWithApply(c, in, out); err != nil {
@@ -143,13 +155,13 @@ func runInit(c *cobra.Command, args []string) error {
 //   - A bare local PATH that is ALREADY a git working tree is WIRED directly (its
 //     own path recorded) — "set ferry up against this existing clone". No re-clone.
 //   - An accepted URL (https:// or file://) — or a local path that is not yet a
-//     repo — is CLONED into a fresh working tree under the default location.
-//     Out-of-scope remotes (ssh://, git://, http://, scp-style) are rejected
-//     before this point by checkCloneSource.
+//     repo — is CLONED into a fresh working tree at ferry's neutral default location
+//     (~/.config/ferry/repo). Out-of-scope remotes (ssh://, git://, http://,
+//     scp-style) are rejected before this point by checkCloneSource.
 //
 // Cloning a remote uses whatever scheme git is handed (HTTPS for a public repo), so
 // no SSH key is read or required for an HTTPS/file source.
-func cloneExisting(out io.Writer, source, home string) (string, error) {
+func cloneExisting(out io.Writer, source string) (string, error) {
 	// Enforce the clone contract BEFORE the clone-vs-wire decision so git never
 	// receives a remote outside it: ferry clones over HTTPS only (plus a local
 	// path / file:// for the offline-fresh path) and is hands-off ~/.ssh. An
@@ -173,7 +185,19 @@ func cloneExisting(out io.Writer, source, home string) (string, error) {
 		}
 	}
 
-	dest := filepath.Join(home, filepath.Join(defaultRepoSubpath...))
+	// Clone into ferry's own neutral space (~/.config/ferry/repo), not a personal
+	// $HOME folder taxonomy.
+	dest, err := defaultRepoDir()
+	if err != nil {
+		return "", err
+	}
+
+	// Harden the config dir chain (mirrors HardenStoreDir on the rest of ~/.config/ferry):
+	// a symlinked ~/.config component must refuse before any MkdirAll/git clone writes
+	// a tree through it.
+	if err := hardenConfigDirForRepo(dest); err != nil {
+		return "", err
+	}
 
 	// Guard the clone DESTINATION BEFORE freeCloneDest (which ReadDirs dest and
 	// its siblings): a symlinked destination under ~/.ssh must be refused before
@@ -214,11 +238,36 @@ func cloneExisting(out io.Writer, source, home string) (string, error) {
 // shared manifest (ferry.toml) so scope exists, ignore the per-machine .local
 // layer, and make an initial commit so HEAD is attached and the tree is clean.
 // The result is a real committable working clone "capture this machine" writes into.
-func initFresh(out io.Writer, home string) (string, error) {
-	base := filepath.Join(home, filepath.Join(defaultRepoSubpath...))
+func initFresh(out io.Writer, freshDir string) (string, error) {
+	// Default fresh-repo location is ferry-owned and neutral (~/.config/ferry/repo);
+	// an explicit `ferry init --fresh <dir>` override places it elsewhere.
+	var base string
+	if freshDir != "" {
+		expanded, err := expandUser(freshDir)
+		if err != nil {
+			return "", err
+		}
+		abs, err := filepath.Abs(expanded)
+		if err != nil {
+			return "", fmt.Errorf("resolve fresh repo dir %q: %w", freshDir, err)
+		}
+		base = abs
+	} else {
+		d, err := defaultRepoDir()
+		if err != nil {
+			return "", err
+		}
+		base = d
+		// The default lives under ~/.config/ferry: harden the config-dir chain
+		// (mirrors HardenStoreDir) so a symlinked ~/.config component refuses before
+		// any MkdirAll/git init writes a repo tree through it.
+		if err := hardenConfigDirForRepo(base); err != nil {
+			return "", err
+		}
+	}
 	// Guard the destination BEFORE freeCloneDest (which ReadDirs it) and before
-	// MkdirAll/git init: a symlinked ~/ABCDevelopment -> ~/.ssh must be refused
-	// before ferry reads or writes a repo tree under ~/.ssh.
+	// MkdirAll/git init: a symlinked destination -> ~/.ssh must be refused before
+	// ferry reads or writes a repo tree under ~/.ssh.
 	if _, err := guardRepoPath("fresh repo destination", base); err != nil {
 		return "", err
 	}
@@ -575,44 +624,32 @@ func dirEmptyOrAbsent(path string) bool {
 	return len(entries) == 0
 }
 
-// maybeScaffold confirms (opt-in) then creates the ~/ABCDevelopment dev tree. Only
-// missing dirs are created; existing content is never touched. On a non-tty /
-// empty stdin (and without --scaffold/--yes) it declines, so evals never hang.
-func maybeScaffold(c *cobra.Command, in *bufio.Reader, out io.Writer, home string) error {
-	scaffoldFlag, _ := c.Flags().GetBool("scaffold")
-	yes, _ := c.Flags().GetBool("yes")
+// hardenConfigDirForRepo runs the symlink-hardening walk over a repo path that lives
+// under ferry's config dir (~/.config/ferry/repo). It mirrors the HardenStoreDir
+// guard the rest of ~/.config/ferry goes through: any symlink component from $HOME
+// down to the path (e.g. a symlinked ~/.config) is refused before any MkdirAll /
+// git init / git clone writes a tree through it. Lexical, creates nothing, never
+// touches ~/.ssh. A path NOT under $HOME (e.g. an explicit override in a test temp
+// dir) has no $HOME-anchored chain and is accepted unchanged.
+func hardenConfigDirForRepo(repo string) error {
+	return paths.HardenStoreDir(repo)
+}
 
-	want := scaffoldFlag || yes
-	if !want {
-		// Ask only on an interactive terminal; otherwise default to declining.
-		if stdinIsTerminal() {
-			fmt.Fprint(out, "Create the ~/ABCDevelopment dev tree (Apps/Settings/Skunk/Work)? [y/N]: ")
+// expandUser expands a leading ~ or ~/ in a path to the user's home directory, so
+// `ferry init --fresh ~/somewhere` works when the shell has not already expanded it.
+// A bare "~" maps to $HOME; anything else is returned unchanged.
+func expandUser(p string) (string, error) {
+	if p == "~" || strings.HasPrefix(p, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
 		}
-		want = readYesNo(in, false)
-	}
-	if !want {
-		fmt.Fprintln(out, "skipped dev-tree scaffold (~/ABCDevelopment not created)")
-		return nil
-	}
-
-	root := filepath.Join(home, "ABCDevelopment")
-	// Guard the scaffold base BEFORE any MkdirAll: if ~/ABCDevelopment is a symlink
-	// pointing into ~/.ssh, scaffolding would create dirs UNDER ~/.ssh. The
-	// symlink-aware guard catches that (resolving ~/ABCDevelopment — an ancestor
-	// NOT under ssh — to a path under ~/.ssh) without ever touching ~/.ssh; refuse
-	// the scaffold and create nothing.
-	if err := rejectIfUnderSSH("dev-tree scaffold base", root); err != nil {
-		return err
-	}
-	for _, sub := range []string{"Apps", "Settings", "Skunk", "Work"} {
-		dir := filepath.Join(root, sub)
-		// MkdirAll is a no-op when the dir already exists and never removes content.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("scaffold %s: %w", dir, err)
+		if p == "~" {
+			return home, nil
 		}
+		return filepath.Join(home, p[2:]), nil
 	}
-	fmt.Fprintf(out, "scaffolded dev tree at %s (only missing dirs created)\n", root)
-	return nil
+	return p, nil
 }
 
 // finishWithApply ends init by surfacing what apply would do. By default it shows

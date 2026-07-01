@@ -12,7 +12,7 @@ the work it deliberately does **not** reimplement:
 
 | Prerequisite | Why ferry needs it | When |
 |---|---|---|
-| **macOS** | Terminal configuration (iTerm2, Apple Terminal) uses macOS-native preference mechanisms. The cross-platform core (dotfiles, dependencies, dev-tree, backup/restore) is built for Linux too — **Linux support is coming soon**. | always (Linux: soon) |
+| **macOS** | Terminal configuration (iTerm2, Apple Terminal) uses macOS-native preference mechanisms. The cross-platform core (dotfiles, dependencies, backup/restore) is built for Linux too — **Linux support is coming soon**. | always (Linux: soon) |
 | **`git`** | ferry does not embed git. It shells out to clone your config repo, and you commit/push your captured changes with git yourself. ferry preflights it and tells you how to install it if missing. | `init`, `capture` |
 | **A package manager** (Homebrew on macOS) | Only for installing declared dependencies via `ferry apply --deps`. ferry never installs the package manager for you — it uses whatever is present and tells you if none is. | `apply --deps` only |
 
@@ -56,11 +56,15 @@ cp bin/ferry-$(uname -s | tr A-Z a-z)-* ~/.local/bin/ferry
 ## Fresh: capture this machine
 
 ```bash
-ferry init                # first-run setup; asks before scaffolding ~/ABCDevelopment
+ferry init                # first-run setup; starts a new config repo at ~/.config/ferry/repo
 ferry capture             # review your config; approve each change, route shared/local
 git -C <your-ferry-repo> commit -am "Initial capture"
 git -C <your-ferry-repo> push
 ```
+
+A bare `ferry init` creates the repo at ferry's own default location,
+`~/.config/ferry/repo` — you do not need to pick a path. To place it somewhere
+else, pass a directory: `ferry init --fresh ~/somewhere`.
 
 `ferry capture` is interactive and selective: it shows you each change and lets you
 route it **shared** (synced to every machine) or **local** (this machine only). Things
@@ -72,8 +76,9 @@ never captured.
 ## Existing: set up another machine
 
 Point `ferry init` at your existing ferry repo as a positional argument — an HTTPS URL or
-a local/`file://` path. (A bare `ferry init`, with no source, takes the **Fresh** path
-above and sets up a new repo.)
+a local/`file://` path. ferry clones it into its own space (`~/.config/ferry/repo` by
+default), then writes ferry's config. (A bare `ferry init`, with no source, takes the
+**Fresh** path above and sets up a new repo at the same default location.)
 
 ```bash
 ferry init https://github.com/REPPL/ferry.git   # clone your ferry repo over HTTPS, write ferry's config

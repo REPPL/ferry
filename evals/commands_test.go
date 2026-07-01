@@ -98,11 +98,10 @@ type helpExpect struct {
 }
 
 var helpExpectations = []helpExpect{
-	// AC-cmd-init: locate/clone repo, write config, optionally scaffold dev tree.
+	// AC-cmd-init: locate/clone repo into ferry's own space, write config.
 	{"init", "AC-cmd-init", [][]string{
 		{"clone", "repo", "config repo"},
 		{"config", "ferry's config"},
-		{"scaffold", "dev directory", "dev tree", "directory tree"},
 	}},
 	// AC-cmd-apply: reconcile machine to repo, deploy dotfiles/terminal settings.
 	{"apply", "AC-cmd-apply", [][]string{

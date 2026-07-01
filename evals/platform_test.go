@@ -37,6 +37,6 @@ func TestPlatformLinuxCore_AC_platform_linux_core(t *testing.T) {
 	t.Skip("AC-platform-linux-core: NON-GATING documentation-traceability note. " +
 		"Docs defer Linux availability (\"Linux coming soon\"); Linux behaviour is OUT OF SCOPE for " +
 		"live verification this run. When Linux ships, a Linux host should run the documented core " +
-		"happy path (dotfiles, deps via present PM, dev-tree scaffold, backup→restore) under the same " +
+		"happy path (dotfiles, deps via present PM, backup→restore) under the same " +
 		"behavioral ACs. No assertion is made against the binary here.")
 }

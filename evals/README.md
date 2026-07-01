@@ -114,7 +114,7 @@ as a soft signal, never a failure), per the round-3 demotion in `ACCEPTANCE.md`.
 | `restore_test.go` | restore-clean, backup-before-change (round-trip) |
 | `safety_test.go` | ssh-untouched, ssh-not-read (level-1 floor + enforced fs_usage no-open where usable, else capability-skip), doctor-ssh-readonly (specific flag + correct-perms-not-flagged + tripwire), noadmin (no-sudo + succeeds-without-root), no-shell-edit, no-admin-system-locations |
 | `locations_test.go` | loc-config-toml (identity + repo-path), apply-tracks-last-written (observable only), loc-dotfiles-copied-not-symlinked, loc-ferry-local-toml-gitignored, **loc-ferry-toml-in-repo**, **loc-local-overlay-dir**, **loc-local-materialised**, effective-scope-overlay |
-| `init_test.go` | init-fresh, init-clone-https (https-scheme accepted + no-SSH-key), init-scaffold-optin, **git-preflight** |
+| `init_test.go` | init-fresh (default `~/.config/ferry/repo` + `--fresh <dir>` override), init-clone-https (https-scheme accepted + no-SSH-key), **git-preflight** |
 | `doctor_test.go` | doctor-reports-host-tools (healthy-vs-missing status) |
 | `terminal_test.go` | terminal-config (iTerm2 + Apple Terminal; native-pref-domain vs file-copy differential; macOS-only) |
 | `platform_test.go` | platform-macos (gating on darwin), platform-linux-core (non-gating doc note) |

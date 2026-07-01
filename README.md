@@ -21,8 +21,8 @@
 configuration once in a git repo; `ferry` reconciles any machine to match it, and
 pulls local changes back when you want to harmonise them everywhere.
 
-> **macOS today. Linux coming soon** — the core (dotfiles, dependencies, dev-tree
-> scaffolding, backup/restore) is cross-platform; Linux terminal-emulator support is in
+> **macOS today. Linux coming soon** — the core (dotfiles, dependencies,
+> backup/restore) is cross-platform; Linux terminal-emulator support is in
 > progress.
 
 ## Documentation
@@ -49,12 +49,12 @@ installer prints the one line to add. It does not install Homebrew or run anythi
 
 ```bash
 # On a machine whose setup you want to capture:
-ferry init            # first-run setup; optionally scaffold your dev tree
+ferry init            # first-run setup; starts a config repo at ~/.config/ferry/repo
 ferry capture         # review local config and pull it into the repo
 git -C <repo> push    # share it
 
 # On another machine:
-ferry init            # clone the repo, set this machine up
+ferry init <repo-url> # clone your config repo over HTTPS, set this machine up
 ferry apply           # reconcile this machine to the repo
 ```
 
@@ -64,7 +64,7 @@ See [Getting started](docs/getting-started.md) for the full happy path.
 
 | Command | What it does |
 |---|---|
-| `ferry init` | First-run setup: locate/clone the config repo, write ferry's config, optionally scaffold your dev directory tree. |
+| `ferry init` | First-run setup: locate/clone the config repo into ferry's own space (`~/.config/ferry/repo` by default), write ferry's config. |
 | `ferry apply` | Reconcile this machine to the repo (deploy dotfiles, terminal settings). Idempotent; safe to re-run. Dependencies install behind `apply --deps`. |
 | `ferry capture` | Pull local changes back into the repo. Interactive: approve each change, route it *shared* (synced everywhere) or *local* (this machine only). |
 | `ferry status` | Report config drift (what changed on this machine). |

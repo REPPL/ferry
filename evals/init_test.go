@@ -1,7 +1,8 @@
 package evals
 
-// init-behaviour ACs: the Fresh path (new repo), the Existing path (HTTPS clone
-// contract), and opt-in dev-tree scaffolding.
+// init-behaviour ACs: the Fresh path (new repo at ferry's neutral default
+// ~/.config/ferry/repo, plus a --fresh <dir> override) and the Existing path
+// (HTTPS clone contract).
 
 import (
 	"os"
@@ -13,14 +14,12 @@ import (
 )
 
 // TestInitFresh covers AC-init-fresh: `ferry init` supports the FRESH path — on a
-// machine with NO pre-existing ferry repo and NO clone URL, init initialises/wires
-// up a new ferry config repo so "Fresh: capture this machine" works. A clone-only
-// implementation (that can only clone an existing remote) MUST NOT pass.
-//
-// TODO(contract): the exact non-interactive fresh-path invocation/keystrokes are
-// not doc-pinned (init "asks before scaffolding"). We feed empty stdin and provide
-// no clone URL, so init must take the fresh path. If a flag is required, this test
-// surfaces it as a real failure once the binary lands.
+// machine with NO pre-existing ferry repo and NO clone URL, a bare `ferry init`
+// initialises a new ferry config repo AT FERRY'S NEUTRAL DEFAULT LOCATION
+// (~/.config/ferry/repo — no personal folder taxonomy, no path prompt) so "Fresh:
+// capture this machine" works. A clone-only implementation (that can only clone an
+// existing remote) MUST NOT pass. It also asserts that `ferry init --fresh <dir>`
+// honours an explicit destination dir.
 func TestInitFresh_AC_init_fresh(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -43,6 +42,13 @@ func TestInitFresh_AC_init_fresh(t *testing.T) {
 	repoPath := extractRepoPath(string(cfgData))
 	if repoPath == "" {
 		t.Fatalf("AC-init-fresh: config.toml does not record a usable repo path\n%s", cfgData)
+	}
+
+	// DEFAULT LOCATION: a bare fresh init must land the repo at ferry's own neutral
+	// space, ~/.config/ferry/repo — NOT a personal $HOME folder taxonomy.
+	wantDefault := s.HomePath(".config", "ferry", "repo")
+	if !sameDir(repoPath, wantDefault) {
+		t.Errorf("AC-init-fresh: bare `ferry init` recorded repo %q; expected ferry's neutral default %q", repoPath, wantDefault)
 	}
 
 	// (a) a usable ferry config repo exists on disk (git recognises it) AND it is a
@@ -81,6 +87,25 @@ func TestInitFresh_AC_init_fresh(t *testing.T) {
 	commitOut, commitErr := runGitIn(repoPath, "commit", "-m", "Initial capture")
 	if commitErr != nil {
 		t.Errorf("AC-init-fresh: `git commit` failed in fresh repo (not a committable working clone?): %v\n%s", commitErr, commitOut)
+	}
+
+	// OVERRIDE: `ferry init --fresh <dir>` must honour an explicit destination dir
+	// (instead of the neutral default). A separate sandbox so config.toml is fresh.
+	sDir := NewSandbox(t)
+	custom := sDir.HomePath("custom-ferry-repo")
+	if _, errOut, code := sDir.FerryWithInput("", "init", "--fresh", custom); code != 0 {
+		t.Fatalf("AC-init-fresh: `ferry init --fresh <dir>` exited %d (must complete successfully)\n%s", code, errOut)
+	}
+	cfg2, err := os.ReadFile(sDir.ConfigTOMLPath())
+	if err != nil {
+		t.Fatalf("AC-init-fresh: config.toml not written by `--fresh <dir>` init: %v", err)
+	}
+	repo2 := extractRepoPath(string(cfg2))
+	if !sameDir(repo2, custom) {
+		t.Errorf("AC-init-fresh: `--fresh %s` recorded repo %q; expected the explicit dir %q", custom, repo2, custom)
+	}
+	if out, err := exec.Command("git", "-C", repo2, "rev-parse", "--git-dir").CombinedOutput(); err != nil {
+		t.Errorf("AC-init-fresh: repo at explicit `--fresh` dir %q is not a usable git repo: %v\n%s", repo2, err, out)
 	}
 }
 
@@ -281,47 +306,6 @@ func TestGitPreflight_AC_git_preflight(t *testing.T) {
 				t.Errorf("AC-git-preflight: `ferry %s` failed but gave no actionable git-install guidance\n%s", cmd, combined)
 			}
 		})
-	}
-}
-
-// TestInitScaffoldOptin covers AC-init-scaffold-optin: init does NOT create the dev
-// tree unless the user opts in; declining leaves ~/ABCDevelopment uncreated. When
-// confirmed, the tree is created at the documented ~/ABCDevelopment and only if
-// missing (never touching existing content).
-//
-// TODO(contract): the scaffold prompt's exact decline/accept tokens are not
-// doc-pinned. We model decline as empty stdin (EOF) and accept as "y\n".
-func TestInitScaffoldOptin_AC_init_scaffold_optin(t *testing.T) {
-	t.Parallel()
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not on PATH: init needs git")
-	}
-
-	// Decline branch: init must COMPLETE successfully (exit 0) AND create no
-	// scaffold. A FAILING init that happens to create no scaffold must NOT count as
-	// a clean decline. We run init against the seeded repo (existing path) so the
-	// setup can complete; the "n" answer declines the scaffold prompt.
-	sNo := NewSandbox(t)
-	sNo.InitGitRepo(t)
-	sNo.WriteRepoFile(t, "ferry.toml", baseManifest)
-	scaffoldNo := sNo.HomePath("ABCDevelopment")
-	declineTW := sNo.SnapshotFile(t, scaffoldNo) // absent
-	if _, errOut, code := sNo.FerryWithInput("n\n", "init", sNo.Repo); code != 0 {
-		t.Fatalf("AC-init-scaffold-optin: declined `ferry init` exited %d (must complete successfully)\n%s", code, errOut)
-	}
-	declineTW.AssertUnchanged(t) // still absent: scaffold is opt-in, decline made none
-
-	// Opt-in branch: init must COMPLETE successfully (exit 0) AND create the tree at
-	// ~/ABCDevelopment. A failing init that still created the dir must NOT pass.
-	sYes := NewSandbox(t)
-	sYes.InitGitRepo(t)
-	sYes.WriteRepoFile(t, "ferry.toml", baseManifest)
-	if _, errOut, code := sYes.FerryWithInput("y\ny\n", "init", sYes.Repo); code != 0 {
-		t.Fatalf("AC-init-scaffold-optin: opt-in `ferry init` exited %d (must complete successfully)\n%s", code, errOut)
-	}
-	scaffoldYes := sYes.HomePath("ABCDevelopment")
-	if info, err := os.Stat(scaffoldYes); err != nil || !info.IsDir() {
-		t.Errorf("AC-init-scaffold-optin: opt-in did not create the documented dev tree at %s (err=%v)", scaffoldYes, err)
 	}
 }
 
