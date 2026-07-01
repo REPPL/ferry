@@ -764,7 +764,18 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 					fmt.Fprintf(out, "  %-22s CONFLICT: uncaptured local edits; not overwritten (run `ferry capture`, or `ferry apply --force`)\n", it.domain)
 					continue
 				}
+				// The empty-over-substantial data-loss guard: a default apply refuses
+				// to zero a substantial live file with an empty/near-empty repo source.
+				// This is a hard abort (not a skip) so the run rolls back and exits
+				// non-zero; the error names the file and both sides of the hazard.
 				return err
+			}
+			// --force pushed an empty/near-empty repo source OVER a substantial live
+			// file. The overwrite proceeded (documented force semantics), but WARN,
+			// naming the file and both sides of the hazard — silently zeroing a real
+			// config must never be quiet.
+			if res.ForcedEmptyOverSubstantial {
+				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
 			}
 			deferred = append(deferred, res)
 			it.action = string(res.Action)

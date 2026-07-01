@@ -286,23 +286,43 @@ func initFresh(out io.Writer, freshDir string) (string, error) {
 		return "", fmt.Errorf("git init %s failed: %w\n%s", dest, err, out2)
 	}
 
-	// Minimal shared manifest so a scope exists from the first capture. We declare
-	// the shell dotfile (.zshrc) as the common starting target so "capture this
-	// machine" has something in scope; the user edits ferry.toml to add/remove more.
+	// ADOPT the existing ~/.zshrc (the confirmed-incident fix). Read the user's
+	// real shell rc BEFORE writing the manifest, so the Fresh flow's scope tracks
+	// what actually got seeded:
+	//   - ~/.zshrc exists with content  -> seed dotfiles/zshrc with THOSE bytes and
+	//     declare .zshrc in scope. A subsequent apply then sees repo == live (a
+	//     StateClean adoption) and is a NO-OP — never a wipe.
+	//   - ~/.zshrc absent (or empty)    -> seed NO deployable source and DO NOT
+	//     declare .zshrc. There is no managed source, so a later apply can never
+	//     deploy an empty file over a real ~/.zshrc the user creates afterward.
+	// This never seeds a deployable EMPTY source (the empty-seed data-loss bug).
+	adoptedZshrc, haveZshrc := readExistingZshrc()
+
+	// Minimal shared manifest so a scope exists from the first capture. .zshrc is
+	// the common starting target, so the Fresh "capture this machine" flow has
+	// something in scope to route into the repo; the user edits ferry.toml to
+	// add/remove more. Declaring it in scope is SAFE even with no repo source: a
+	// declared dotfile with no source on disk is simply skipped by apply (nothing
+	// to materialise), so it never deploys an empty file over a real one.
 	manifest := "[manage]\ndotfiles = [\".zshrc\"]\n"
 	if err := os.WriteFile(filepath.Join(dest, config.SharedManifestName), []byte(manifest), 0o644); err != nil {
 		return "", fmt.Errorf("write %s: %w", config.SharedManifestName, err)
 	}
 
-	// Seed an empty repo source for each declared dotfile so the Fresh flow has a
-	// managed target to capture INTO: apply adopts the live file (backing it up),
-	// then `ferry capture` routes the user's real content into this source. Without
-	// a source on disk, capture has nothing to compare against and offers nothing.
-	if err := os.MkdirAll(filepath.Join(dest, dotfile.RepoSubdir), 0o755); err != nil {
-		return "", fmt.Errorf("create dotfiles dir: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(dest, dotfile.RepoSubdir, "zshrc"), []byte(""), 0o644); err != nil {
-		return "", fmt.Errorf("seed dotfile source: %w", err)
+	// Seed the repo source ONLY when we adopted real content from an existing
+	// ~/.zshrc: the Fresh flow then has a managed target that already matches the
+	// live file (apply is a no-op), and `ferry capture` has a base to diff future
+	// edits against. With NO existing ~/.zshrc we deliberately seed NOTHING
+	// deployable — never an empty source that a later apply would zero a real file
+	// with (the confirmed data-loss bug). The dotfile stays declared in scope; apply
+	// skips it until a source exists, and capture is the path that first fills it.
+	if haveZshrc {
+		if err := os.MkdirAll(filepath.Join(dest, dotfile.RepoSubdir), 0o755); err != nil {
+			return "", fmt.Errorf("create dotfiles dir: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(dest, dotfile.RepoSubdir, "zshrc"), adoptedZshrc, 0o644); err != nil {
+			return "", fmt.Errorf("seed dotfile source: %w", err)
+		}
 	}
 
 	// Ignore the per-machine .local layer (ferry.local.toml + local/) so capture's
@@ -322,6 +342,58 @@ func initFresh(out io.Writer, freshDir string) (string, error) {
 		}
 	}
 	return dest, nil
+}
+
+// readExistingZshrc reads the user's real ~/.zshrc for the Fresh-init adoption,
+// returning its bytes and ok=true ONLY when it is present AND carries real
+// content. It returns ok=false (adopt nothing) when the file is absent, empty,
+// unreadable, or unsafe to read:
+//   - A regular ~/.zshrc is read directly.
+//   - A SYMLINKED ~/.zshrc is refused outright (ok=false) — never resolved. Its
+//     target could point into ~/.ssh, and resolving it (EvalSymlinks / Stat) would
+//     traverse that target, violating ferry's absolute "never touch ~/.ssh"
+//     contract. Declining to adopt leaves the real file untouched, which is safe.
+//   - A directory / device / other non-regular kind is refused.
+//
+// An absent or empty rc is the "no deployable seed" path; a substantial rc is the
+// content the repo adopts so the first apply is a no-op, not a wipe.
+func readExistingZshrc() ([]byte, bool) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false
+	}
+	path := filepath.Join(home, ".zshrc")
+
+	li, err := os.Lstat(path)
+	if err != nil {
+		return nil, false // absent (or unreadable) -> adopt nothing.
+	}
+	if li.Mode()&os.ModeSymlink != 0 {
+		// A symlinked ~/.zshrc: adopt NOTHING. We must never resolve an untrusted
+		// home symlink, because its target could point INTO ~/.ssh and any
+		// resolution (EvalSymlinks / Stat-through-symlink) would stat/traverse that
+		// target — violating ferry's absolute "never touch ~/.ssh" contract.
+		// Adoption is a best-effort convenience; declining here leaves the user's
+		// real file 100% untouched (init seeds no source; the defect-B empty-over
+		// guard still prevents apply from deploying an empty over it), so refusing
+		// is strictly safe. We deliberately do not os.Readlink either — there is no
+		// need to read the target at all.
+		return nil, false
+	} else if !li.Mode().IsRegular() {
+		return nil, false // a directory/device/etc. is not adoptable content.
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	if dotfile.IsNearEmpty(data) {
+		// Empty, whitespace-only, or comments-only -> nothing worth managing. Uses
+		// the SAME near-empty definition as the apply data-loss guard so init-adopt
+		// and the guard agree on what counts as substantial content.
+		return nil, false
+	}
+	return data, true
 }
 
 // checkCloneSource enforces ferry's clone contract on a source argument. It

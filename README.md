@@ -87,7 +87,9 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 - **Reversible**: every change is backed up first; `ferry restore` returns your managed
   files and terminal settings to their pre-ferry state. It keeps ferry's own backup store
   so the restore is itself reversible; `ferry restore --purge-without-recovery`
-  additionally removes that store (irreversible).
+  additionally removes that store (irreversible). A fresh `ferry init` adopts your
+  existing `~/.zshrc`, and `apply` refuses to replace a substantial file with an empty or
+  blank one without `--force`, so your config is never silently erased.
 - **No admin assumed**: ferry installs to `~/.local/bin` and never requires `sudo` or
   root, so it works on any account, including locked-down or managed machines. It never
   edits your shell on its own.

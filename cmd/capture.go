@@ -492,9 +492,15 @@ func captureBlocked(cc captureCtx, bare string) (bool, error) {
 // the loop; behaviour for the shared file is unchanged.
 func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 	src, ok := resolveCaptureSource(cc.repoPath, cc.name)
+	firstCapture := false
 	if !ok {
-		// No repo source on disk: there is no managed output to compare against.
-		return false, false, nil
+		// No repo source on disk yet (the Fresh "capture this machine" flow: init
+		// declared .zshrc in scope but seeded NO deployable source, so it could
+		// never zero a real file). This is the FIRST capture: the repo side is an
+		// empty base and the whole live file is the candidate. Target the canonical
+		// dotfiles/<bare> path the shared write will create.
+		src = filepath.Join(cc.repoPath, dotfile.RepoSubdir, strings.TrimPrefix(cc.name, "."))
+		firstCapture = true
 	}
 	// Guard the repo source against a symlink that escapes the repo / points under
 	// ~/.ssh BEFORE reading it: os.ReadFile follows symlinks, so without this a
@@ -506,9 +512,12 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 	t := cc.target
 	t.Repo = src
 
-	repoBytes, err := os.ReadFile(src)
-	if err != nil {
-		return false, false, err
+	var repoBytes []byte
+	if !firstCapture {
+		repoBytes, err = os.ReadFile(src)
+		if err != nil {
+			return false, false, err
+		}
 	}
 
 	// EFFECTIVE shared content: for an include-style zsh dotfile with a local
@@ -521,20 +530,25 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 	// apply/status compute so only GENUINE user edits (beyond the managed include
 	// line) are offered. Non-zsh dotfiles use the raw source unchanged.
 	bare := strings.TrimPrefix(cc.name, ".")
-	if isZsh(bare) {
+	if isZsh(bare) && !firstCapture {
 		_, hasOverlay := resolveOverlaySource(cc.repoPath, bare)
 		repoBytes = effectiveZshShared(repoBytes, bare, hasOverlay)
 	}
 
-	// Detect drift: only a locally-drifted/conflict target is a capture candidate.
+	// Detect drift: a locally-drifted/conflict target is a capture candidate.
 	// Classify against the effective bytes (ClassifyContent), not the raw repo
-	// source, so ferry's managed include line is never seen as drift.
+	// source, so ferry's managed include line is never seen as drift. The
+	// FIRST-capture case (no repo source yet, live file present) is also a
+	// candidate: the whole live file is offered against the empty base, so the
+	// Fresh "capture this machine" flow can seed the repo from a live dotfile.
 	st, err := dotfile.ClassifyContent(t, repoBytes, cc.lastApplied)
 	if err != nil {
 		return false, false, err
 	}
-	if st.State != dotfile.StateLocallyDrifted && st.State != dotfile.StateConflict {
-		return false, false, nil
+	if !firstCapture {
+		if st.State != dotfile.StateLocallyDrifted && st.State != dotfile.StateConflict {
+			return false, false, nil
+		}
 	}
 	if !st.LiveExists {
 		return false, false, nil

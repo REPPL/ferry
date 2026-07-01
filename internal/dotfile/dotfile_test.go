@@ -1155,3 +1155,194 @@ func snapshotDirs(t *testing.T, dirs ...string) []string {
 	sort.Strings(names)
 	return names
 }
+
+// --- significantBytes / near-empty comment & BOM handling ---
+
+const bom = "\uFEFF" // UTF-8 byte-order mark (0xEF 0xBB 0xBF)
+
+// significantBytes must score comment-only and BOM-only content as 0 so the
+// empty-over-substantial guard fires: ';'-style (gitconfig/ini) comments, '#'
+// (shell/rc) comments, a leading UTF-8 BOM, and combinations all carry no
+// significant bytes. A real config with body content scores > 0.
+func TestSignificantBytesCommentsAndBOM(t *testing.T) {
+	zero := []struct {
+		name    string
+		content string
+	}{
+		{"semicolon-only gitconfig", "; a comment\n;another\n"},
+		{"hash-only rc", "# a comment\n#another\n"},
+		{"bom only", bom},
+		{"bom plus hash comment", bom + "# just a comment\n"},
+		{"bom plus semicolon comment", bom + "; just a comment\n"},
+		{"mixed comments and blanks", "  \n; git style\n\t# shell style\n   \n"},
+		{"indented comment markers", "   ;indented\n\t#indented\n"},
+	}
+	for _, tc := range zero {
+		if got := significantBytes([]byte(tc.content)); got != 0 {
+			t.Errorf("significantBytes(%s) = %d, want 0", tc.name, got)
+		}
+		if !isNearEmpty([]byte(tc.content)) {
+			t.Errorf("isNearEmpty(%s) = false, want true", tc.name)
+		}
+	}
+
+	// A real config scores > 0. Mid-line ';' and '#' are NOT comments and count.
+	nonzero := []struct {
+		name    string
+		content string
+	}{
+		{"real gitconfig", "[user]\n\tname = real\n\temail = x@y.z\n"},
+		{"mid-line semicolon counts", "value = 1 ; trailing note\n"},
+		{"mid-line hash counts", "export PATH=/x#y\n"},
+		{"bom then real body", bom + "[core]\n\tpager = less\n"},
+	}
+	for _, tc := range nonzero {
+		if got := significantBytes([]byte(tc.content)); got <= 0 {
+			t.Errorf("significantBytes(%s) = %d, want > 0", tc.name, got)
+		}
+		if isNearEmpty([]byte(tc.content)) {
+			t.Errorf("isNearEmpty(%s) = true, want false", tc.name)
+		}
+	}
+}
+
+// A ';'-comment-only repo source (valid but semantically-empty gitconfig) must
+// NOT overwrite a substantial live file without --force: the empty-over-
+// substantial guard fires and apply refuses, leaving the real file untouched.
+func TestApplyRefusesSemicolonCommentOnlyOverSubstantial(t *testing.T) {
+	h := newHarness(t)
+	// Repo source: only ';'-style comments -> near-empty.
+	h.writeRepo("gitconfig", "; managed by ferry\n; nothing here yet\n")
+	tgt := h.target("gitconfig")
+	// Live file: a substantial real gitconfig (>= substantialThreshold bytes).
+	const live = "[user]\n\tname = Real Person\n\temail = real@example.com\n[core]\n\tpager = less\n"
+	h.writeHome("gitconfig", live)
+
+	res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+	var eErr *EmptyOverSubstantialError
+	if !errors.As(err, &eErr) {
+		t.Fatalf("want EmptyOverSubstantialError, got err=%v res=%+v", err, res)
+	}
+	// The real file must be untouched.
+	if got := h.readHome("gitconfig"); got != live {
+		t.Fatalf("live file was modified: %q", got)
+	}
+	// Nothing was written/backed up.
+	if len(h.b.backups) != 0 || len(h.b.absent) != 0 {
+		t.Fatalf("guard should refuse before any write: backups=%v absent=%v", h.b.backups, h.b.absent)
+	}
+}
+
+// injectedZshShared is the EFFECTIVE zsh shared content apply STAGES when the
+// shared repo source is empty/comment-only AND a per-machine overlay exists: the
+// (near-empty) shared body plus ferry's injected `source ~/.zshrc.local` include.
+// It MUST match cmd/apply.go appendSourceDirective's output byte-for-byte — that
+// injected directive is precisely what previously smuggled an empty shared source
+// past the guard (isNearEmpty saw the non-comment `source` line and stood down).
+func injectedZshShared(sharedBody string) string {
+	body := sharedBody
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		body += "\n"
+	}
+	return body + "\n" + ferryOverlayMarker + "\n" +
+		"[ -f ~/.zshrc.local ] && source ~/.zshrc.local\n"
+}
+
+// TestApplyRefusesEmptyOverSubstantialViaInjectedOverlay is the regression test
+// for the empty-over-substantial OVERLAY BYPASS: for the zsh include path, apply
+// stages the shared source WITH ferry's injected `source ~/.zshrc.local`
+// directive. When the shared source is empty/comment-only, that injected line is
+// the ONLY non-comment content — so a naive isNearEmpty(staged) reads FALSE and
+// the guard wrongly stands down, letting a default apply zero a substantial live
+// ~/.zshrc with ferry's ~2-line stub. The guard must judge near-emptiness on the
+// USER's real source (ferry's directive stripped first) and REFUSE without --force.
+func TestApplyRefusesEmptyOverSubstantialViaInjectedOverlay(t *testing.T) {
+	const substantialLive = "export EDITOR=vim\nexport PATH=$HOME/bin:$PATH\nalias ll='ls -lah'\nalias gs='git status'\nsetopt AUTO_CD\n"
+
+	for _, tc := range []struct {
+		name   string
+		shared string // raw shared repo source (empty / comment-only)
+	}{
+		{"empty shared", ""},
+		{"comment-only shared", "# managed by ferry\n# nothing here yet\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			// The repo source apply reads is the STAGED effective content (shared body
+			// + ferry's injected overlay directive) — reproduce it exactly.
+			h.writeRepo("zshrc", injectedZshShared(tc.shared))
+			tgt := h.target("zshrc")
+			h.writeHome("zshrc", substantialLive)
+
+			// Default apply (no --force) must REFUSE: the user's real shared source is
+			// near-empty once ferry's own directive is excluded.
+			res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+			var eErr *EmptyOverSubstantialError
+			if !errors.As(err, &eErr) {
+				t.Fatalf("want EmptyOverSubstantialError (overlay bypass must be closed), got err=%v res=%+v", err, res)
+			}
+			if got := h.readHome("zshrc"); got != substantialLive {
+				t.Fatalf("live ~/.zshrc was modified by a refused apply: %q", got)
+			}
+			if len(h.b.backups) != 0 || len(h.b.absent) != 0 {
+				t.Fatalf("guard should refuse before any write: backups=%v absent=%v", h.b.backups, h.b.absent)
+			}
+
+			// --force proceeds and flags the hazard so the caller warns.
+			res, err = Apply(tgt, h.store, h.b, true /*force*/, false)
+			if err != nil {
+				t.Fatalf("--force should proceed, got err=%v", err)
+			}
+			if !res.ForcedEmptyOverSubstantial || res.ForcedPath != tgt.Home {
+				t.Fatalf("--force must flag the empty-over-substantial hazard: res=%+v", res)
+			}
+		})
+	}
+}
+
+// TestGuardDoesNotFalseFireOnRealSourceWithOverlay proves the fix does not
+// over-strip: a shared source with REAL user content PLUS ferry's injected overlay
+// directive is NOT near-empty, so the guard must NOT fire and a normal deploy
+// proceeds. Only ferry's exact generated block is excluded; the user's real lines
+// remain and keep the source substantial.
+func TestGuardDoesNotFalseFireOnRealSourceWithOverlay(t *testing.T) {
+	h := newHarness(t)
+	const realShared = "export EDITOR=vim\nexport PATH=$HOME/bin:$PATH\nalias ll='ls -lah'\nsetopt AUTO_CD\n"
+	h.writeRepo("zshrc", injectedZshShared(realShared))
+	tgt := h.target("zshrc")
+	h.writeHome("zshrc", "export OLD=1\nexport PATH=$HOME/old:$PATH\nalias x='echo old'\nsetopt SHARE_HISTORY\n")
+
+	res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+	if err != nil {
+		t.Fatalf("guard false-fired on a real-content shared source: err=%v", err)
+	}
+	if res.Action != ActionUpdated {
+		t.Fatalf("expected a normal update deploy, got action=%q res=%+v", res.Action, res)
+	}
+	if res.ForcedEmptyOverSubstantial {
+		t.Fatalf("guard must not flag a real-content source as empty-over-substantial")
+	}
+}
+
+// TestStripFerryOverlayDirectivePrecision pins the stripper to ferry's EXACT
+// generated block and nothing else: it removes the marker + the following
+// `[ -f ~/… ] && source ~/…` include, but leaves a user-authored `source` line
+// (or the marker without ferry's include shape) intact so real content can never
+// be hidden to defeat the guard.
+func TestStripFerryOverlayDirectivePrecision(t *testing.T) {
+	// User's own `source` line (not ferry's `[ -f ~/… ] && source ~/…` shape) is kept.
+	userSource := "source ~/.my-extra-config\n"
+	if got := stripFerryOverlayDirective([]byte(userSource)); string(got) != userSource {
+		t.Errorf("stripped a user-authored source line: %q", got)
+	}
+	// The marker alone, with a non-ferry-shaped next line, keeps that next line.
+	markerThenUser := ferryOverlayMarker + "\nsource ~/.my-extra-config\n"
+	if got := stripFerryOverlayDirective([]byte(markerThenUser)); string(got) != "source ~/.my-extra-config\n" {
+		t.Errorf("marker-strip removed a following user line it must keep: %q", got)
+	}
+	// Ferry's full injected block collapses to empty (near-empty after strip).
+	injected := "\n" + ferryOverlayMarker + "\n[ -f ~/.zshrc.local ] && source ~/.zshrc.local\n"
+	if got := stripFerryOverlayDirective([]byte(injected)); !isNearEmpty(got) {
+		t.Errorf("ferry's own injected block should strip to near-empty, got %q", got)
+	}
+}

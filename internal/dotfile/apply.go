@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Action is what Apply did (or, in dry-run, would do) for one target.
@@ -42,6 +43,13 @@ type Result struct {
 	Action Action // what apply did
 
 	PendingHash string // last-applied hash to commit post-journal (ApplyDeferred only)
+
+	// ForcedEmptyOverSubstantial is set when --force pushed an empty/near-empty
+	// repo source OVER a substantial existing live file (the data-loss transition
+	// the guard normally refuses). The caller MUST surface a warning naming the
+	// file and both sides of the hazard; ForcedPath carries the erased path.
+	ForcedEmptyOverSubstantial bool
+	ForcedPath                 string
 }
 
 // ConflictError is returned by Apply when it refuses to overwrite. It carries
@@ -54,6 +62,74 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("dotfile: %q has a conflict (state %s); run capture, or apply --force",
 		e.Result.Target.Name, e.Result.State)
 }
+
+// substantialThreshold is the number of SIGNIFICANT bytes (non-whitespace,
+// non-comment) at or above which an existing live file counts as "substantial"
+// for the empty-over-substantial data-loss guard. A realistic ~/.zshrc (dozens
+// of alias/export lines) is far above this; a blank, whitespace-only, or
+// comments-only file is at zero. 64 bytes ≈ several real config lines — enough to
+// clearly separate a meaningful config from a placeholder.
+const substantialThreshold = 64
+
+// EmptyOverSubstantialError is returned by Apply when, WITHOUT --force, it would
+// replace a SUBSTANTIAL existing live file with an EMPTY or near-empty (blank /
+// whitespace-only / comments-only) repo source. This is the confirmed data-loss
+// transition (a fresh init's empty seed zeroing a real ~/.zshrc); apply refuses
+// it and writes nothing, leaving the live file byte-, mode-, and mtime-identical.
+// The message names the file and BOTH sides of the hazard so the refusal is
+// user-honest, and points at the escape hatches (--force / capture).
+type EmptyOverSubstantialError struct {
+	Result   Result
+	Path     string // the live home path that would be erased
+	LiveSize int    // significant-byte count of the live file
+}
+
+func (e *EmptyOverSubstantialError) Error() string {
+	return fmt.Sprintf(
+		"refusing to replace %s (a substantial existing file, ~%d bytes of real content) with an empty/blank repo source — this would erase your config. Re-run with --force to overwrite anyway, or run `ferry capture` first to save the current file into the repo",
+		e.Path, e.LiveSize)
+}
+
+// significantBytes counts the bytes of content that are NOT whitespace and NOT
+// part of a comment line (a line whose first non-whitespace rune is '#' or ';').
+// It is the metric behind "near-empty" (repo source) and "substantial" (live
+// file): a blank, whitespace-only, or comments-only file scores 0; a real config
+// scores its meaningful body size. Both '#' and ';' are treated as leading
+// comment markers so the metric covers shells/rc files (# comments) AND
+// gitconfig/ini files (; comments). A leading UTF-8 BOM is stripped before
+// counting so a BOM-only or BOM+comment file still scores 0. A line that merely
+// contains a '#' or ';' mid-content still counts (only a leading marker is a
+// comment).
+func significantBytes(content []byte) int {
+	// Strip a leading UTF-8 BOM (0xEF 0xBB 0xBF) so it doesn't mask an otherwise
+	// empty/comment-only file as significant.
+	s := strings.TrimPrefix(string(content), "\uFEFF")
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		n += len(trimmed)
+	}
+	return n
+}
+
+// isNearEmpty reports whether content is empty, whitespace-only, or comments-only
+// — i.e. carries no significant bytes. This is the "empty/near-empty repo source"
+// side of the data-loss guard.
+func isNearEmpty(content []byte) bool { return significantBytes(content) == 0 }
+
+// IsNearEmpty reports whether content carries no significant bytes (empty,
+// whitespace-only, or comments-only — treating a line beginning with '#' or ';'
+// as a comment, after stripping a leading BOM). It is the exported form of the
+// data-loss guard's near-empty metric so callers outside this package (e.g. init's
+// adopt-existing-dotfile check) share ONE definition of "nothing worth managing".
+func IsNearEmpty(content []byte) bool { return isNearEmpty(content) }
+
+// isSubstantial reports whether content carries at least substantialThreshold
+// significant bytes — the "substantial live file" side of the guard.
+func isSubstantial(content []byte) bool { return significantBytes(content) >= substantialThreshold }
 
 // Apply materializes one target from the repo onto the home destination,
 // honouring the three-way state. It writes ONLY through the Backuper, so any
@@ -124,6 +200,11 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 		// force is set — then reset the drifted target to the repo/last-applied
 		// content (backed up first), honouring "--force overwrites local edits".
 		if force {
+			// Data-loss guard: refuse (or, under force, warn about) replacing a
+			// substantial live file with an empty/near-empty repo source.
+			if err := guardEmptyOverSubstantial(t, force, dryRun, &res); err != nil {
+				return res, err
+			}
 			action := ActionUpdated
 			if dryRun {
 				res.Action = action
@@ -144,6 +225,14 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 		action := ActionUpdated
 		if !st.LiveExists {
 			action = ActionCreated
+		}
+		// Data-loss guard: only meaningful when a live file already exists (a
+		// created target has nothing to erase). Refuse an empty-over-substantial
+		// overwrite without --force; warn (via res) when --force overrides it.
+		if st.LiveExists {
+			if err := guardEmptyOverSubstantial(t, force, dryRun, &res); err != nil {
+				return res, err
+			}
 		}
 		if dryRun {
 			res.Action = action
@@ -252,6 +341,101 @@ func CommitLastApplied(results []Result, store *Store) error {
 		if err := store.set(r.Target.Name, r.PendingHash); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ferryOverlayMarker is the exact comment line appendSourceDirective (cmd) emits
+// above the injected per-machine overlay `source` directive. It is the anchor the
+// guard uses to recognise — and exclude — ferry's OWN generated boilerplate when
+// judging whether the USER's managed source is near-empty. It MUST stay
+// byte-identical to the marker cmd/apply.go writes.
+const ferryOverlayMarker = "# ferry: per-machine overlay, sourced last so it wins"
+
+// stripFerryOverlayDirective removes ferry's injected per-machine overlay block —
+// the fixed ferryOverlayMarker comment and the immediately-following generated
+// `[ -f ~/<file> ] && source ~/<file>` include line that appendSourceDirective
+// (cmd) appends — so near-emptiness is judged on the USER's real managed content,
+// not ferry's own boilerplate. This closes the empty-over-substantial BYPASS: for
+// the zsh include path apply stages the EFFECTIVE content (raw shared source PLUS
+// the injected directive), so a truly empty/comment-only shared source would read
+// as "non-empty" once the directive is appended and the guard would wrongly stand
+// down. Stripping is PRECISE: it drops only the exact marker comment, and only a
+// following line matching ferry's generated `[ -f ~/… ] && source ~/…` shape — a
+// user-authored `source`/comment line is never removed, so real content can never
+// be hidden to defeat the guard.
+func stripFerryOverlayDirective(content []byte) []byte {
+	lines := strings.Split(string(content), "\n")
+	kept := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) == ferryOverlayMarker {
+			// Drop the marker, and the next line too when it is ferry's generated
+			// include directive (`[ -f ~/… ] && source ~/…`). A non-matching next
+			// line is left in place (so nothing user-authored is silently removed).
+			if i+1 < len(lines) && isFerryOverlayInclude(lines[i+1]) {
+				i++
+			}
+			continue
+		}
+		kept = append(kept, lines[i])
+	}
+	return []byte(strings.Join(kept, "\n"))
+}
+
+// isFerryOverlayInclude reports whether line is ferry's generated per-machine
+// overlay include — the exact `[ -f ~/<file> ] && source ~/<file>` shape
+// appendSourceDirective emits. Matching the guarded `[ -f ~/… ] && source ~/…`
+// structure (not a bare `source …`) keeps stripping narrow to ferry's own output.
+func isFerryOverlayInclude(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "[ -f ~/") && strings.Contains(t, "] && source ~/")
+}
+
+// guardEmptyOverSubstantial enforces the empty-over-substantial data-loss guard
+// for a target whose live file exists and is about to be overwritten. It reads
+// the effective repo source (t.Repo) and the live file (t.Home): when the repo
+// source is empty/near-empty (blank/whitespace/comments-only) AND the live file
+// is substantial, the transition would erase real config. Without --force it
+// returns an *EmptyOverSubstantialError (apply writes nothing, live file
+// untouched). With --force it does NOT error but records the hazard on res so the
+// caller warns before the overwrite proceeds. Any non-dangerous transition is a
+// no-op. A repo-read error is returned (writeTarget would fail anyway); a
+// live-read error is treated as "not substantial" (fail open to the normal path —
+// the deploy's own write handles a genuinely unreadable target).
+//
+// Near-emptiness is judged on the USER's real managed content: ferry's injected
+// per-machine overlay directive is stripped first (stripFerryOverlayDirective) so
+// the zsh include path — which stages raw shared source PLUS ferry's generated
+// `source ~/…local` line — cannot smuggle an empty shared source past the guard on
+// the strength of ferry's OWN boilerplate.
+func guardEmptyOverSubstantial(t Target, force, dryRun bool, res *Result) error {
+	repo, err := os.ReadFile(t.Repo)
+	if err != nil {
+		return err
+	}
+	if !isNearEmpty(stripFerryOverlayDirective(repo)) {
+		return nil // user's managed source has real content: not the dangerous transition.
+	}
+	live, err := os.ReadFile(t.Home)
+	if err != nil {
+		return nil // can't read live as a regular file: leave it to the deploy path.
+	}
+	if !isSubstantial(live) {
+		return nil // live file is itself trivial: nothing meaningful to lose.
+	}
+	if !force {
+		res.Action = ActionConflict
+		return &EmptyOverSubstantialError{
+			Result:   *res,
+			Path:     t.Home,
+			LiveSize: significantBytes(live),
+		}
+	}
+	// --force: proceed, but flag the hazard so the caller warns. (dryRun never
+	// writes, so no warning is recorded on a preview.)
+	if !dryRun {
+		res.ForcedEmptyOverSubstantial = true
+		res.ForcedPath = t.Home
 	}
 	return nil
 }

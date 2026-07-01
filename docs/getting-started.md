@@ -66,6 +66,13 @@ A bare `ferry init` creates the repo at ferry's own default location,
 `~/.config/ferry/repo`: you do not need to pick a path. To place it somewhere
 else, pass a directory: `ferry init --fresh ~/somewhere`.
 
+If you already have a `~/.zshrc`, a fresh `ferry init` **adopts** it: the repo's
+managed source starts as a copy of your current file, so the first `ferry apply`
+matches what is already on disk and changes nothing. Your existing shell config is
+never zeroed. If you have no `~/.zshrc`, ferry seeds no shell source at all —
+`.zshrc` is still in scope, and your first `ferry capture` fills the repo from the
+file once you have one.
+
 `ferry capture` is interactive and selective: it shows you each change and lets you
 route it **shared** (synced to every machine) or **local** (this machine only). Things
 outside the manifest's scope—a one-off font, an experimental colour scheme—are
@@ -89,7 +96,11 @@ ferry apply --deps        # install dependencies (separate, explicit step)
 
 `ferry apply` is idempotent and safe to re-run: run it after every `git pull`. It
 never overwrites local edits you haven't captured: if a managed file has uncaptured
-changes, `apply` reports a conflict instead of clobbering it.
+changes, `apply` reports a conflict instead of clobbering it. It also refuses to
+replace a substantial existing file with an empty or blank repo source — that would
+erase your config, so `apply` stops and names the file instead. Pass `--force` to
+override (it warns and backs the file up first, so `ferry restore` can recover it),
+or run `ferry capture` to save the current file into the repo before applying.
 
 ## Move to another account or machine offline
 
