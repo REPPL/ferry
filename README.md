@@ -37,15 +37,9 @@ pulls local changes back when you want to harmonise them everywhere.
 curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 ```
 
-<!-- FERRY-REVIEW -->
-> ⚠️ **FERRY-REVIEW — CONFIRM (release step):** `install.sh` verifies a **pinned
-> SHA256** for each release binary and, by design, **refuses to install an unverified
-> binary** — so the `curl … | bash` command above only works once a release is cut:
-> the release process must (1) upload the four `bin/ferry-<goos>-<arch>` binaries to a
-> GitHub Release and (2) fill the `sha_*` values near the top of `install.sh` with their
-> checksums. Until then the network install correctly aborts ("no pinned checksum").
-> This is the intended pre-launch state; confirm the release checklist. (Build-from-
-> source in [Getting started](docs/getting-started.md) works today.)
+> **Note:** the `curl … | bash` installer verifies each binary against a pinned checksum
+> and is enabled per release. Building from source works today; see
+> [RELEASE.md](docs/RELEASE.md) for how releases are cut.
 
 Installs the single `ferry` binary to `~/.local/bin`. If that's not on your PATH, the
 installer prints the one line to add. It does not install Homebrew or run anything else.
@@ -86,14 +80,10 @@ See [Getting started](docs/getting-started.md) for the full happy path.
   off-scope things (a one-off font, an experimental colour scheme) are never synced.
   Machine-specific settings live in a gitignored `.local` layer that always wins, so
   deliberate per-machine differences are never overwritten.
-- **Reversible** — every change is backed up first; `ferry restore` leaves no trace.
-<!-- FERRY-REVIEW -->
-  > ⚠️ **FERRY-REVIEW — CONFIRM:** As built, default `ferry restore` reverts your
-  > *managed* files and terminal preferences to their pre-ferry state, but deliberately
-  > keeps ferry's own backup/state store (so the restore is itself reversible). Use
-  > `ferry restore --purge` to also remove ferry's config/state once you're done.
-  > So "leaves no trace" is true of the *machine's managed config*, not of ferry's
-  > backup store unless `--purge`. Confirm this wording and I'll refine the doc.
+- **Reversible** — every change is backed up first; `ferry restore` returns your managed
+  files and terminal settings to their pre-ferry state. It keeps ferry's own backup store
+  so the restore is itself reversible; `ferry restore --purge-without-recovery`
+  additionally removes that store (irreversible).
 - **No admin assumed** — ferry installs to `~/.local/bin` and never requires `sudo` or
   root, so it works on any account, including locked-down or managed machines. It never
   edits your shell on its own.

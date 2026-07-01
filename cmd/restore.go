@@ -21,12 +21,12 @@ import (
 
 func init() {
 	// restore-only flags. Registered here so commands.go stays owned by the
-	// skeleton wave. --packages and --purge are explicit opt-ins; --yes makes a
-	// destructive-ish restore non-interactive-safe (and is implied when stdin is
-	// not a terminal, so evals never hang on empty stdin).
+	// skeleton wave. --packages and --purge-without-recovery are explicit opt-ins;
+	// --yes makes a destructive-ish restore non-interactive-safe (and is implied
+	// when stdin is not a terminal, so evals never hang on empty stdin).
 	restoreCmd.Flags().Bool("packages", false, "also uninstall packages ferry recorded as self-installed")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt")
-	restoreCmd.Flags().Bool("purge", false, "after a successful restore, remove ferry's own config/state (incl. the backup store)")
+	restoreCmd.Flags().Bool("purge-without-recovery", false, "remove ferry's own config AND the backup store after restore — DESTROYS the ability to undo this restore or re-restore later (irreversible; the default keeps the backup store)")
 }
 
 // runRestore reverses ferry's changes back to the immutable pre-ferry baseline.
@@ -38,13 +38,14 @@ func init() {
 //
 // `ferry restore <domain>` scopes the revert to one named domain. `--packages`
 // additionally uninstalls ONLY the packages ferry recorded as self-installed
-// (Homebrew/the package manager itself is never removed). `--purge` removes
-// ferry's own dirs AFTER a successful restore (opt-in; the default keeps the
-// backup store intact because deleting the only backup mid-restore is unsafe).
+// (Homebrew/the package manager itself is never removed). `--purge-without-recovery`
+// removes ferry's own dirs INCLUDING the backup store AFTER a successful restore
+// (opt-in; the default keeps the backup store intact because deleting the only
+// backup makes the restore permanently un-undoable — the single irreversible op).
 func runRestore(c *cobra.Command, args []string) error {
 	doPackages, _ := c.Flags().GetBool("packages")
 	yes, _ := c.Flags().GetBool("yes")
-	purge, _ := c.Flags().GetBool("purge")
+	purge, _ := c.Flags().GetBool("purge-without-recovery")
 
 	// RESTORE deliberately does NOT use loadContext(): a full/scoped revert reads
 	// purely from the immutable baseline under ~/.local/state/ferry and needs
@@ -108,15 +109,43 @@ func runRestore(c *cobra.Command, args []string) error {
 		}
 	}
 
-	// --purge removes ferry's own state AFTER a successful restore. Off by
-	// default so the backup store (and the just-written snapshot) survive.
+	// --purge-without-recovery removes ferry's own state INCLUDING the backup
+	// store AFTER a successful restore. Off by default so the backup store (and
+	// the just-written snapshot) survive. This is the one irreversible op in
+	// ferry, so it carries its OWN confirmation gate — distinct from the restore
+	// confirm above — so a stray --yes meant for the restore can never silently
+	// wipe the backup store.
 	if purge {
+		if !confirmPurge(c, yes, out) {
+			fmt.Fprintln(out, "restore: purge aborted; backup store kept")
+			return nil
+		}
 		if err := purgeFerryState(out); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// confirmPurge is the EXTRA, irreversible-op gate for --purge-without-recovery.
+// It returns true only when purge should proceed. With --yes it proceeds (the
+// documented skip-confirmation path). Without --yes on an interactive terminal it
+// demands an explicitly typed "yes" — anything else aborts, keeping the backup
+// store. Without --yes on a NON-tty it aborts (never purges silently), because a
+// piped/empty stdin cannot consent to destroying the only backup.
+func confirmPurge(c *cobra.Command, yes bool, out io.Writer) bool {
+	if yes {
+		return true
+	}
+	if !stdinIsTerminal() {
+		fmt.Fprintln(out, "restore: --purge-without-recovery needs --yes on a non-interactive stdin; refusing to delete the backup store")
+		return false
+	}
+	fmt.Fprint(out, "This permanently deletes ferry's backup store — you will NOT be able to undo this restore. Type 'yes' to proceed: ")
+	reader := bufio.NewReader(c.InOrStdin())
+	line, _ := reader.ReadString('\n')
+	return strings.TrimSpace(line) == "yes"
 }
 
 // fullRestore reverts every managed path to its baseline. The engine snapshots
@@ -398,8 +427,9 @@ func installedSetPath() (string, error) {
 
 // purgeFerryState removes ferry's own config and state directories AFTER a
 // successful restore — the explicit "leaves no trace" cleanup. It runs only with
-// --purge because the default must keep the backup store (and the pre-restore
-// snapshot) intact. The Homebrew install / package manager is never touched here.
+// --purge-without-recovery because the default must keep the backup store (and the
+// pre-restore snapshot) intact. The Homebrew install / package manager is never
+// touched here.
 func purgeFerryState(out io.Writer) error {
 	cfgDir, err := paths.ConfigDir()
 	if err != nil {
@@ -425,7 +455,7 @@ func purgeFerryState(out io.Writer) error {
 			return fmt.Errorf("purge %s: %w", d, err)
 		}
 	}
-	fmt.Fprintln(out, "restore --purge: removed ferry's config and state (no trace left)")
+	fmt.Fprintln(out, "restore --purge-without-recovery: removed ferry's config and state incl. the backup store (no trace left; this restore can no longer be undone)")
 	return nil
 }
 

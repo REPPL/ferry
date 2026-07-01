@@ -10,8 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is the build version. Overridden at release via -ldflags.
-var version = "dev"
+// version is the build version. Defaults to the current development line and is
+// overridden at release with the git tag via -ldflags "-X .../cmd.version=vX.Y.Z".
+// ferry uses SemVer with a leading v; the first release is v0.1.0.
+var version = "v0.1.0-dev"
 
 var rootCmd = &cobra.Command{
 	Use:   "ferry",

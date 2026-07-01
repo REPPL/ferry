@@ -1,0 +1,63 @@
+name: release
+
+# Pushing a version tag (vX.Y.Z) builds the four cross-compiled binaries, pins
+# their real SHA256 into install.sh (no hand-pasting), commits the pinned
+# install.sh back to the default branch, and publishes a GitHub Release with the
+# binaries attached. Net effect: a tag push produces a verified, ready-to-install
+# release with checksums that match the published assets.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to push the pinned install.sh and create the Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo (full history, default branch)
+        uses: actions/checkout@v4
+        with:
+          # Check out the branch tip (not the detached tag) so we can commit the
+          # pinned install.sh back to the default branch.
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Cross-compile the four binaries (version-stamped from the tag)
+        # VERSION=<tag> stamps `ferry --version` via -ldflags. The binaries built
+        # here are the ones whose checksums get pinned and which are uploaded, so
+        # the pins, the published assets, and the reported version are all in sync.
+        run: make build VERSION="${GITHUB_REF_NAME}"
+
+      - name: Pin real checksums into install.sh
+        # pin-checksums rebuilds with the same VERSION so the hashes it writes match
+        # the version-stamped binaries that are uploaded below.
+        run: make pin-checksums VERSION="${GITHUB_REF_NAME}"
+
+      - name: Commit the pinned install.sh back to the default branch
+        run: |
+          # Identity: github-actions bot noreply — no personal PII.
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Only commit if install.sh actually changed (avoids empty commits).
+          if git diff --quiet -- install.sh; then
+            echo "install.sh checksums already up to date; nothing to commit."
+          else
+            git add install.sh
+            git commit -m "ci: pin install.sh checksums for ${GITHUB_REF_NAME}"
+            git push origin HEAD:"${{ github.event.repository.default_branch }}"
+          fi
+
+      - name: Create the GitHub Release and upload the binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          files: bin/ferry-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

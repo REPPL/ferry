@@ -68,6 +68,7 @@ trap 'rm -f "$tmp"' EXIT
 # existing file, which is installed verbatim (place + chmod) instead of a network
 # download. There is NO implicit CWD/bin fallback and NO placeholder: absent this
 # var, the only install source is the uname-selected, SHA-verified GitHub release.
+from_network=0
 if [ -n "${FERRY_FAKE_BINARY:-}" ]; then
   if [ ! -f "${FERRY_FAKE_BINARY}" ]; then
     echo "ferry install: FERRY_FAKE_BINARY=${FERRY_FAKE_BINARY} does not exist" >&2
@@ -100,11 +101,15 @@ else
   fi
   echo "ferry install: downloading ${asset} (${VERSION})..."
   curl -fsSL "$url" -o "$tmp"
+  from_network=1
 fi
 
-# Integrity: verify against the pinned SHA256 when one is present. (Absent a pin,
-# the network path already aborted above; the explicit test artifact skips this.)
-if [ -n "$expected_sha" ]; then
+# Integrity: verify the pinned SHA256 ONLY for a network download (the public path).
+# The network path already aborted above if no pin exists, so a downloaded binary is
+# always verified. The explicit FERRY_FAKE_BINARY test artifact is a real local file
+# the caller chose, not a release download, so it is installed verbatim without the
+# release pin (which describes the published binaries, not an arbitrary test file).
+if [ "$from_network" = "1" ] && [ -n "$expected_sha" ]; then
   if command -v shasum >/dev/null 2>&1; then
     got="$(shasum -a 256 "$tmp" | awk '{print $1}')"
   else

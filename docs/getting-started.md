@@ -30,12 +30,9 @@ manages — that's ferry's job. The above are the host tools ferry stands on.
 curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 ```
 
-<!-- FERRY-REVIEW -->
-> ⚠️ **FERRY-REVIEW — CONFIRM (release step):** the `curl … | bash` install works once
-> a release is cut — `install.sh` refuses to install a binary it can't verify against a
-> **pinned SHA256**, and those checksums are filled at release time (upload the four
-> `bin/ferry-<goos>-<arch>` to a GitHub Release, then set the `sha_*` vars in
-> `install.sh`). Until then it aborts safely. **Build-from-source (below) works today.**
+> **Note:** the `curl … | bash` installer verifies each binary against a pinned checksum
+> and is enabled per release. Building from source (below) works today; see
+> [RELEASE.md](RELEASE.md) for how releases are cut.
 
 This installs **only** the `ferry` binary to `~/.local/bin` — **no admin rights
 required**, so it works on any account, including locked-down or managed machines. If
@@ -74,16 +71,12 @@ never captured.
 
 ## Existing: set up another machine
 
-<!-- FERRY-REVIEW -->
-> ⚠️ **FERRY-REVIEW — CONFIRM:** The built `ferry init` clones an existing repo only
-> when given the repo as a positional argument (`ferry init <repo-url-or-path>`, HTTPS
-> or a local/`file://` path). A bare `ferry init` with no configured repo sets up a
-> **new** repo (the "Fresh" path). The example below shows a bare `ferry init` for the
-> existing-machine case; as implemented it should be `ferry init https://…/ferry.git`.
-> Confirm the intended UX (positional source vs a flag) and I'll align the docs + help.
+Point `ferry init` at your existing ferry repo as a positional argument — an HTTPS URL or
+a local/`file://` path. (A bare `ferry init`, with no source, takes the **Fresh** path
+above and sets up a new repo.)
 
 ```bash
-ferry init <repo-url>     # clones your ferry repo over HTTPS, writes ferry's config
+ferry init https://github.com/REPPL/ferry.git   # clone your ferry repo over HTTPS, write ferry's config
 ferry diff                # preview what will change on this machine (optional)
 ferry apply               # reconcile this machine to the repo
 ferry apply --deps        # install dependencies (separate, explicit step)
