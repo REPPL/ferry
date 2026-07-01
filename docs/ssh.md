@@ -1,6 +1,6 @@
 # SSH
 
-**ferry does not touch `~/.ssh/` at all** — it never reads, copies, captures, commits,
+**ferry does not touch `~/.ssh/` at all**: it never reads, copies, captures, commits,
 or modifies your private keys, public keys, `config`, or `known_hosts`.
 
 This is deliberate. Moving SSH material is your job, done out-of-band. Here's why, and
@@ -8,7 +8,7 @@ how to do it safely.
 
 ## Why ferry stays out of `~/.ssh/`
 
-- **Private keys must never enter a git repo.** Once committed, a key is compromised —
+- **Private keys must never enter a git repo.** Once committed, a key is compromised:
   history makes deletion ineffective. An allowlist that ingests only `config` + `*.pub`
   would still be one mistake away from a leak.
 - **`~/.ssh/config` is itself semi-sensitive.** It exposes internal hostnames,
@@ -25,15 +25,15 @@ Staying hands-off removes this entire class of risk rather than trying to mitiga
 
 Pick whichever fits your threat model:
 
-- **Generate a fresh key per machine** (recommended) — then add the new public key to
+- **Generate a fresh key per machine** (recommended): then add the new public key to
   the servers/services you use. No private key ever leaves the machine it was made on:
   ```bash
   ssh-keygen -t ed25519 -C "you@machine"
   ssh-copy-id user@host        # or paste the .pub into GitHub/GitLab/etc.
   ```
-- **Transfer an existing key out-of-band** — encrypted USB, AirDrop, or a one-shot
+- **Transfer an existing key out-of-band**: encrypted USB, AirDrop, or a one-shot
   `scp` over an already-trusted connection. Never email it or put it in a repo.
-- **Use a secrets manager / SSH agent** — e.g. the 1Password SSH agent, which holds
+- **Use a secrets manager / SSH agent**: e.g. the 1Password SSH agent, which holds
   keys and serves them to `ssh` without them living as files you copy around.
 
 ## Correct permissions (set these yourself)
@@ -54,11 +54,11 @@ chmod 600 ~/.ssh/config ~/.ssh/id_* ~/.ssh/authorized_keys 2>/dev/null
 chmod 644 ~/.ssh/*.pub 2>/dev/null
 ```
 
-`ferry doctor` can *report* (read-only) when these look wrong — it never changes them.
+`ferry doctor` can *report* (read-only) when these look wrong: it never changes them.
 
 ## What about syncing config across machines?
 
 Tools like chezmoi and yadm can sync SSH material by **encrypting** it (age/GPG) before
-committing. ferry deliberately does not — it keeps zero crypto dependencies and zero
+committing. ferry deliberately does not: it keeps zero crypto dependencies and zero
 key-management burden. If you want encrypted SSH sync, use one of those tools alongside
 ferry, or keep your `~/.ssh/config` in a separate private, encrypted store.

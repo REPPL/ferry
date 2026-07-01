@@ -1,6 +1,7 @@
 package secret
 
 import (
+	"bytes"
 	"math"
 	"regexp"
 	"strings"
@@ -107,6 +108,52 @@ const entropyThreshold = 4.0
 // shorter. 24 chars excludes things like a 16-char hex colour or a git short
 // SHA while still catching API tokens and base64 key blobs.
 const minEntropyTokenLen = 24
+
+// keyMarkers are high-signal PEM/OpenSSH private-key and PGP-key header markers.
+// Unlike the text scanners above, HasKeyMarker matches these against RAW BYTES
+// regardless of embedded NUL bytes, so a BINARY payload (which the line-based text
+// scanners skip) that carries embedded key material is still caught. The set is
+// intentionally small and near-zero false positive: an ordinary binary asset never
+// contains these ASCII header strings.
+var keyMarkers = [][]byte{
+	[]byte("BEGIN OPENSSH PRIVATE KEY"),
+	[]byte("BEGIN RSA PRIVATE KEY"),
+	[]byte("BEGIN EC PRIVATE KEY"),
+	[]byte("BEGIN DSA PRIVATE KEY"),
+	[]byte("BEGIN PRIVATE KEY"),
+	[]byte("BEGIN PGP PRIVATE KEY"),
+}
+
+// HasKeyMarker reports whether raw bytes contain a high-signal private-key header
+// marker (PEM/OpenSSH/PGP). It is the BINARY-SAFE counterpart to IsBlockedFromRepo:
+// it scans the raw bytes for the fixed header strings regardless of NUL bytes, so it
+// works on binary/opaque content the line-based text scanners cannot handle. Both
+// the bundle EXPORT and the bundle IMPORT/validate paths use this ONE function to
+// classify a binary payload, so their secret checks stay symmetric — a binary
+// carrying key bytes is withheld on export and refused on import identically. The
+// match is case-insensitive on the marker to catch mixed-case headers.
+func HasKeyMarker(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	lower := bytes.ToLower(data)
+	// General PEM private-key header: `begin <anything> private key` covers every
+	// variant — RSA/EC/DSA/OPENSSH/ENCRYPTED/SSH2/(bare) PRIVATE KEY — without having
+	// to enumerate each, so a new label can't slip a key past us. Plus the PGP header.
+	if keyMarkerRE.Match(lower) {
+		return true
+	}
+	for _, m := range keyMarkers {
+		if bytes.Contains(lower, bytes.ToLower(m)) {
+			return true
+		}
+	}
+	return false
+}
+
+// keyMarkerRE matches any PEM private-key BEGIN header regardless of the key-type
+// label between "begin" and "private key" (matched on lowercased bytes).
+var keyMarkerRE = regexp.MustCompile(`begin[ \-]*[a-z0-9 ]*private key`)
 
 // ScanText scans content line-by-line and returns every secret finding, with
 // 1-based line numbers. Use this for text domains (dotfiles, wg .conf, shell

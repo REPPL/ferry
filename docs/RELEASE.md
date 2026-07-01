@@ -2,7 +2,7 @@
 
 Cutting a release is what enables the public `curl … | bash` install path. Until a
 release exists and its checksums are pinned, that path deliberately refuses to install
-(fail-closed). Build-from-source works today without any of this — see
+(fail-closed). Build-from-source works today without any of this: see
 [Getting started](getting-started.md).
 
 ## Versioning
@@ -37,7 +37,7 @@ The [`release` workflow](../.github/workflows/release.yml) then, for the tag:
 4. Creates the GitHub Release for the tag and uploads the four `bin/ferry-*` binaries
    as release assets.
 
-The result is a verified release whose pinned checksums match the published assets —
+The result is a verified release whose pinned checksums match the published assets:
 no manual checksum paste anywhere.
 
 ## Release retention
@@ -45,7 +45,7 @@ no manual checksum paste anywhere.
 Each release line keeps only its newest release. When a new `vX.Y.Z` publishes, the
 workflow runs [`scripts/prune-releases.sh`](../scripts/prune-releases.sh), which keeps
 the latest release of the current line (`X.Y`) plus the last release of every other
-line, and deletes the superseded releases — the GitHub Release, its binary assets, and
+line, and deletes the superseded releases: the GitHub Release, its binary assets, and
 the git tag. So shipping `v0.1.2` removes `v0.1.1`, while shipping `v0.2.0` keeps the
 last `v0.1.x` alongside it. Run it by hand with `--dry-run` to preview:
 
@@ -66,7 +66,7 @@ make release
 ```
 
 `make release` builds the binaries and runs `pin-checksums` (`scripts/pin-checksums.sh`),
-which edits `install.sh` in place — idempotent and re-runnable. It then prints how to
+which edits `install.sh` in place: idempotent and re-runnable. It then prints how to
 publish (push a tag for CI, or create the Release and upload `bin/ferry-*` yourself).
 
 You can also run the pieces directly:
@@ -93,8 +93,8 @@ serve a matching pair. Treat it as a personal-trust convenience, not a signature
 
 ## Related Documentation
 
-- [`scripts/pin-checksums.sh`](../scripts/pin-checksums.sh) — writes/verifies the pins.
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml) — tag-triggered build → pin → publish.
-- [`install.sh`](../install.sh) — the installer whose `sha_*` pins are filled automatically.
-- [README — Install](../README.md#install) — the user-facing install command.
-- [Getting started](getting-started.md) — build-from-source, which needs no release.
+- [`scripts/pin-checksums.sh`](../scripts/pin-checksums.sh): writes/verifies the pins.
+- [`.github/workflows/release.yml`](../.github/workflows/release.yml): tag-triggered build → pin → publish.
+- [`install.sh`](../install.sh): the installer whose `sha_*` pins are filled automatically.
+- [README—Install](../README.md#install): the user-facing install command.
+- [Getting started](getting-started.md): build-from-source, which needs no release.

@@ -174,3 +174,48 @@ func TestFindingDetailNeverLeaksValue(t *testing.T) {
 		}
 	}
 }
+
+// TestHasKeyMarker covers the binary-safe key-marker scan used symmetrically by
+// bundle export and import. It must catch a private-key header even amid NUL bytes
+// (where the line-based text scanners give up) and stay quiet on ordinary binary.
+func TestHasKeyMarker(t *testing.T) {
+	markers := []string{
+		"BEGIN OPENSSH PRIVATE KEY",
+		"BEGIN RSA PRIVATE KEY",
+		"BEGIN EC PRIVATE KEY",
+		"BEGIN DSA PRIVATE KEY",
+		"BEGIN PRIVATE KEY",
+		"BEGIN PGP PRIVATE KEY",
+		// The general PEM header must catch key-type labels not enumerated above,
+		// so a new/uncommon label can't slip a private key past export/import.
+		"BEGIN ENCRYPTED PRIVATE KEY",
+		"BEGIN SSH2 ENCRYPTED PRIVATE KEY",
+	}
+	for _, m := range markers {
+		// Embed the marker in binary content with NUL bytes on both sides — the
+		// text scanner would treat this as binary and skip it; HasKeyMarker must not.
+		payload := append([]byte{0x00, 0x01, 0xff, 0x00}, []byte("-----"+m+"-----")...)
+		payload = append(payload, 0x00, 0x00)
+		if !HasKeyMarker(payload) {
+			t.Errorf("HasKeyMarker missed %q embedded in binary content", m)
+		}
+	}
+
+	// Case-insensitive on the marker.
+	if !HasKeyMarker([]byte("\x00begin openssh private key\x00")) {
+		t.Errorf("HasKeyMarker should fold case on the marker")
+	}
+
+	// Clean binary (no marker) must not trip it.
+	clean := []byte{0x00, 0x89, 0x50, 0x4e, 0x47, 0x00, 0xde, 0xad, 0xbe, 0xef}
+	if HasKeyMarker(clean) {
+		t.Errorf("HasKeyMarker fired on clean binary content")
+	}
+	if HasKeyMarker(nil) || HasKeyMarker([]byte{}) {
+		t.Errorf("HasKeyMarker should be false on empty input")
+	}
+	// Ordinary text without a key marker must not trip it.
+	if HasKeyMarker([]byte("export PATH=$HOME/bin\nalias ll='ls -la'\n")) {
+		t.Errorf("HasKeyMarker fired on ordinary config text")
+	}
+}
