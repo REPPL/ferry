@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo (full history, default branch)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           # Check out the branch tip (not the detached tag) so we can commit the
           # pinned install.sh back to the default branch.
@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: '1.25'
 
@@ -56,7 +56,7 @@ jobs:
           fi
 
       - name: Create the GitHub Release and upload the binaries
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: bin/ferry-*
         env:
