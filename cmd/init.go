@@ -27,6 +27,7 @@ func init() {
 	initCmd.Flags().Bool("fresh", false, "set up a NEW config repo (capture this machine) instead of cloning")
 	initCmd.Flags().Bool("yes", false, "assume yes for the closing apply confirmation")
 	initCmd.Flags().Bool("apply", false, "run apply at the end of init (default: show the plan and stop)")
+	initCmd.Flags().Bool("github", false, "create a NEW private GitHub repo via the gh CLI and manage it as ferry's remote")
 }
 
 // defaultRepoDir returns ferry's neutral, ferry-owned default location for a
@@ -67,6 +68,25 @@ func runInit(c *cobra.Command, args []string) error {
 	}
 
 	fresh, _ := c.Flags().GetBool("fresh")
+	github, _ := c.Flags().GetBool("github")
+
+	// Route 2 (managed GitHub) is a distinct starting point, mutually exclusive
+	// with --fresh and with a clone-source positional. Validate BEFORE any work so
+	// a conflicting invocation is rejected without touching gh/git or the FS.
+	if github {
+		if fresh {
+			return fmt.Errorf("`--github` and `--fresh` are mutually exclusive: --github creates a NEW managed GitHub repo; --fresh sets up a purely local repo — pick one")
+		}
+		if len(args) > 1 {
+			return fmt.Errorf("`init --github` takes at most one [name] positional (got %d args)", len(args))
+		}
+		name := ""
+		if len(args) == 1 {
+			name = strings.TrimSpace(args[0])
+		}
+		return initGitHub(c, in, out, name)
+	}
+
 	arg := ""
 	if len(args) > 0 {
 		arg = strings.TrimSpace(args[0])

@@ -66,6 +66,7 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 | Command | What it does |
 |---|---|
 | `init` | First-run setup: locate/clone the config repo into ferry's own space (`~/.config/ferry/repo` by default), write ferry's config. |
+| `init --github [name]` | Create a **new private** GitHub repo via the `gh` CLI's existing auth and manage it as ferry's HTTPS remote. Needs `gh` authenticated; ferry stores no token. Always private, never reuses an existing repo, and won't push a file that looks like a secret. Add `--yes` for non-interactive use. |
 | `apply` | Reconcile this machine to the repo (deploy dotfiles, terminal settings). Idempotent; safe to re-run. Dependencies install behind `apply --deps`. |
 | `capture` | Pull local changes back into the repo. Interactive: approve each change, route it *shared* (synced everywhere) or *local* (this machine only). |
 | `status` | Report config drift (what changed on this machine). |

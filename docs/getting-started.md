@@ -80,6 +80,41 @@ never captured.
 
 ---
 
+## Let ferry manage a private GitHub repo
+
+If you'd rather not create a GitHub repo, add a remote, and push by hand, let ferry do
+it. `ferry init --github [name]` creates a **new private** repo through the GitHub CLI's
+existing login and wires it as ferry's HTTPS remote, so `ferry capture` can push and
+`ferry apply` on another machine can pull.
+
+```bash
+gh auth login                       # once: authenticate the GitHub CLI (if you haven't)
+ferry init --github                 # creates a private repo named ferry-config
+ferry init --github my-dotfiles     # or pick your own name
+ferry init --github my-dotfiles --yes   # non-interactive (scripts, CI): skip the confirm
+```
+
+What it guarantees:
+
+- **Needs `gh` authenticated.** ferry uses your existing `gh` login and **stores no
+  token** — the credential stays in `gh`'s own keyring. Run `gh auth login` (and
+  `gh auth setup-git`) first.
+- **Always private.** ferry only ever creates a private repo and verifies it is private
+  before pushing; it never passes `--public`.
+- **Never touches an existing repo.** If a repo with that name already exists, ferry
+  aborts and asks you to pass a different name — it never reuses or overwrites one.
+- **Won't push a file that looks like a secret.** The same secret scan `capture` uses
+  runs before the first commit and again before the push: if your `~/.zshrc` looks like
+  it holds a private key or token, ferry refuses and tells you to move it out of band
+  (a secret store or `~/.zshrc.local`).
+- **HTTPS only.** The remote ferry sets is always `https://…`; it never sets an `ssh://`
+  remote and never touches `~/.ssh`.
+
+Non-interactive runs (a script or CI with no terminal) **require `--yes`** so ferry
+never silently creates and pushes to an unexpected account.
+
+---
+
 ## Existing: set up another machine
 
 Point `ferry init` at your existing ferry repo as a positional argument: an HTTPS URL or

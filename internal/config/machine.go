@@ -22,6 +22,11 @@ type MachineConfig struct {
 	Hostname string `toml:"hostname"`
 	// Repo is the absolute path to this machine's clone of the config repo.
 	Repo string `toml:"repo"`
+	// Managed reports whether ferry created and owns this repo's GitHub remote
+	// (route 2, `ferry init --github`). A route-1 repo leaves it false. It is
+	// `omitempty` so an unmanaged config writes no `managed` key, and an OLD
+	// config (hostname+repo only, no `managed` key) still loads with managed=false.
+	Managed bool `toml:"managed,omitempty"`
 }
 
 // LoadMachineConfig reads and parses ~/.config/ferry/config.toml (resolved via
