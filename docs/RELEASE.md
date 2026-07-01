@@ -40,6 +40,22 @@ The [`release` workflow](../.github/workflows/release.yml) then, for the tag:
 The result is a verified release whose pinned checksums match the published assets —
 no manual checksum paste anywhere.
 
+## Release retention
+
+Each release line keeps only its newest release. When a new `vX.Y.Z` publishes, the
+workflow runs [`scripts/prune-releases.sh`](../scripts/prune-releases.sh), which keeps
+the latest release of the current line (`X.Y`) plus the last release of every other
+line, and deletes the superseded releases — the GitHub Release, its binary assets, and
+the git tag. So shipping `v0.1.2` removes `v0.1.1`, while shipping `v0.2.0` keeps the
+last `v0.1.x` alongside it. Run it by hand with `--dry-run` to preview:
+
+```bash
+scripts/prune-releases.sh --current vX.Y.Z --dry-run
+```
+
+The release just published is never pruned, and pruning refuses if a newer patch than
+the current one already exists.
+
 ## Local / fallback flow
 
 To prepare a release-ready tree locally (e.g. to inspect the pins before tagging, or

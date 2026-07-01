@@ -61,3 +61,13 @@ jobs:
           files: bin/ferry-*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prune superseded releases (retention policy)
+        # Runs ONLY after the new release is published (a failed publish stops the job
+        # before this step). Keeps the latest release of the current line plus the last
+        # release of every other line, deleting older within-line releases + their tags.
+        # It never prunes the release just created (--current), and refuses if a newer
+        # patch than the current one somehow exists. See scripts/prune-releases.sh.
+        run: scripts/prune-releases.sh --current "${GITHUB_REF_NAME}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
