@@ -30,6 +30,13 @@ manages — that's ferry's job. The above are the host tools ferry stands on.
 curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 ```
 
+<!-- FERRY-REVIEW -->
+> ⚠️ **FERRY-REVIEW — CONFIRM (release step):** the `curl … | bash` install works once
+> a release is cut — `install.sh` refuses to install a binary it can't verify against a
+> **pinned SHA256**, and those checksums are filled at release time (upload the four
+> `bin/ferry-<goos>-<arch>` to a GitHub Release, then set the `sha_*` vars in
+> `install.sh`). Until then it aborts safely. **Build-from-source (below) works today.**
+
 This installs **only** the `ferry` binary to `~/.local/bin` — **no admin rights
 required**, so it works on any account, including locked-down or managed machines. If
 `~/.local/bin` isn't already on your PATH, the installer prints the one line to add to

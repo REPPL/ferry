@@ -37,6 +37,16 @@ pulls local changes back when you want to harmonise them everywhere.
 curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 ```
 
+<!-- FERRY-REVIEW -->
+> ⚠️ **FERRY-REVIEW — CONFIRM (release step):** `install.sh` verifies a **pinned
+> SHA256** for each release binary and, by design, **refuses to install an unverified
+> binary** — so the `curl … | bash` command above only works once a release is cut:
+> the release process must (1) upload the four `bin/ferry-<goos>-<arch>` binaries to a
+> GitHub Release and (2) fill the `sha_*` values near the top of `install.sh` with their
+> checksums. Until then the network install correctly aborts ("no pinned checksum").
+> This is the intended pre-launch state; confirm the release checklist. (Build-from-
+> source in [Getting started](docs/getting-started.md) works today.)
+
 Installs the single `ferry` binary to `~/.local/bin`. If that's not on your PATH, the
 installer prints the one line to add. It does not install Homebrew or run anything else.
 (No `sudo`, no shell edits — see [Principles](#principles).)
