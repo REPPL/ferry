@@ -113,6 +113,10 @@ What it guarantees:
 Non-interactive runs (a script or CI with no terminal) **require `--yes`** so ferry
 never silently creates and pushes to an unexpected account.
 
+`ferry sync` publishes your captured changes and pulls remote ones — the everyday
+update for a managed repo. It never force-pushes and leaves your machine unchanged on
+a conflict. Run `ferry apply` after to deploy pulled changes.
+
 ---
 
 ## Existing: set up another machine

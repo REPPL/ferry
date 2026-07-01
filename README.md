@@ -69,6 +69,7 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 | `init --github [name]` | Create a **new private** GitHub repo via the `gh` CLI's existing auth and manage it as ferry's HTTPS remote. Needs `gh` authenticated; ferry stores no token. Always private, never reuses an existing repo, and won't push a file that looks like a secret. Add `--yes` for non-interactive use. |
 | `apply` | Reconcile this machine to the repo (deploy dotfiles, terminal settings). Idempotent; safe to re-run. Dependencies install behind `apply --deps`. |
 | `capture` | Pull local changes back into the repo. Interactive: approve each change, route it *shared* (synced everywhere) or *local* (this machine only). |
+| `sync` | Publish captured changes and pull remote ones for a managed repo, in one command. Integrates the remote first, never force-pushes, gates the whole push range for secrets, and leaves your machine unchanged on a conflict. Route-1 repos need `--allow-unmanaged`. Run `ferry apply` after to deploy pulled changes. |
 | `status` | Report config drift (what changed on this machine). |
 | `doctor` | Report machine/tool health. |
 | `diff` | Preview what `apply` would change. |

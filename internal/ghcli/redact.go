@@ -16,6 +16,14 @@ func redact(s string) string {
 	return s
 }
 
+// Redact is the exported boundary scrub, shared by any command that surfaces
+// external git/gh output (e.g. `ferry sync`). It masks the same credential shapes
+// as the internal redactor so no token, Authorization/Bearer header, or
+// userinfo-embedded URL can leak into an error ferry returns or a message it
+// prints. Apply it to EVERY surfaced boundary (command string, env, URL, stdout,
+// stderr, error text).
+func Redact(s string) string { return redact(s) }
+
 var (
 	// tokenRe matches GitHub token prefixes plus the following token characters.
 	// Covers ghp_/gho_/ghs_/ghu_/ghr_ (classic scoped) and github_pat_ (fine-grained).

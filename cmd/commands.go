@@ -47,6 +47,21 @@ values from ever reaching the repo.`,
 	RunE: runCapture,
 }
 
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Publish captured changes and pull remote ones for a managed repo",
+	Long: `Publish local changes and pull remote ones in one command.
+
+sync is the everyday update for a managed (route-2) repo: it pulls remote work,
+commits your locally-captured changes, and pushes them — WITHOUT ever losing
+local work or force-pushing. It integrates the remote first from a clean
+baseline, gates the whole push range for secrets, and pushes a single explicit
+ref. On a conflict it leaves your machine byte-for-byte unchanged and asks you
+to resolve with git. It never runs apply — run "ferry apply" afterwards to
+deploy the pulled changes.`,
+	RunE: runSync,
+}
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Report config drift (what changed on this machine)",
@@ -95,10 +110,16 @@ func init() {
 	applyCmd.Flags().Bool("deps", false, "install declared dependencies (separate, explicit step)")
 	applyCmd.Flags().Bool("dry-run", false, "preview changes without writing (see also: ferry diff)")
 
+	// sync flags: an optional commit message for the captured changes, and the
+	// route-1 override (a route-2 managed repo needs neither).
+	syncCmd.Flags().StringP("message", "m", "", "commit message for locally-captured changes (default: a generated one)")
+	syncCmd.Flags().Bool("allow-unmanaged", false, "sync a repo not marked managed (still HTTPS-only, secret-gated, never force-pushed)")
+
 	rootCmd.AddCommand(
 		initCmd,
 		applyCmd,
 		captureCmd,
+		syncCmd,
 		statusCmd,
 		doctorCmd,
 		diffCmd,
