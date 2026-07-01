@@ -123,7 +123,7 @@ func LoadScope(repoPath string) (Scope, error) {
 	shared, err := loadManifestFile(sharedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return Scope{}, fmt.Errorf("shared manifest %s not found in repo %s", SharedManifestName, repoPath)
+			return Scope{}, fmt.Errorf("no ferry manifest (%s) in the config repo %s — run `ferry init` to create one, or add %s to the repo", SharedManifestName, repoPath, SharedManifestName)
 		}
 		return Scope{}, err
 	}

@@ -878,6 +878,9 @@ func printPlan(out io.Writer, plan []planItem) {
 		return
 	}
 
+	colour := stateColourer(out)
+	var create, update, conflict int
+
 	fmt.Fprintln(out, "ferry would apply:")
 	for _, it := range plan {
 		switch it.kind {
@@ -901,30 +904,56 @@ func printPlan(out io.Writer, plan []planItem) {
 					// "managed (re-apply on demand)" rather than a false "would apply".
 					fmt.Fprintf(out, "  %-22s [preference domain] %s — managed (re-apply on demand)\n", it.domain, pe.Domain)
 				default:
+					update++
 					fmt.Fprintf(out, "  %-22s [preference domain] %s — %s\n", it.domain, pe.Domain, pe.Summary)
 				}
 			}
 		default:
 			if it.skip {
-				fmt.Fprintf(out, "  %-22s blocked (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
+				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
 				continue
 			}
 			switch it.state {
 			case dotfile.StateClean:
-				fmt.Fprintf(out, "  %-22s clean (already in sync)\n", it.domain)
+				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
 			case dotfile.StateMissing:
-				fmt.Fprintf(out, "  %-22s would create\n", it.domain)
+				create++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
 			case dotfile.StateRepoAhead:
-				fmt.Fprintf(out, "  %-22s would update\n", it.domain)
+				update++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
 			case dotfile.StateLocallyDrifted:
-				fmt.Fprintf(out, "  %-22s would skip (uncaptured local edits; run `ferry capture`)\n", it.domain)
+				fmt.Fprintf(out, "  %-22s %s (uncaptured local edits; run `ferry capture`)\n", it.domain, colour(colYellow, "would skip"))
 			case dotfile.StateConflict:
-				fmt.Fprintf(out, "  %-22s conflict (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", it.domain)
+				conflict++
+				fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
 			default:
 				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
 			}
 		}
 	}
+
+	// One-line summary footer, only counting the actionable states.
+	if summary := planSummary(create, update, conflict); summary != "" {
+		fmt.Fprintf(out, "\n%s\n", summary)
+	}
+}
+
+// planSummary renders a compact "N would create, M would update, K conflict"
+// footer from the counted states, omitting zero categories. Returns "" when there
+// is nothing actionable to summarise (all-clean plans are handled earlier).
+func planSummary(create, update, conflict int) string {
+	var parts []string
+	if create > 0 {
+		parts = append(parts, fmt.Sprintf("%d would create", create))
+	}
+	if update > 0 {
+		parts = append(parts, fmt.Sprintf("%d would update", update))
+	}
+	if conflict > 0 {
+		parts = append(parts, fmt.Sprintf("%d conflict", conflict))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // planItemPending reports whether a plan item represents a change diff/apply

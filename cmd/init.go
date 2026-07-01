@@ -229,7 +229,7 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	cmd.Stdout = out
 	cmd.Stderr = out
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("git clone %s failed: %w", source, err)
+		return "", fmt.Errorf("could not clone the config repo from %s: %w — check the URL is correct and reachable over HTTPS (ferry does not use SSH)", source, err)
 	}
 	return dest, nil
 }

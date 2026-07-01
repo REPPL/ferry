@@ -1,6 +1,10 @@
 name: ci
 
-# Lightweight checks on every push and pull request: build, vet, and test.
+# Lightweight checks on every push and pull request: build, vet, and test on
+# macOS and Linux, plus a Linux job that runs the FULL behavioral eval suite
+# against a real Linux binary (exercising the cross-platform core — dotfiles,
+# deps, backup/restore — on actual Linux; terminal-domain evals are darwin-only
+# and skip cleanly on linux).
 on:
   push:
     branches: ['**']
@@ -10,8 +14,14 @@ permissions:
   contents: read
 
 jobs:
+  # Build + vet + test on both host OSes. Race-enabled unit tests catch data
+  # races the plain `go test` would miss.
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
 
@@ -28,3 +38,69 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Test (race, internal)
+        run: go test -race ./internal/...
+
+  # Run the FULL behavioral eval suite against a REAL Linux binary. This exercises
+  # the cross-platform core (dotfiles / deps / backup-restore) on actual Linux —
+  # closing the spirit of AC-platform-linux-core, which no other host covers.
+  #
+  # strace is installed so AC-ssh-not-read's STRICT leg (zero open()/openat() under
+  # ~/.ssh/ for non-doctor commands) actually runs here: on Linux the eval traces a
+  # direct child unprivileged, verifying "never reads ~/.ssh" at the syscall level —
+  # the depth unprivileged macOS cannot reach. Any eval that genuinely cannot run on
+  # Linux (e.g. a brew-only path) SKIPS cleanly rather than failing.
+  evals-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Install strace (enables the AC-ssh-not-read strict leg on Linux)
+        run: sudo apt-get update && sudo apt-get install -y strace
+
+      - name: Build the Linux ferry binary
+        run: go build -o "$RUNNER_TEMP/ferry" .
+
+      # FERRY_CONFORMANCE=1 makes a missing install.sh a FAILURE (not a skip) for the
+      # offline installer ACs, matching the final-conformance contract in evals/README.
+      - name: Run the full eval suite against the Linux binary
+        run: FERRY_BIN="$RUNNER_TEMP/ferry" FERRY_INSTALL_SH="$PWD/install.sh" FERRY_CONFORMANCE=1 go test ./evals/...
+
+      # Independent, gating cross-check of the "never reads ~/.ssh" promise: run a
+      # non-doctor ferry command under strace and FAIL if it performs any open/openat
+      # under ~/.ssh/. This is a second, script-level tripwire alongside the in-Go
+      # strace leg above — a real syscall assertion, not a proxy.
+      - name: strace tripwire — no ~/.ssh opens (AC-ssh-not-read)
+        run: |
+          set -euo pipefail
+          SBOX="$RUNNER_TEMP/ssh-not-read-sandbox"
+          mkdir -p "$SBOX/.ssh" "$SBOX/.config/ferry" "$SBOX/.local/state/ferry" "$SBOX/repo"
+          # Seed a sentinel private key ferry must never open.
+          printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSENTINELKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n' > "$SBOX/.ssh/id_ed25519"
+          chmod 600 "$SBOX/.ssh/id_ed25519"
+          # Minimal repo + machine config so a non-doctor command has scope to read.
+          printf '[manage]\ndotfiles = [".zshrc"]\n' > "$SBOX/repo/ferry.toml"
+          printf 'repo = "%s"\n' "$SBOX/repo" > "$SBOX/.config/ferry/config.toml"
+          TRACE="$RUNNER_TEMP/ssh-not-read.strace"
+          # -f follows a git subprocess too; status is a read-only non-doctor command.
+          # ferry's own exit status is irrelevant here (|| true); the trace is the check.
+          HOME="$SBOX" strace -f -e trace=open,openat -o "$TRACE" "$RUNNER_TEMP/ferry" status </dev/null || true
+          # Harden against a silent no-op: if strace produced no trace at all (not
+          # installed, crashed), the grep below would find nothing and pass falsely.
+          # Require a non-empty trace so this tripwire can never green on a broken run.
+          if [ ! -s "$TRACE" ]; then
+            echo "AC-ssh-not-read: strace produced no trace — cannot verify; failing closed" >&2
+            exit 1
+          fi
+          # FAIL if any open/openat line names a path under the sandbox ~/.ssh/.
+          if grep -E 'open(at)?\(' "$TRACE" | grep -F "$SBOX/.ssh" ; then
+            echo "AC-ssh-not-read: ferry opened a path under ~/.ssh/ (must never read it)" >&2
+            exit 1
+          fi
+          echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."

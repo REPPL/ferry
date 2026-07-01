@@ -49,3 +49,6 @@ ferry.local.toml
 
 # Per-machine dotfile/domain overlay (never synced; see docs/configuration.md)
 local/
+
+# stray bare dev build (release binaries are bin/ferry-<goos>-<arch>)
+/bin/ferry

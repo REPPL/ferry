@@ -71,6 +71,7 @@ See [Getting started](docs/getting-started.md) for the full happy path.
 | `ferry doctor` | Report machine/tool health. |
 | `ferry diff` | Preview what `apply` would change. |
 | `ferry restore` | Reverse ferry's changes, returning the machine to its pre-ferry state from an automatic backup. |
+| `ferry version` | Print the version; `--verbose` adds the Go version and platform. |
 
 ## Principles
 

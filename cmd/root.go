@@ -26,6 +26,14 @@ everywhere.`,
 	Version:       version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
+	// Bare `ferry` (no subcommand) shows the banner landing screen rather than the
+	// full help dump. `ferry --help` still prints the usage; every subcommand keeps
+	// its own behaviour. Args guards against a bare `ferry bogus` silently doing
+	// nothing — an unknown subcommand still errors.
+	Args: cobra.NoArgs,
+	Run: func(cmd *cobra.Command, _ []string) {
+		printBanner(cmd.OutOrStdout())
+	},
 }
 
 // Execute runs the root command. It is the single entry point called by main.

@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/REPPL/ferry/internal/platform"
@@ -19,6 +20,7 @@ import (
 // missing.
 func runDoctor(c *cobra.Command, _ []string) error {
 	out := c.OutOrStdout()
+	colour := stateColourer(out)
 
 	healthy := true
 
@@ -29,42 +31,49 @@ func runDoctor(c *cobra.Command, _ []string) error {
 	}
 
 	// Host tools. git is REQUIRED; a missing git is a hard failure.
-	if reportTool(out, "git", "required") {
+	fmt.Fprintln(out, "\nhost tools:")
+	if reportTool(out, colour, "git", "required", "install git, then re-run `ferry doctor`") {
 		// present
 	} else {
 		healthy = false
 	}
 
 	// Package manager: report whichever is present, or that none is.
-	reportPackageManager(out)
+	reportPackageManager(out, colour)
 
 	// zsh: not required, but ferry's dotfiles target zsh; recommend apply --deps.
-	if !reportTool(out, "zsh", "recommended") {
-		fmt.Fprintln(out, "  zsh is ferry's target shell; install it via `ferry apply --deps`")
-	}
+	reportTool(out, colour, "zsh", "recommended", "ferry's target shell; install it via `ferry apply --deps`")
 
 	// ~/.ssh permission check (read-only: stat only, never read contents, never
 	// modify). ferry is hands-off with ~/.ssh contents.
 	reportSSHPerms(out)
 
+	fmt.Fprintln(out) // blank line before the verdict footer
 	if !healthy {
 		// A required prerequisite is missing: signal an unhealthy machine with a
 		// clear message and a non-zero exit.
-		fmt.Fprintln(out, "doctor: unhealthy — a required prerequisite is missing (see above)")
+		fmt.Fprintf(out, "%s: a required prerequisite is missing (see [fail] above)\n", colour(colRed, "doctor: unhealthy"))
 		return fmt.Errorf("doctor: required prerequisite missing")
 	}
-	fmt.Fprintln(out, "doctor: ok")
+	fmt.Fprintf(out, "%s: all prerequisites present\n", colour(colGreen, "doctor: ok"))
 	return nil
 }
 
-// reportTool looks up a tool on PATH and prints a present/absent line. Returns
-// whether the tool is present.
-func reportTool(out io.Writer, name, importance string) bool {
+// reportTool looks up a tool on PATH and prints a pass/fail/warn line with a fix
+// hint when absent. A "required" tool that is absent is [fail]; a "recommended"
+// tool that is absent is [warn]. Returns whether the tool is present. The tool
+// name and a missing-word stay on the SAME line so a machine grep (and the doctor
+// eval) can pair them.
+func reportTool(out io.Writer, colour func(*color.Color, string) string, name, importance, fixHint string) bool {
 	if _, err := exec.LookPath(name); err == nil {
-		fmt.Fprintf(out, "  %-6s found (%s)\n", name, importance)
+		fmt.Fprintf(out, "  %s %-6s found (%s)\n", colour(colGreen, "[pass]"), name, importance)
 		return true
 	}
-	fmt.Fprintf(out, "  %-6s MISSING (%s) — not found on PATH\n", name, importance)
+	if importance == "required" {
+		fmt.Fprintf(out, "  %s %-6s MISSING (%s) — not found on PATH; %s\n", colour(colRed, "[fail]"), name, importance, fixHint)
+	} else {
+		fmt.Fprintf(out, "  %s %-6s missing (%s) — not found on PATH; %s\n", colour(colYellow, "[warn]"), name, importance, fixHint)
+	}
 	return false
 }
 
@@ -72,14 +81,14 @@ func reportTool(out io.Writer, name, importance string) bool {
 // is present). Detection is PATH-aware (platform.DetectPackageManager). A missing
 // package manager is reported, never treated as a hard failure (apply --deps
 // reports it too).
-func reportPackageManager(out io.Writer) {
+func reportPackageManager(out io.Writer, colour func(*color.Color, string) string) {
 	switch platform.DetectPackageManager() {
 	case platform.ManagerBrew:
-		fmt.Fprintln(out, "  package manager: Homebrew (brew) found")
+		fmt.Fprintf(out, "  %s package manager: Homebrew (brew) found\n", colour(colGreen, "[pass]"))
 	case platform.ManagerApt:
-		fmt.Fprintln(out, "  package manager: apt found")
+		fmt.Fprintf(out, "  %s package manager: apt found\n", colour(colGreen, "[pass]"))
 	default:
-		fmt.Fprintln(out, "  package manager: MISSING — no package manager present (ferry uses whatever is present and never installs one)")
+		fmt.Fprintf(out, "  %s package manager: none present — ferry uses whatever is present and never installs one\n", colour(colYellow, "[warn]"))
 	}
 }
 

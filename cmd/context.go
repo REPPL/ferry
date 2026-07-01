@@ -394,7 +394,7 @@ func loadContext() (*cmdContext, error) {
 
 	scope, err := config.LoadScope(repo)
 	if err != nil {
-		return nil, fmt.Errorf("load scope from %s: %w", repo, err)
+		return nil, fmt.Errorf("could not read the config repo at %s: %w — check the repo exists and is intact, or re-run `ferry init`", repo, err)
 	}
 
 	return &cmdContext{

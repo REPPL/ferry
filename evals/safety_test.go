@@ -162,27 +162,111 @@ func TestSSHNotRead_AC_ssh_not_read(t *testing.T) {
 	s.AssertSSHUntouched(t)
 	s.AssertNoSecretInRepo(t, secret)
 
-	// Level 2 (no open()/openat() under ~/.ssh/): on macOS, where an fs_usage trace
-	// is actually usable, ENFORCE it. fs_usage requires elevated privilege; when it
-	// is not usable in this sandbox we capability-detect and t.Skip the strict check
-	// with a precise reason — the Level-1 tripwire above is the floor.
-	if runtime.GOOS != "darwin" {
-		t.Log("AC-ssh-not-read: non-darwin host; contents-not-read verified to level 1 (no-write + no-capture).")
-		return
-	}
-	if !fsUsageUsable(t, s) {
-		t.Skip("AC-ssh-not-read: fs_usage syscall tracing not usable here (needs root/privileged fs_usage); " +
-			"strict no-open(~/.ssh) check skipped. Level-1 tripwire (no-write + no-capture) asserted above.")
-	}
-	// fs_usage IS usable: assert ZERO opens under ~/.ssh/ for each non-doctor command.
+	// Level 2 (no open()/openat() under ~/.ssh/): where a syscall tracer is usable
+	// ENFORCE it. macOS uses fs_usage (needs privilege); Linux uses strace, which can
+	// trace a DIRECT CHILD unprivileged (default ptrace scope allows tracing your own
+	// descendants) — so on a Linux CI host the strict no-open(~/.ssh) leg actually
+	// RUNS, closing the observability limit fs_usage leaves on unprivileged macOS.
+	// When neither tracer is usable we capability-detect and t.Skip with a precise
+	// reason — the Level-1 tripwire above is the floor.
 	sshDir := s.HomePath(".ssh")
-	for _, args := range nonDoctorRuns {
-		opens := traceSSHOpens(t, s, sshDir, args...)
-		if len(opens) > 0 {
-			t.Errorf("AC-ssh-not-read: `ferry %v` opened path(s) under ~/.ssh/ (must not read):\n%s",
-				args, strings.Join(opens, "\n"))
+	switch runtime.GOOS {
+	case "darwin":
+		if !fsUsageUsable(t, s) {
+			t.Skip("AC-ssh-not-read: fs_usage syscall tracing not usable here (needs root/privileged fs_usage); " +
+				"strict no-open(~/.ssh) check skipped. Level-1 tripwire (no-write + no-capture) asserted above.")
+		}
+		for _, args := range nonDoctorRuns {
+			opens := traceSSHOpens(t, s, sshDir, args...)
+			if len(opens) > 0 {
+				t.Errorf("AC-ssh-not-read: `ferry %v` opened path(s) under ~/.ssh/ (must not read):\n%s",
+					args, strings.Join(opens, "\n"))
+			}
+		}
+	case "linux":
+		if !straceUsable(t) {
+			t.Skip("AC-ssh-not-read: strace not usable here (absent, or ptrace restricted); " +
+				"strict no-open(~/.ssh) check skipped. Level-1 tripwire (no-write + no-capture) asserted above.")
+		}
+		for _, args := range nonDoctorRuns {
+			opens := straceSSHOpens(t, s, sshDir, args...)
+			if len(opens) > 0 {
+				t.Errorf("AC-ssh-not-read: `ferry %v` opened path(s) under ~/.ssh/ (must not read):\n%s",
+					args, strings.Join(opens, "\n"))
+			}
+		}
+	default:
+		t.Logf("AC-ssh-not-read: %s host has no wired syscall tracer; contents-not-read verified to level 1 (no-write + no-capture).", runtime.GOOS)
+	}
+}
+
+// straceUsable reports whether strace can trace a direct child here: the binary is
+// present AND a trivial `strace true` succeeds (a hardened kernel with
+// ptrace_scope=2/3 or a container without CAP_SYS_PTRACE would fail even for a
+// direct child). Keeps the Linux strict leg honest — it enforces where it CAN and
+// skips with a precise reason where the kernel forbids ptrace.
+func straceUsable(t *testing.T) bool {
+	t.Helper()
+	if _, err := exec.LookPath("strace"); err != nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	// -f follows children; tracing `true` is a minimal capability probe.
+	cmd := exec.CommandContext(ctx, "strace", "-f", "-e", "trace=openat,open", "true")
+	out, err := cmd.CombinedOutput()
+	low := strings.ToLower(string(out))
+	if strings.Contains(low, "operation not permitted") || strings.Contains(low, "ptrace") && err != nil {
+		return false
+	}
+	return err == nil
+}
+
+// straceSSHOpens runs `ferry args...` under `strace -f -e trace=open,openat` and
+// returns any traced open/openat lines whose path argument is under sshDir. An
+// empty slice means the command performed ZERO opens under ~/.ssh/. strace writes
+// the trace to stderr; we filter for open/openat lines naming a ~/.ssh path.
+func straceSSHOpens(t *testing.T, s *Sandbox, sshDir string, args ...string) []string {
+	t.Helper()
+	bin := requireBin(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), ferryTimeout)
+	defer cancel()
+
+	// -f: follow forks (a git subprocess must not read ~/.ssh either).
+	// -y: annotate fds with paths (belt-and-braces; path is already in the open arg).
+	// -e trace=open,openat: the content-read syscalls the AC forbids under ~/.ssh/.
+	straceArgs := []string{"-f", "-e", "trace=open,openat", "--", bin}
+	straceArgs = append(straceArgs, args...)
+	cmd := exec.CommandContext(ctx, "strace", straceArgs...)
+	cmd.Env = s.env()
+	cmd.Dir = s.Home
+	cmd.Stdin = strings.NewReader("")
+
+	// strace emits the trace on stderr; ferry's own stderr is interleaved but the
+	// open/openat lines are unambiguous (they start with the syscall name after an
+	// optional "[pid N] " prefix).
+	var buf strings.Builder
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	_ = cmd.Run() // ferry's own exit code is irrelevant; we inspect the trace.
+
+	var hits []string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		// Match an actual open/openat SYSCALL line, not incidental text: after any
+		// "[pid N] " prefix the line begins with `open(` or `openat(`.
+		trimmed := strings.TrimSpace(line)
+		if i := strings.Index(trimmed, "] "); i >= 0 && strings.HasPrefix(trimmed, "[pid ") {
+			trimmed = trimmed[i+2:]
+		}
+		if !strings.HasPrefix(trimmed, "open(") && !strings.HasPrefix(trimmed, "openat(") {
+			continue
+		}
+		if strings.Contains(line, sshDir) {
+			hits = append(hits, line)
 		}
 	}
+	return hits
 }
 
 // fsUsageUsable reports whether an fs_usage trace can actually be captured here

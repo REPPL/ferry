@@ -8,12 +8,22 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
 	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/platform"
 	"github.com/REPPL/ferry/internal/terminal"
 )
+
+// stateColourer returns the shared banner colouriser (colourFor), so status,
+// diff, and doctor colour their state words through the same fatih/color gate as
+// the banner: green = good/clean, yellow = a pending or advisory change, red = a
+// conflict/failure, and plain text whenever the destination is not an interactive
+// terminal (a pipe, a file, NO_COLOR). Callers pass colGreen/colYellow/colRed.
+func stateColourer(w io.Writer) func(*color.Color, string) string {
+	return colourFor(w)
+}
 
 // runStatus reports config drift for every in-scope managed target. It is fully
 // read-only: it reuses apply's planning (buildPlan) so the resolution is
@@ -51,6 +61,8 @@ func runStatus(c *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, w)
 	}
 
+	colour := stateColourer(out)
+
 	var drifted int
 	var reported int
 
@@ -61,7 +73,7 @@ func runStatus(c *cobra.Command, _ []string) error {
 		// Report each in-scope terminal domain's managed/applied state read-only.
 		if it.kind == kindPreference {
 			reported++
-			if reportTerminalStatus(out, ctx.RepoPath, it) {
+			if reportTerminalStatus(out, colour, ctx.RepoPath, it) {
 				drifted++
 			}
 			continue
@@ -74,11 +86,11 @@ func runStatus(c *cobra.Command, _ []string) error {
 		// A missing secret means apply would SKIP this target — report it as
 		// blocked (held back), NOT as drift, so it is not a false action item.
 		if it.skip {
-			fmt.Fprintf(out, "  %-22s blocked (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
+			fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
 			continue
 		}
 
-		if reportStatus(out, it.domain, it.state) {
+		if reportStatus(out, colour, it.domain, it.state) {
 			drifted++
 		}
 	}
@@ -87,10 +99,12 @@ func runStatus(c *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "no managed config in scope; nothing to report")
 		return nil
 	}
+	// One-line summary footer so the report is scannable at a glance.
 	if drifted == 0 {
-		fmt.Fprintln(out, "clean: no drift detected; all managed files are in sync")
+		fmt.Fprintf(out, "\n%s — %d in sync, no drift detected\n", colour(colGreen, "clean"), reported)
 	} else {
-		fmt.Fprintf(out, "%d managed file(s) drifted from the repo\n", drifted)
+		fmt.Fprintf(out, "\n%s — %d drifted, %d clean of %d in scope\n",
+			colour(colYellow, "drift"), drifted, reported-drifted, reported)
 	}
 	return nil
 }
@@ -109,16 +123,16 @@ func runStatus(c *cobra.Command, _ []string) error {
 //   - not yet applied (no baseline)      -> "not yet applied (run `ferry apply`)" [drift]
 //   - applied AND live drifted from repo -> "drifted (live differs; run `ferry capture`)" [drift]
 //   - applied AND in sync (or linux)     -> "managed (applied)" [clean]
-func reportTerminalStatus(out io.Writer, repo string, it planItem) (isDrift bool) {
+func reportTerminalStatus(out io.Writer, colour func(*color.Color, string) string, repo string, it planItem) (isDrift bool) {
 	if !it.prefApplied {
-		fmt.Fprintf(out, "  %-22s not yet applied (run `ferry apply`)\n", it.domain)
+		fmt.Fprintf(out, "  %-22s %s (run `ferry apply`)\n", it.domain, colour(colYellow, "not yet applied"))
 		return true
 	}
 	if platform.IsDarwin() && terminalLiveDiffers(repo, it.domain) {
-		fmt.Fprintf(out, "  %-22s drifted (live differs from repo; run `ferry capture` to record it)\n", it.domain)
+		fmt.Fprintf(out, "  %-22s %s (live differs from repo; run `ferry capture` to record it)\n", it.domain, colour(colYellow, "drifted"))
 		return true
 	}
-	fmt.Fprintf(out, "  %-22s managed (applied)\n", it.domain)
+	fmt.Fprintf(out, "  %-22s %s (applied)\n", it.domain, colour(colGreen, "managed"))
 	return false
 }
 
@@ -199,22 +213,22 @@ func terminalRepoStatusSource(repo, domain, prefID string) string {
 // it counts as drift (a non-clean state the user should act on). Names the target
 // and its state: clean / locally-drifted (capture candidate) / repo-ahead /
 // conflict / missing.
-func reportStatus(out io.Writer, name string, state dotfile.State) (isDrift bool) {
+func reportStatus(out io.Writer, colour func(*color.Color, string) string, name string, state dotfile.State) (isDrift bool) {
 	switch state {
 	case dotfile.StateClean:
-		fmt.Fprintf(out, "  %-22s clean\n", name)
+		fmt.Fprintf(out, "  %-22s %s\n", name, colour(colGreen, "clean"))
 		return false
 	case dotfile.StateLocallyDrifted:
-		fmt.Fprintf(out, "  %-22s drifted (locally modified; run `ferry capture` to record it)\n", name)
+		fmt.Fprintf(out, "  %-22s %s (locally modified; run `ferry capture` to record it)\n", name, colour(colYellow, "drifted"))
 		return true
 	case dotfile.StateConflict:
-		fmt.Fprintf(out, "  %-22s conflict (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", name)
+		fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", name, colour(colRed, "conflict"))
 		return true
 	case dotfile.StateRepoAhead:
-		fmt.Fprintf(out, "  %-22s repo-ahead (repo changed; run `ferry apply` to deploy it)\n", name)
+		fmt.Fprintf(out, "  %-22s %s (repo changed; run `ferry apply` to deploy it)\n", name, colour(colYellow, "repo-ahead"))
 		return true
 	case dotfile.StateMissing:
-		fmt.Fprintf(out, "  %-22s missing (not yet deployed; run `ferry apply`)\n", name)
+		fmt.Fprintf(out, "  %-22s %s (not yet deployed; run `ferry apply`)\n", name, colour(colYellow, "missing"))
 		return true
 	default:
 		fmt.Fprintf(out, "  %-22s %s\n", name, state)
