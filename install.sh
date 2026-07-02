@@ -54,10 +54,10 @@ asset="ferry-${os}-${arch}"
 # Referenced dynamically via `eval` below, hence shellcheck can't see the use.
 # shellcheck disable=SC2034
 {
-  sha_darwin_arm64="77a9217b860ba124750abf30c803d374495c08f38ec2f6aba1ec5809f9f58ffe"
-  sha_darwin_amd64="c25056e3477d5d012b99764afe3b589ddc2726229213d1cbb80c8223ed425c11"
-  sha_linux_arm64="a2a053560b3cbe2abb4657d9f75d2e625646550fe6d6c21d79358611a01cdbe2"
-  sha_linux_amd64="35a60f49a09004e0516c65e7281daa35fa45f5db18bddfd30ffea2686c214e2c"
+  sha_darwin_arm64="8e7291c31a3ac41e67c41bc5e97aef440d12a97b1ec079279ea475c5c561a61d"
+  sha_darwin_amd64="c74066b3ee84c267ca75f47a54a2d3af03ff86233976ed046ecfea112ae09562"
+  sha_linux_arm64="2ffe947e0c81db616a176637544a049c00ba34b6c3385f704cbca867a18dfe43"
+  sha_linux_amd64="653112d2ac656d35d255cfa4f024becea164a832e50e73bf38c3ba951882398b"
 }
 eval "expected_sha=\${sha_${os}_${arch}}"
 
