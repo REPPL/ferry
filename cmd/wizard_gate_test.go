@@ -12,12 +12,15 @@ package cmd
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/REPPL/ferry/internal/plugin"
 )
 
 // decrpmGarbage is the reply shape a real terminal sends to the mode-2026/2027
@@ -210,5 +213,111 @@ func TestDrainPendingInput_FlushesTTYInputQueue(t *testing.T) {
 	}
 	if strings.TrimSpace(line) != "later" {
 		t.Errorf("queue flush left pre-drain bytes on the line: got %q", line)
+	}
+}
+
+// Field finding #2 (v0.3.1 screenshots): per-block screens titled blocks by
+// their first line — a banner-comment divider made the title meaningless and
+// the user could not see WHAT they were routing. The title now prefers the
+// first INFORMATIVE line and the group description previews the MASKED block
+// content.
+func TestTuiBlockTitleSkipsBannerComments(t *testing.T) {
+	// The REAL zsh plugin: its Describe renders "kind: first line", which is
+	// exactly what the informative-line shift must feed.
+	p, err := wizardRegistry.Get("zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	banner := plugin.Block{Kind: plugin.PathExport, Start: 1, Raw: []byte(
+		"# ═══════════════════════════════\n# ---- #### ----\nexport PATH=\"$HOME/bin:$PATH\"\n")}
+	title := tuiBlockTitle(p, banner)
+	if strings.Contains(title, "═") || strings.Contains(title, "----") {
+		t.Errorf("title still shows the banner divider: %q", title)
+	}
+	if !strings.Contains(title, "export PATH") {
+		t.Errorf("title does not show the first informative line: %q", title)
+	}
+
+	// An informative FIRST line is used as-is (no shifting).
+	plain := plugin.Block{Kind: plugin.Alias, Start: 1, Raw: []byte("alias gs='git status'\nalias ll='ls -la'\n")}
+	if got := tuiBlockTitle(p, plain); !strings.Contains(got, "alias gs='git status'") {
+		t.Errorf("informative first line was not used: %q", got)
+	}
+	// An informative COMMENT (letters) counts as informative.
+	commented := plugin.Block{Kind: plugin.Other, Start: 1, Raw: []byte("# Path setup for tools\nexport A=b\n")}
+	if got := tuiBlockTitle(p, commented); !strings.Contains(got, "Path setup") {
+		t.Errorf("informative comment line was skipped: %q", got)
+	}
+	// An all-banner block falls back to the unshifted Describe.
+	allBanner := plugin.Block{Kind: plugin.Comment, Start: 1, Raw: []byte("# ════\n# ────\n")}
+	if got := tuiBlockTitle(p, allBanner); got == "" {
+		t.Errorf("all-banner block produced an empty title")
+	}
+}
+
+func TestTuiBlockPreviewTruncationAndClipping(t *testing.T) {
+	// 20 lines: 12 shown + "(+8 more lines)" marker.
+	var raw strings.Builder
+	for i := 1; i <= 20; i++ {
+		fmt.Fprintf(&raw, "alias a%d='x'\n", i)
+	}
+	preview := tuiBlockPreview(plugin.Block{Kind: plugin.Alias, Start: 1, Raw: []byte(raw.String())})
+	if got := strings.Count(preview, "│"); got != tuiPreviewMaxLines {
+		t.Errorf("preview shows %d lines, want %d", got, tuiPreviewMaxLines)
+	}
+	if !strings.Contains(preview, "(+8 more lines)") {
+		t.Errorf("truncation marker missing/wrong:\n%s", preview)
+	}
+	if strings.Contains(preview, "a13'") {
+		t.Errorf("preview leaked lines beyond the cap:\n%s", preview)
+	}
+
+	// A short block shows fully, no marker.
+	short := tuiBlockPreview(plugin.Block{Raw: []byte("one\ntwo\n")})
+	if strings.Contains(short, "more lines") {
+		t.Errorf("short block got a truncation marker:\n%s", short)
+	}
+	if !strings.Contains(short, "│ one") || !strings.Contains(short, "│ two") {
+		t.Errorf("short block not fully shown:\n%s", short)
+	}
+
+	// Long lines clip to the column budget with an ellipsis.
+	long := strings.Repeat("x", 150)
+	clipped := tuiBlockPreview(plugin.Block{Raw: []byte(long + "\n")})
+	line := strings.TrimPrefix(strings.TrimSpace(clipped), "│ ")
+	if got := len([]rune(line)); got != tuiPreviewMaxCols {
+		t.Errorf("clipped line is %d runes, want %d", got, tuiPreviewMaxCols)
+	}
+	if !strings.HasSuffix(line, "…") {
+		t.Errorf("clipped line lacks the ellipsis: %q", line)
+	}
+}
+
+// The secret value never reaches the title or the preview: both operate on
+// the maskBlockSecrets output (reusing the masking fixtures).
+func TestTuiTitleAndPreviewMaskSecrets(t *testing.T) {
+	leaky := &leakyPlugin{routes: []plugin.Route{plugin.SecretStore, plugin.Drop}}
+	in := leakyInputs(t, leaky)
+	masked := maskBlockSecrets(in.blocks[0], in.findings, 0, leaky.Domain())
+
+	// Title through the REAL zsh Describe (content-bearing), over the masked block.
+	zsh, err := wizardRegistry.Get("zsh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	title := tuiBlockTitle(zsh, masked)
+	if strings.Contains(title, synthWizardSecret) {
+		t.Errorf("title leaks the secret value: %q", title)
+	}
+	if !strings.Contains(title, "{{ferry.secret") {
+		t.Errorf("title does not show the masked line: %q", title)
+	}
+	preview := tuiBlockPreview(masked)
+	if strings.Contains(preview, synthWizardSecret) {
+		t.Errorf("preview leaks the secret value:\n%s", preview)
+	}
+	if !strings.Contains(preview, `{{ferry.secret "zsh.leaked"}}`) {
+		t.Errorf("preview does not show the placeholder-masked line:\n%s", preview)
 	}
 }

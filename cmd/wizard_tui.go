@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
+	"unicode"
 
 	huh "charm.land/huh/v2"
 
@@ -190,11 +192,15 @@ func tuiCollectChoices(in *bufio.Reader, out io.Writer, inputs *wizardInputs, re
 			caveat += " (its secret-shaped line is routed separately in the next step)"
 		}
 		// Describe over the MASKED block: a secret-bearing block titles with
-		// its placeholder, never the raw value.
+		// its placeholder, never the raw value. The title prefers the first
+		// INFORMATIVE line (banner-divider comments skipped) and the group
+		// description shows the block CONTENT (git-add-p model: the user must
+		// see WHAT they are routing, not a truncated divider).
 		masked := maskBlockSecrets(b, inputs.findings, i, inputs.p.Domain())
 		groups = append(groups, huh.NewGroup(
 			huh.NewSelect[string]().
-				Title(fmt.Sprintf("block %d — %s%s", i, inputs.p.Describe(masked), caveat)).
+				Title(fmt.Sprintf("block %d — %s%s", i, tuiBlockTitle(inputs.p, masked), caveat)).
+				Description(tuiBlockPreview(masked)).
 				Options(
 					huh.NewOption("Shared (committed, deploys everywhere)", "shared"),
 					huh.NewOption("Local (per-machine sidecar ~/.zshrc.local)", "local"),
@@ -212,9 +218,13 @@ func tuiCollectChoices(in *bufio.Reader, out io.Writer, inputs *wizardInputs, re
 		}
 		i := i
 		secretRoutes[i] = "store"
+		// The preview shows the MASKED block (placeholders, never the value),
+		// so the user sees which block they are routing to store/drop.
+		maskedSecret := maskBlockSecrets(inputs.blocks[i], inputs.findings, i, inputs.p.Domain())
 		groups = append(groups, huh.NewGroup(
 			huh.NewSelect[string]().
 				Title(fmt.Sprintf("block %d carries secret-shaped content — it is never committed. Route it:", i)).
+				Description(tuiBlockPreview(maskedSecret)).
 				Options(
 					huh.NewOption("Secret store (out-of-repo, placeholder in the seed)", "store"),
 					huh.NewOption("Drop (line removed; survives only in the backup)", "drop"),
@@ -301,6 +311,77 @@ func starterField(q plugin.Question, val *string) huh.Field {
 		return huh.NewSelect[string]().Title(q.Prompt).Description(q.Description).Options(opts...).Value(val)
 	}
 	return huh.NewInput().Title(q.Prompt).Description(q.Description).Value(val)
+}
+
+// tuiPreviewMaxLines / tuiPreviewMaxCols bound the block-content preview: a
+// terminal-friendly snippet, never a full-file dump.
+const (
+	tuiPreviewMaxLines = 12
+	tuiPreviewMaxCols  = 100
+)
+
+// tuiBlockPreview renders a MASKED block's content as a quoted snippet for a
+// group description: first tuiPreviewMaxLines lines, prefix-indented, long
+// lines clipped, with a "… (+N more lines)" marker when truncated. Callers
+// pass the maskBlockSecrets output, so a secret value never reaches it.
+func tuiBlockPreview(b plugin.Block) string {
+	lines := strings.Split(strings.TrimRight(string(b.Raw), "\n"), "\n")
+	total := len(lines)
+	shown := lines
+	if total > tuiPreviewMaxLines {
+		shown = lines[:tuiPreviewMaxLines]
+	}
+	var sb strings.Builder
+	for _, l := range shown {
+		if runes := []rune(l); len(runes) > tuiPreviewMaxCols {
+			l = string(runes[:tuiPreviewMaxCols-1]) + "…"
+		}
+		sb.WriteString("  │ ")
+		sb.WriteString(l)
+		sb.WriteString("\n")
+	}
+	if total > len(shown) {
+		sb.WriteString(fmt.Sprintf("  … (+%d more lines)", total-len(shown)))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+// tuiBlockTitle titles a block by its first INFORMATIVE line: banner-divider
+// comments (a comment carrying only punctuation/box-drawing characters, e.g.
+// `# ═══════`) and blank lines are skipped so the title says WHAT the block
+// is, not how it is decorated. The plugin's Describe contract is untouched —
+// this shifts the (already MASKED) block to the informative line and lets
+// Describe render it; an all-banner block falls back to Describe unchanged.
+func tuiBlockTitle(p plugin.Plugin, masked plugin.Block) string {
+	lines := strings.Split(string(masked.Raw), "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" || isBannerCommentLine(t) {
+			continue
+		}
+		if i == 0 {
+			break // first line is already informative
+		}
+		shifted := plugin.Block{Kind: masked.Kind, Raw: []byte(strings.Join(lines[i:], "\n")), Start: masked.Start + i}
+		return p.Describe(shifted)
+	}
+	return p.Describe(masked)
+}
+
+// isBannerCommentLine reports whether a trimmed line is a banner/divider
+// comment: it starts with '#' and its body carries NO letter or digit (only
+// punctuation/box-drawing/whitespace, or nothing at all).
+func isBannerCommentLine(t string) bool {
+	if !strings.HasPrefix(t, "#") {
+		return false
+	}
+	body := strings.TrimSpace(strings.TrimLeft(t, "#"))
+	for _, r := range body {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // hasMachineFinding reports whether block i carries a MachineSpecific finding.
