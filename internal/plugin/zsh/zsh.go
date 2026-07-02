@@ -81,8 +81,11 @@ func (p *Plugin) Describe(b plugin.Block) string {
 		first = t
 		break
 	}
-	if len(first) > 60 {
-		first = first[:57] + "..."
+	// Clip by RUNES, not bytes: multibyte content (box-drawing banners, emoji)
+	// must never be split mid-rune into mojibake (found in review 2026-07-02;
+	// the preview helper already clips rune-wise).
+	if r := []rune(first); len(r) > 60 {
+		first = string(r[:57]) + "..."
 	}
 	return fmt.Sprintf("%s: %s", b.Kind, first)
 }
