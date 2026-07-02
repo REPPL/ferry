@@ -103,8 +103,23 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 		return fmt.Errorf("a ferry config repo already exists at %s — `init --github` sets up a NEW managed repo; remove or rename the existing one first (or use `ferry capture` to push to it)", existing)
 	}
 
-	// STEP 3 (confirmation): print the FULL resolved <host>/<owner>/<name>. On a
-	// TTY require confirmation unless --yes; non-interactive REQUIRE --yes.
+	// STEP 5 (check-and-avoid, read-only preflight — runs BEFORE the wizard so
+	// the user learns about a taken name before answering questions): does
+	// <owner>/<name> already exist? If so ABORT and tell the user to pass a
+	// different name — ferry NEVER reuses a repo and NEVER auto-derives an
+	// alternative. A network/auth error surfaces as-is (not "exists").
+	exists, err := gh.RepoExists(owner, name)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%s/%s already exists — ferry won't reuse it. Re-run with a different name: `ferry init --github <other-name>`", owner, name)
+	}
+
+	// Create-confirm: print the FULL resolved <host>/<owner>/<name>. On a TTY
+	// require confirmation unless --yes; non-interactive REQUIRE --yes. (--yes
+	// keeps this confirmation-assent meaning even when --wizard-answers drives
+	// the wizard decisions — the pinned FLAG PRECEDENCE.)
 	fmt.Fprintf(out, "ferry will create a PRIVATE GitHub repo: %s\n", resolved)
 	if !yes {
 		if stdinIsTerminal() {
@@ -117,24 +132,35 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 		}
 	}
 
-	// STEP 5 (check-and-avoid): does <owner>/<name> already exist? If so ABORT and
-	// tell the user to pass a different name — ferry NEVER reuses a repo and NEVER
-	// auto-derives an alternative. A network/auth error surfaces as-is (not "exists").
-	exists, err := gh.RepoExists(owner, name)
+	// Wizard / answers-file / gate-and-extract fallback: build the ONE seedPlan
+	// (PURE — no filesystem or network mutation; F2-4/F3-3). Declining at the
+	// wizard's preview gate exits here with nothing written, local or remote.
+	noWizard, _ := c.Flags().GetBool("no-wizard")
+	repair, _ := c.Flags().GetBool("repair")
+	answersPath, _ := c.Flags().GetString("wizard-answers")
+	plan, declined, err := buildInitSeedPlan(in, out, c.ErrOrStderr(), freshInitOpts{
+		yes:         yes,
+		noWizard:    noWizard,
+		repair:      repair,
+		answersPath: answersPath,
+	})
 	if err != nil {
 		return err
 	}
-	if exists {
-		return fmt.Errorf("%s/%s already exists — ferry won't reuse it. Re-run with a different name: `ferry init --github <other-name>`", owner, name)
+	if declined {
+		return nil
 	}
 
-	// STEP 6 (SECRET GATE before commit — CRITICAL): before initFresh writes and
-	// COMMITS the adopted ~/.zshrc, run the SAME blocking gate capture/export use.
-	// A high-confidence secret must NEVER enter the local commit, let alone the
-	// remote. Abort before creating a git repo, staging, committing, or pushing if
-	// the content that would be committed looks like a secret. (This runs BEFORE
-	// `gh repo create`, so a blocked secret never even creates the remote.)
-	if err := gateManagedContentBeforeCommit(); err != nil {
+	// 7(a) re-gate + SECRET GATE before commit (CRITICAL): the gate scans the
+	// files the initial commit will ACTUALLY contain — the seedPlan's
+	// placeholder-bearing content, not a re-read of the raw ~/.zshrc the wizard
+	// already de-secreted. A high-confidence secret must NEVER enter the local
+	// commit, let alone the remote; abort here writes NOTHING (no remote, no
+	// repo dir, no .bak, no store put — the old MkdirAll-on-abort is gone, F3-6).
+	if err := regateSeedPlan(plan); err != nil {
+		return err
+	}
+	if err := gateManagedContentBeforeCommit(plan); err != nil {
 		return err
 	}
 
@@ -186,10 +212,11 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 		return partialFailure("verification", fmt.Errorf("identity mismatch: created %q but expected %q — refusing to push to an unexpected account/repo", view.NameWithOwner, owner+"/"+name))
 	}
 
-	// STEP 9 (local repo + HTTPS origin): reuse initFresh (fresh repo + adopt
-	// ~/.zshrc, already secret-gated in step 6). Then set origin to the repo's
-	// HTTPS clone URL — VALIDATE the scheme ourselves (must be https://).
-	repoPath, err = initFresh(out, "")
+	// 7(b) visible .bak -> 7(c) secret puts -> 7(d) seed the local repo from
+	// the SAME seedPlan the gates scanned (executeSeedPlan re-runs the pure
+	// re-gate first, then backs up, stores, git-inits, and seeds). Then set
+	// origin to the repo's HTTPS clone URL — VALIDATE the scheme ourselves.
+	repoPath, err = executeSeedPlan(out, plan, "")
 	if err != nil {
 		return partialFailure("local repo setup", err)
 	}
@@ -284,23 +311,20 @@ func validateManagedOrigin(originURL, owner, name string) error {
 
 // gateManagedContentBeforeCommit runs the SAME blocking secret gate as
 // capture/export over EVERY file the initial commit will contain — NOT just the
-// adopted ~/.zshrc. The CRITICAL no-secret-in-repo invariant must not depend on
-// "only ~/.zshrc happens to carry user content today": ferry enumerates the EXACT
-// set of files initFresh will `git add -A` + commit (the generated manifest, the
-// gitignore/local-layer templates, and the adopted ~/.zshrc source) and gates each
-// one. If ANY is a high-confidence secret it ABORTS before `gh repo create`, so no
-// remote is created, nothing is staged, committed or pushed. The message points
-// the user at an out-of-band path.
-func gateManagedContentBeforeCommit() error {
-	files := plannedCommitContents()
+// seeded zshrc source. The CRITICAL no-secret-in-repo invariant must not depend
+// on "only ~/.zshrc happens to carry user content today": ferry enumerates the
+// EXACT set of files seedRepoFromPlan will `git add -A` + commit (the generated
+// manifest, the gitignore/local-layer entries, and the seedPlan's shared
+// source) and gates each one. If ANY is a high-confidence secret it ABORTS
+// before `gh repo create`, so no remote is created and nothing is staged,
+// committed, or pushed. PURE: it writes NOTHING on abort (the former
+// MkdirAll-on-abort was removed, F3-6). With the wizard/fallback extracting
+// secrets into the plan's store puts, this gate is defense-in-depth: it can
+// only fire on a seedPlan bug.
+func gateManagedContentBeforeCommit(plan *seedPlan) error {
+	files := plannedCommitContents(plan)
 	for label, data := range files {
 		if secret.IsBlockedFromRepo(data) {
-			// Materialise the neutral repo dir EMPTY (no git init, no commit, no secret)
-			// so ferry's workspace exists but carries nothing — the secret never enters a
-			// repo, tree, or history. Then abort.
-			if dir, derr := defaultRepoDir(); derr == nil {
-				_ = os.MkdirAll(dir, 0o755)
-			}
 			return fmt.Errorf("the file %s that ferry would commit contains what looks like a secret (e.g. a private key or token); ferry won't commit or push it to GitHub.\n"+
 				"Move the secret to a secret store or ~/.zshrc.local and re-run, or use `ferry init` for a purely local repo", label)
 		}
@@ -308,19 +332,19 @@ func gateManagedContentBeforeCommit() error {
 	return nil
 }
 
-// plannedCommitContents returns, keyed by a human label, the content of EVERY file
-// the initial managed commit will contain — mirroring exactly what initFresh
-// writes and commits (git add -A). Keeping this in lockstep with initFresh is what
-// lets the pre-create gate scan the WHOLE commit, not just ~/.zshrc. The adopted
-// ~/.zshrc source is included only when there is real content to adopt (same
-// condition initFresh seeds it under).
-func plannedCommitContents() map[string]string {
+// plannedCommitContents returns, keyed by a human label, the content of EVERY
+// file the initial managed commit will contain — rendered from the SAME
+// seedPlan seedRepoFromPlan writes ("lockstep with the SeedPlan", F2-4), so
+// the pre-create gate scans what will ACTUALLY be committed: placeholders,
+// not raw secrets. The per-machine local seed is gitignored (never committed),
+// so it is gated by the seedPlan re-gate instead.
+func plannedCommitContents(plan *seedPlan) map[string]string {
 	files := map[string]string{
-		config.SharedManifestName: "[manage]\ndotfiles = [\".zshrc\"]\n",
+		config.SharedManifestName: plan.manifest,
 		".gitignore":              config.LocalManifestName + "\nlocal/\n",
 	}
-	if data, ok := readExistingZshrc(); ok {
-		files[dotfile.RepoSubdir+"/zshrc"] = string(data)
+	if plan.shared != nil {
+		files[dotfile.RepoSubdir+"/zshrc"] = string(plan.shared)
 	}
 	return files
 }

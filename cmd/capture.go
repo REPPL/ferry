@@ -46,6 +46,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 	}
 
 	out := c.OutOrStdout()
+	errOut := c.ErrOrStderr()
 	in := bufio.NewReader(c.InOrStdin())
 
 	home, err := os.UserHomeDir()
@@ -94,6 +95,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 		// it does NOT skip the zsh sidecar pass below.
 		wroteShared, offeredShared, err := captureSharedDotfile(captureCtx{
 			out:         out,
+			errOut:      errOut,
 			in:          in,
 			repoPath:    ctx.RepoPath,
 			name:        name,
@@ -124,6 +126,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 		if isZsh(strings.TrimPrefix(name, ".")) {
 			wroteSide, offeredSide, err := captureZshSidecar(captureCtx{
 				out:         out,
+				errOut:      errOut,
 				in:          in,
 				repoPath:    ctx.RepoPath,
 				name:        name,
@@ -158,6 +161,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 			}
 			wroteDom, offeredDom, derr := captureTerminalDomain(captureCtx{
 				out:         out,
+				errOut:      errOut,
 				in:          in,
 				repoPath:    ctx.RepoPath,
 				secretStore: secretStore,
@@ -232,6 +236,7 @@ func preflightGit() error {
 // captureCtx bundles the per-candidate inputs for captureOne.
 type captureCtx struct {
 	out         io.Writer
+	errOut      io.Writer
 	in          *bufio.Reader
 	repoPath    string
 	name        string
@@ -241,6 +246,23 @@ type captureCtx struct {
 	liveBytes   []byte
 	lastApplied *dotfile.Store
 	secretStore *secret.Store
+
+	// placeholderAware: the repo source carries placeholders and every ref
+	// resolved — repoBytes is the SOURCE (placeholders intact) and liveBytes is
+	// the REVERSE-RENDERED live content (render-and-splice, r7-M1/r8-C1).
+	placeholderAware bool
+	// missingRefFallback: the source carries placeholders but a ref is missing
+	// (r8-M2): capture runs today's raw-source behavior, and a gate block is
+	// reported READ-ONLY (no whole-file store escape — r9-M1).
+	missingRefFallback bool
+}
+
+// captureErrOut returns the ctx's stderr writer, defaulting to the main writer.
+func (cc captureCtx) captureErrOut() io.Writer {
+	if cc.errOut != nil {
+		return cc.errOut
+	}
+	return cc.out
 }
 
 // captureOne reviews and routes a single drifted dotfile. It returns whether it
@@ -253,10 +275,29 @@ func captureOne(cc captureCtx) (bool, error) {
 	fmt.Fprintf(cc.out, "\n=== %s (drifted) ===\n", "."+bare)
 
 	// --- MANDATORY secret gate, BEFORE any write. ---
-	// Scan the live content; a high-confidence secret blocks every repo route.
+	// Scan the reviewable content; a high-confidence secret blocks every repo
+	// route. For a placeholder-aware capture cc.liveBytes is the
+	// REVERSE-RENDERED live content: stored secrets sit behind their intact
+	// placeholders and never reach the gate — only a genuinely NEW secret
+	// trips it, and its consent choice comes AFTER the hunk review (the
+	// span-grained blocked path, r6-M1). In the missing-ref fallback a block
+	// is READ-ONLY (r9-M1: no whole-file store escape for a
+	// placeholder-bearing source).
 	gate := secret.GateText(string(cc.liveBytes))
+	var hunkMasks []maskPair
 	if gate.BlockedFromRepo {
-		return captureBlocked(cc, bare)
+		if cc.missingRefFallback {
+			reportReadOnlyBlock(cc.out, "."+bare)
+			return false, nil
+		}
+		if !cc.placeholderAware {
+			return captureBlocked(cc, bare)
+		}
+		// Falling through to the hunk review with a gated NEW secret in the
+		// reviewable content: MASK every flagged span value in all hunk output
+		// (the wizard preview-masking contract — the raw value must never
+		// print, on any stream, before or after the consent prompt).
+		hunkMasks = captureSecretMasks(string(cc.liveBytes), bare)
 	}
 
 	// --- Hunk-by-hunk review: accept/reject each change independently. ---
@@ -264,7 +305,7 @@ func captureOne(cc captureCtx) (bool, error) {
 	accepted := make([]bool, len(hunks))
 	anyAccepted := false
 	for i, h := range hunks {
-		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), renderHunk(h))
+		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), maskCaptureText(renderHunk(h), hunkMasks))
 		ans := prompt(cc.in, "accept this hunk? [y]es / [n]o (default n): ")
 		if ans == "y" || ans == "yes" {
 			accepted[i] = true
@@ -285,12 +326,34 @@ func captureOne(cc captureCtx) (bool, error) {
 
 	// Compose the captured content = repo content with accepted hunks applied.
 	captured := applyHunks(string(cc.repoBytes), hunks, accepted)
+	spanPatched := false
+	var storedRefs []string // refs Put by the span consent (for honest refusal notices)
 
 	// Re-scan the COMPOSED content too: an accepted hunk might carry a secret even
 	// if the whole-file scan was driven differently. Never write a secret.
 	if secret.IsBlockedFromRepo(captured) {
-		fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare)
-		return false, nil
+		if !cc.placeholderAware {
+			fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare)
+			return false, nil
+		}
+		// Placeholder-bearing source + a NEW secret in the accepted change:
+		// the span-grained consent path (r6-M1) — store ONLY the new span(s),
+		// patch only those spans, preserve the curated remainder. Never the
+		// whole-file escape (it would overwrite the curated source).
+		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare, bare, captured)
+		if cerr != nil {
+			return false, cerr
+		}
+		if !ok {
+			return false, nil
+		}
+		captured = patched
+		storedRefs = refs
+		// The route branches below must see the PATCHED composition: the zsh
+		// local-route delta is rebuilt from `captured` (see spanPatched), so a
+		// store-then-local ([x] then [l]) sequence carries the placeholder into
+		// the sidecar instead of refusing on the raw value it just stored.
+		spanPatched = true
 	}
 
 	// --- Route the accepted result. ---
@@ -326,12 +389,20 @@ func captureOne(cc captureCtx) (bool, error) {
 		// repo edit would misclassify as a CONFLICT. Stage the effective bytes (the
 		// captured composition — it already carries the injected source line) and
 		// advance last-applied against THOSE, mirroring how apply records last-applied
-		// for zsh (effective, source-last). UpdateLastApplied advances only on a full
-		// reproduction (live == effective), so a partial capture still leaves the
-		// remaining drift reported. Non-zsh dotfiles fall through to the raw-repo path
-		// below (their deployed content IS the raw repo file).
-		if zsh {
-			if err := recordEffectiveLastApplied(cc.target, cc.lastApplied, []byte(captured)); err != nil {
+		// for zsh (effective, source-last). For a placeholder-bearing source the
+		// staged bytes are additionally RENDERED (r4-M2): last-applied reflects the
+		// rendered-effective content, so a post-capture status reads Clean and a
+		// later repo edit classifies RepoAhead, never conflict. UpdateLastApplied
+		// advances only on a full reproduction (live == effective), so a partial
+		// capture still leaves the remaining drift reported. Non-zsh dotfiles
+		// without placeholders fall through to the raw-repo path below (their
+		// deployed content IS the raw repo file).
+		if zsh || cc.placeholderAware {
+			staged := []byte(captured)
+			if cc.placeholderAware {
+				staged = renderForLastApplied(cc.secretStore, staged)
+			}
+			if err := recordEffectiveLastApplied(cc.target, cc.lastApplied, staged); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -380,13 +451,29 @@ func captureOne(cc captureCtx) (bool, error) {
 			// capturing nothing. Refuse with a clear message and suggest [s]hared
 			// (which edits the shared file) instead. Additive/changed hunks still
 			// flow to the sidecar below.
-			if idx, ok := firstDeleteOnlyAccepted(hunks, accepted); ok {
+			// After a span-grained store consent the ORIGINAL hunks still carry
+			// the raw secret the user just stored — deriving the delta from them
+			// would refuse the local capture and leave an ORPHANED store entry.
+			// Rebuild the hunks from the PATCHED captured composition instead
+			// (repo -> captured is exactly the accepted, placeholder-patched
+			// change set); without a patch the original selection stands.
+			deltaHunks, deltaAccepted := hunks, accepted
+			if spanPatched {
+				deltaHunks = diffHunks(string(cc.repoBytes), captured)
+				deltaAccepted = make([]bool, len(deltaHunks))
+				for i := range deltaAccepted {
+					deltaAccepted[i] = true
+				}
+			}
+			if idx, ok := firstDeleteOnlyAccepted(deltaHunks, deltaAccepted); ok {
 				fmt.Fprintf(cc.out, "  %s: accepted hunk %d only DELETES shared line(s) and cannot be captured to the zsh `.local` overlay — that overlay is sourced after shared, so it can only ADD/override lines, never remove one shared already set. Re-run and route this change to [s]hared (which edits the shared file) to drop the line, or reject it.\n", "."+bare, idx+1)
+				notifyStoredNotWritten(cc.out, "."+bare, storedRefs)
 				return false, nil
 			}
-			delta := localHunkDelta(hunks, accepted)
+			delta := localHunkDelta(deltaHunks, deltaAccepted)
 			if secret.IsBlockedFromRepo(delta) {
 				fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare)
+				notifyStoredNotWritten(cc.out, "."+bare, storedRefs)
 				return false, nil
 			}
 			dest := localOverlayPath(cc.repoPath, bare)
@@ -399,10 +486,28 @@ func captureOne(cc captureCtx) (bool, error) {
 		}
 		if !allAccepted {
 			fmt.Fprintf(cc.out, "  %s: local overlay for this dotfile is WHOLE-FILE (no include point); a partial-hunk local capture is refused so rejected content never lands. Re-run and accept the whole change, or route to shared.\n", "."+bare)
+			notifyStoredNotWritten(cc.out, "."+bare, storedRefs)
+			return false, nil
+		}
+		// The whole-file local overlay must carry the SPAN-PATCHED composition
+		// when the consent path patched it — writing cc.liveBytes would land the
+		// RAW secret the user just stored into the repo worktree (local/ is
+		// gitignored but still inside the repo). Without a patch, allAccepted
+		// means the composition reproduces the live file, and the live bytes are
+		// written byte-verbatim as before.
+		localContent := cc.liveBytes
+		if spanPatched {
+			localContent = []byte(captured)
+		}
+		// Gate exactly what is written (defense-in-depth; the patched
+		// composition was already re-gated by the consent path).
+		if secret.IsBlockedFromRepo(string(localContent)) {
+			fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare)
+			notifyStoredNotWritten(cc.out, "."+bare, storedRefs)
 			return false, nil
 		}
 		dest := dotfile.LocalOverlayPath(cc.repoPath, bare, cc.name)
-		if err := writeRepoFile(cc.repoPath, dest, cc.liveBytes); err != nil {
+		if err := writeRepoFile(cc.repoPath, dest, localContent); err != nil {
 			return false, err
 		}
 		fmt.Fprintf(cc.out, "  %s: captured -> local (%s, gitignored)\n", "."+bare, relTo(cc.repoPath, dest))
@@ -411,6 +516,7 @@ func captureOne(cc captureCtx) (bool, error) {
 		return true, nil
 	default:
 		fmt.Fprintf(cc.out, "  %s: rejected; nothing written\n", "."+bare)
+		notifyStoredNotWritten(cc.out, "."+bare, storedRefs)
 		return false, nil
 	}
 
@@ -430,23 +536,22 @@ func captureOne(cc captureCtx) (bool, error) {
 
 // recordEffectiveLastApplied advances the last-applied record for target t to the
 // hash of the EFFECTIVE DEPLOYED content (the bytes apply materialises to t.Home
-// and status classifies against), not the raw repo file. It stages effective to a
-// temp file, points a copy of t at it (Home unchanged), and defers to
-// UpdateLastApplied — so the record advances ONLY when the live home file already
-// equals effective (a full reproduction), and is left put on a partial capture so
-// the remaining drift keeps being reported. This mirrors apply's last-applied
+// and status classifies against), not the raw repo file. The bytes are hashed
+// IN MEMORY (dotfile.UpdateLastAppliedContent) — never staged to a temp file —
+// so the record advances ONLY when the live home file already equals effective
+// (a full reproduction), and is left put on a partial capture so the remaining
+// drift keeps being reported. This mirrors apply's last-applied
 // recording for zsh, where the deployed bytes are the shared file with ferry's
 // managed `source ~/.<bare>.local` line appended last: after a full shared capture
 // that reproduces the live ~/.<bare>, status reads CLEAN and a later repo edit
 // classifies as repo-ahead (not a spurious conflict).
 func recordEffectiveLastApplied(t dotfile.Target, store *dotfile.Store, effective []byte) error {
-	staged, cleanup, err := stageContent(effective)
-	if err != nil {
-		return err
-	}
-	defer cleanup()
-	t.Repo = staged
-	if _, err := dotfile.UpdateLastApplied(t, store); err != nil {
+	// IN MEMORY, deliberately: the effective bytes may be secret-RENDERED
+	// (placeholder-bearing sources), and staging them to a temp file just to
+	// hash would leave rendered secrets in $TMPDIR across a crash window.
+	// UpdateLastAppliedContent hashes the bytes directly, exactly like the
+	// status/diff path's ClassifyContent.
+	if _, err := dotfile.UpdateLastAppliedContent(t, effective, store); err != nil {
 		return err
 	}
 	return nil
@@ -535,13 +640,34 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 		repoBytes = effectiveZshShared(repoBytes, bare, hasOverlay)
 	}
 
+	// REVERSE-RENDER (placeholder-bearing sources, F3-2): render the effective
+	// source in memory and compare/classify against the RENDERED bytes — the
+	// same bytes apply deploys — so a store-routed secret never gate-blocks its
+	// own round-trip. When a ref is missing (new machine, unpopulated store) the
+	// conservative raw-source baseline runs instead (r8-M2), noted on stderr.
+	liveBytes, lerr := os.ReadFile(t.Home)
+	if lerr != nil {
+		liveBytes = nil // absence/unreadability is classified below, not an error here
+	}
+	compareBytes := repoBytes
+	reviewLive := liveBytes
+	placeholderAware, missingRef := false, false
+	if !firstCapture && liveBytes != nil {
+		compareBytes, reviewLive, placeholderAware, missingRef, err = prepareReverseRender(
+			cc.secretStore, "shared source for ."+bare, repoBytes, liveBytes, cc.captureErrOut())
+		if err != nil {
+			return false, false, err
+		}
+	}
+
 	// Detect drift: a locally-drifted/conflict target is a capture candidate.
-	// Classify against the effective bytes (ClassifyContent), not the raw repo
-	// source, so ferry's managed include line is never seen as drift. The
-	// FIRST-capture case (no repo source yet, live file present) is also a
-	// candidate: the whole live file is offered against the empty base, so the
-	// Fresh "capture this machine" flow can seed the repo from a live dotfile.
-	st, err := dotfile.ClassifyContent(t, repoBytes, cc.lastApplied)
+	// Classify against the effective (rendered) bytes, not the raw repo source,
+	// so neither ferry's managed include line nor a rendered placeholder is
+	// seen as drift. The FIRST-capture case (no repo source yet, live file
+	// present) is also a candidate: the whole live file is offered against the
+	// empty base, so the Fresh "capture this machine" flow can seed the repo
+	// from a live dotfile.
+	st, err := dotfile.ClassifyContent(t, compareBytes, cc.lastApplied)
 	if err != nil {
 		return false, false, err
 	}
@@ -553,26 +679,29 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 	if !st.LiveExists {
 		return false, false, nil
 	}
-
-	liveBytes, err := os.ReadFile(t.Home)
-	if err != nil {
-		return false, false, err
+	if liveBytes == nil {
+		if liveBytes, err = os.ReadFile(t.Home); err != nil {
+			return false, false, err
+		}
 	}
-	if string(repoBytes) == string(liveBytes) {
+	if string(compareBytes) == string(liveBytes) {
 		return false, false, nil
 	}
 
 	wrote, err = captureOne(captureCtx{
-		out:         cc.out,
-		in:          cc.in,
-		repoPath:    cc.repoPath,
-		name:        cc.name,
-		target:      t,
-		repoSource:  src,
-		repoBytes:   repoBytes,
-		liveBytes:   liveBytes,
-		lastApplied: cc.lastApplied,
-		secretStore: cc.secretStore,
+		out:                cc.out,
+		errOut:             cc.errOut,
+		in:                 cc.in,
+		repoPath:           cc.repoPath,
+		name:               cc.name,
+		target:             t,
+		repoSource:         src,
+		repoBytes:          repoBytes,
+		liveBytes:          reviewLive,
+		lastApplied:        cc.lastApplied,
+		secretStore:        cc.secretStore,
+		placeholderAware:   placeholderAware,
+		missingRefFallback: missingRef,
 	})
 	if err != nil {
 		return false, true, err
@@ -622,47 +751,76 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 		Repo: overlaySrc,
 		Home: sidecarHome,
 	}
-	st, err := dotfile.Classify(ot, cc.lastApplied)
+
+	repoBytes, err := os.ReadFile(overlaySrc)
+	if err != nil {
+		return false, false, err
+	}
+	liveBytes, lerr := os.ReadFile(sidecarHome)
+	if lerr != nil {
+		liveBytes = nil // absence is classified below, not an error here
+	}
+
+	// REVERSE-RENDER on the SIDECAR leg too (Codex M2): a placeholder-bearing
+	// overlay is compared and reviewed via its rendered bytes, so a local-routed
+	// stored secret never gate-blocks the sidecar's own round-trip.
+	compareBytes := repoBytes
+	reviewLive := liveBytes
+	placeholderAware, missingRef := false, false
+	if liveBytes != nil {
+		compareBytes, reviewLive, placeholderAware, missingRef, err = prepareReverseRender(
+			cc.secretStore, "sidecar overlay for ."+bare+".local", repoBytes, liveBytes, cc.captureErrOut())
+		if err != nil {
+			return false, false, err
+		}
+	}
+
+	st, err := dotfile.ClassifyContent(ot, compareBytes, cc.lastApplied)
 	if err != nil {
 		return false, false, err
 	}
 	if st.State != dotfile.StateLocallyDrifted && st.State != dotfile.StateConflict {
 		return false, false, nil
 	}
-	if !st.LiveExists {
+	if !st.LiveExists || liveBytes == nil {
 		return false, false, nil
 	}
-
-	repoBytes, err := os.ReadFile(overlaySrc)
-	if err != nil {
-		return false, false, err
-	}
-	liveBytes, err := os.ReadFile(sidecarHome)
-	if err != nil {
-		return false, false, err
-	}
-	if string(repoBytes) == string(liveBytes) {
+	if string(compareBytes) == string(liveBytes) {
 		return false, false, nil
 	}
 
 	offered = true
 	fmt.Fprintf(cc.out, "\n=== %s (drifted) ===\n", "."+bare+".local")
 
-	// MANDATORY secret gate before any write: a high-confidence secret in the live
-	// sidecar is blocked from the repo overlay entirely (reject / out-of-repo
-	// secret store only), exactly like a shared/local candidate.
-	gate := secret.GateText(string(liveBytes))
+	// MANDATORY secret gate before any write: a high-confidence secret in the
+	// reviewable sidecar content is blocked from the repo overlay entirely.
+	// Placeholder-aware capture reviews the REVERSE-RENDERED bytes (stored
+	// secrets stay behind their placeholders; only NEW material trips the
+	// gate, consented span-grained after the hunk review). The missing-ref
+	// fallback reports the block READ-ONLY (r9-M1).
+	gate := secret.GateText(string(reviewLive))
+	var hunkMasks []maskPair
 	if gate.BlockedFromRepo {
-		w, berr := captureBlockedSidecar(cc, bare, overlaySrc, liveBytes)
-		return w, true, berr
+		if missingRef {
+			reportReadOnlyBlock(cc.out, "."+bare+".local")
+			return false, true, nil
+		}
+		if !placeholderAware {
+			w, berr := captureBlockedSidecar(cc, bare, overlaySrc, liveBytes)
+			return w, true, berr
+		}
+		// Gated NEW secret on the placeholder-aware sidecar leg: mask every
+		// flagged span value in the hunk output (never print the raw value).
+		hunkMasks = captureSecretMasks(string(reviewLive), bare+".local")
 	}
 
-	// Hunk-by-hunk review of the whole-file sidecar (repo overlay -> live).
-	hunks := diffHunks(string(repoBytes), string(liveBytes))
+	// Hunk-by-hunk review of the whole-file sidecar (repo overlay -> live),
+	// in SOURCE coordinates for a placeholder-aware capture.
+	hunks := diffHunks(string(repoBytes), string(reviewLive))
 	accepted := make([]bool, len(hunks))
 	anyAccepted := false
 	for i, h := range hunks {
-		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), renderHunk(h))
+		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), maskCaptureText(renderHunk(h), hunkMasks))
 		ans := prompt(cc.in, "accept this hunk? [y]es / [n]o (default n): ")
 		if ans == "y" || ans == "yes" {
 			accepted[i] = true
@@ -682,10 +840,24 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 	}
 
 	composed := applyHunks(string(repoBytes), hunks, accepted)
+	var sidecarStoredRefs []string // refs Put by the span consent (for honest refusal notices)
 	// Re-scan the composed result: never write secret material to the overlay.
 	if secret.IsBlockedFromRepo(composed) {
-		fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare+".local")
-		return false, true, nil
+		if !placeholderAware {
+			fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare+".local")
+			return false, true, nil
+		}
+		// Span-grained consent for a NEW secret on the placeholder-bearing
+		// sidecar leg (r6-M1) — the whole-file escape is never taken here.
+		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare+".local", bare+".local", composed)
+		if cerr != nil {
+			return false, true, cerr
+		}
+		if !ok {
+			return false, true, nil
+		}
+		composed = patched
+		sidecarStoredRefs = refs
 	}
 
 	// Route confirmation: the sidecar IS the local overlay, so the only repo route
@@ -694,6 +866,7 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 	ans := prompt(cc.in, "capture this sidecar to the repo overlay? [l]ocal / [r]eject (default r): ")
 	if ans != "l" && ans != "local" {
 		fmt.Fprintf(cc.out, "  %s: rejected; nothing written\n", "."+bare+".local")
+		notifyStoredNotWritten(cc.out, "."+bare+".local", sidecarStoredRefs)
 		return false, true, nil
 	}
 
@@ -711,10 +884,18 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 
 	// Advance last-applied for the sidecar ONLY on a full reproduction (every hunk
 	// accepted, so the overlay now equals live). On a partial capture leave it put
-	// so status keeps reporting the remaining drift. UpdateLastApplied re-checks
-	// repo==live itself, so this is also safe if composed differs.
+	// so status keeps reporting the remaining drift. For a placeholder-bearing
+	// overlay the staged bytes are RENDERED first (r4-M2): last-applied then
+	// reflects the rendered-effective content — the bytes apply materialises —
+	// so a post-capture status reads Clean and a later repo edit classifies
+	// RepoAhead, never conflict. recordEffectiveLastApplied/UpdateLastApplied
+	// re-check live == staged themselves, so this is also safe if composed differs.
 	if allAccepted {
-		if _, err := dotfile.UpdateLastApplied(ot, cc.lastApplied); err != nil {
+		staged := []byte(composed)
+		if placeholderAware {
+			staged = renderForLastApplied(cc.secretStore, staged)
+		}
+		if err := recordEffectiveLastApplied(ot, cc.lastApplied, staged); err != nil {
 			return false, true, err
 		}
 	}

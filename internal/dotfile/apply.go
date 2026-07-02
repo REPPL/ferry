@@ -391,6 +391,15 @@ func isFerryOverlayInclude(line string) bool {
 	return strings.HasPrefix(t, "[ -f ~/") && strings.Contains(t, "] && source ~/")
 }
 
+// StripFerryOverlayDirective is the exported form of stripFerryOverlayDirective
+// for callers outside this package that must judge near-emptiness by the SAME
+// rule as the apply guard (the wizard's minimum-shared-scaffold check): it
+// removes ferry's injected per-machine overlay block before the caller runs
+// IsNearEmpty over the user's real managed content.
+func StripFerryOverlayDirective(content []byte) []byte {
+	return stripFerryOverlayDirective(content)
+}
+
 // guardEmptyOverSubstantial enforces the empty-over-substantial data-loss guard
 // for a target whose live file exists and is about to be overwritten. It reads
 // the effective repo source (t.Repo) and the live file (t.Home): when the repo
@@ -472,6 +481,30 @@ func writeTarget(t Target, store *Store, b Backuper, repoHash string, persist bo
 	}
 	res.PendingHash = repoHash
 	return nil
+}
+
+// UpdateLastAppliedContent is UpdateLastApplied with the managed-output side
+// provided IN MEMORY: it advances t's last-applied to the hash of effective
+// ONLY when the live file already reproduces those bytes (live == effective).
+// Callers whose effective content is secret-rendered use this variant so the
+// rendered bytes are hashed directly and NEVER staged to a temp file (a crash
+// window would otherwise leave rendered secrets in $TMPDIR) — mirroring how
+// the status/diff path classifies in memory via ClassifyContent.
+func UpdateLastAppliedContent(t Target, effective []byte, store *Store) (updated bool, err error) {
+	liveHash, liveExists, err := hashFile(t.Home)
+	if err != nil {
+		return false, err
+	}
+	effHash := hashBytes(effective)
+	if !liveExists || liveHash != effHash {
+		// The live file does not reproduce the effective content; leave
+		// last-applied put so the remaining drift keeps being reported.
+		return false, nil
+	}
+	if err := store.set(t.Name, effHash); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // UpdateLastApplied advances a target's last-applied hash to the current live

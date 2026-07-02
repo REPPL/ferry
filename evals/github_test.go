@@ -42,9 +42,15 @@ import (
 const ghOwner = "octocat"
 
 // A fake, NON-FUNCTIONAL secret for the ~/.zshrc secret-gate test — the realistic
-// shape internal/secret keys on, never a real key.
+// shape internal/secret keys on, never a real key. The BODY line is its own
+// constant so evals can assert the key MATERIAL — not just the BEGIN/END
+// headers — never leaks: the plan pins span extraction as the contiguous
+// BEGIN..END run, so a header-only placeholder swap that leaks body lines
+// must fail.
+const fakeGitHubSecretBody = "b3BlbnNzaC1rZXktdjEAAAAABG5vbmUFAKEFAKEFAKEFAKEdeadbeefcafe0102feed"
+
 const fakeGitHubSecret = "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
-	"b3BlbnNzaC1rZXktdjEAAAAABG5vbmUFAKEFAKEFAKEFAKEdeadbeefcafe0102feed\n" +
+	fakeGitHubSecretBody + "\n" +
 	"-----END OPENSSH PRIVATE KEY-----\n"
 
 // -----------------------------------------------------------------------------
@@ -357,6 +363,66 @@ func newPushRecordingGitStub(t *testing.T) gitStub {
 		t.Fatalf("newPushRecordingGitStub: chmod stub: %v", err)
 	}
 	return gitStub{dir: dir, log: logPath}
+}
+
+// newPushToBareGitStub writes a `git` shim (first on PATH) that LOGS argv like
+// the other recorders AND makes pushes REAL: on `remote`/`push`/`fetch`
+// invocations it rewrites any remote-URL-shaped argument (https/ssh/git@) to a
+// LOCAL BARE repo it creates, then forwards to the real git — so `git push`
+// actually TRANSFERS the commit and the PUSHED TREE is observable in the bare
+// repo (wizPushedSharedSeed). gh stays mocked; only the transport is redirected.
+// This defeats a push-empty-then-seed-locally implementation, which the
+// intercept-and-exit-0 recorder cannot. Returns the stub and the bare repo path.
+func newPushToBareGitStub(t *testing.T) (gitStub, string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH: push-to-bare git stub unavailable")
+	}
+	bare := t.TempDir()
+	initCmd := exec.Command(realGit, "-C", bare, "init", "--bare", "-q")
+	initCmd.Env = gitEnv()
+	if out, err := initCmd.CombinedOutput(); err != nil {
+		t.Fatalf("newPushToBareGitStub: init bare repo: %v\n%s", err, out)
+	}
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "git_invocations.log")
+	script := `#!/bin/sh
+argv="$*"
+printf '%s [GTP=%s]\n' "$argv" "${GIT_TERMINAL_PROMPT:-<unset>}" >> ` + shellQuote(logPath) + `
+# Find the top-level subcommand (skip -C/-c values and global flags).
+sub=
+skipnext=0
+for a in "$@"; do
+  if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
+  case "$a" in
+    -C|-c) skipnext=1 ;;
+    -*) ;;
+    *) sub="$a"; break ;;
+  esac
+done
+if [ "$sub" = "push" ] || [ "$sub" = "remote" ] || [ "$sub" = "fetch" ] || [ "$sub" = "ls-remote" ]; then
+  # Rewrite any remote-URL-shaped argument to the local bare repo so the push
+  # REALLY transfers content offline. (The for-list is expanded before the loop
+  # begins, so rebuilding "$@" with set -- inside it is safe POSIX sh.)
+  first=1
+  for a in "$@"; do
+    case "$a" in
+      https://*|http://*|ssh://*|git@*) a=` + shellQuote(bare) + ` ;;
+    esac
+    if [ "$first" = 1 ]; then set -- "$a"; first=0; else set -- "$@" "$a"; fi
+  done
+fi
+exec ` + shellQuote(realGit) + ` "$@"
+`
+	stub := filepath.Join(dir, "git")
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("newPushToBareGitStub: write stub: %v", err)
+	}
+	if err := os.Chmod(stub, 0o755); err != nil {
+		t.Fatalf("newPushToBareGitStub: chmod stub: %v", err)
+	}
+	return gitStub{dir: dir, log: logPath}, bare
 }
 
 // combinedPathEnv builds a single PATH= entry putting BOTH the gh mock dir and the
@@ -734,19 +800,34 @@ func TestGitHubRefusesExisting_AC_github_refuses_existing(t *testing.T) {
 }
 
 // -----------------------------------------------------------------------------
-// AC-github-secret-blocked (CRITICAL) — ~/.zshrc secret => abort, no commit, no push.
+// AC-github-secret-extracted — secret-bearing ~/.zshrc => fallback extraction,
+// placeholders-only push (the v0.3.0 recut of the retired AC-github-secret-blocked).
 // -----------------------------------------------------------------------------
 
-func TestGitHubSecretBlocked_AC_github_secret_blocked(t *testing.T) {
+// TestGitHubSecretExtracted_AC_github_secret_extracted pins the v0.3.0 contract
+// from .work/PLAN-v0.3.0-plugin-wizard.md — user-approval round 2026-07-02: the
+// non-interactive fallback was upgraded from warn/abort to GATE-AND-EXTRACT, and
+// AC-github-seedplan promises "non-interactive --github with a secret-bearing
+// zshrc SUCCEEDS with placeholders-only pushed". This REPLACES the v0.2.x
+// abort-on-secret expectation: the same fixture that used to abort now completes,
+// with the secret span auto-routed to the local store and only a placeholder
+// committed and pushed.
+//
+// UNIT-PHASE: the retained defense-in-depth arm — a SeedPlan bug leaking a RAW
+// secret into the planned commit still blocks the push — needs an injected bug
+// and is unit-tested on the pre-commit gate at implementation time (see the
+// accounting table in evals/wizard_test.go).
+func TestGitHubSecretExtracted_AC_github_secret_extracted(t *testing.T) {
 	t.Parallel()
 	s := NewSandbox(t)
-	// A ~/.zshrc carrying a FAKE private key — the same shape internal/secret blocks.
+	// A ~/.zshrc carrying a FAKE private key — the shape internal/secret gates on
+	// (PEM BEGIN header, pem-private-key rule).
 	s.WriteHomeFile(t, ".zshrc", "# my shell\nexport EDITOR=vim\n"+fakeGitHubSecret, 0o644)
 
 	gh := newGHMock(t)
-	git := newGitStub(t)
-	// The mock would happily let create/view/push succeed — proving ferry's OWN gate
-	// (not a gh failure) is what stops the secret.
+	// The push is REAL: the stub redirects the remote URL to a local bare repo,
+	// so the PUSHED tree itself is observable (not just a push event).
+	git, bare := newPushToBareGitStub(t)
 	sc := ghScenario{
 		authOK: true, login: ghOwner, repoViewExists: false,
 		jsonIsPrivate: true, jsonNameWithOwner: ghOwner + "/secretcfg",
@@ -755,46 +836,84 @@ func TestGitHubSecretBlocked_AC_github_secret_blocked(t *testing.T) {
 	out, errOut, code := s.FerryEnv(append(sc.env(), combinedPathEnv(gh, git)), "init", "--github", "secretcfg", "--yes")
 	combined := out + errOut
 
-	// 1. ABORT with a secret message.
-	if code == 0 {
-		t.Errorf("AC-github-secret-blocked (CRITICAL): a ~/.zshrc with a secret exited 0 (must abort before any push)")
+	// 1. SUCCESS — extraction, not refusal: the pre-commit gate scans the
+	// SeedPlan's placeholder-bearing content, not raw ~/.zshrc.
+	if code != 0 {
+		t.Fatalf("AC-github-secret-extracted: `init --github` with a secret-bearing ~/.zshrc exited %d (the v0.3.0 fallback must extract and proceed)\n%s", code, combined)
 	}
-	if !containsAnyFold(combined, "secret", "private key", "looks like", "won't push", "will not push") {
-		t.Errorf("AC-github-secret-blocked (CRITICAL): abort did not cite the secret in ~/.zshrc\n%s", combined)
+	// 2. The push happened (with placeholders-only content).
+	if !git.invokedSubcommand("push") {
+		t.Errorf("AC-github-secret-extracted: no git push recorded (the placeholders-only repo must be pushed)\nrecorded: %v", git.lines())
 	}
-
-	// 2. NO push recorded AND NO commit recorded — the secret must never enter a commit,
-	// let alone a remote. The git recorder logs every argv, so assert neither `push`
-	// nor `commit` was invoked with the secret-bearing tree staged. (A commit-then-reset
-	// leak is caught by the object-store scan in step 3.)
-	if git.invokedSubcommand("push") {
-		t.Errorf("AC-github-secret-blocked (CRITICAL): a git push was invoked with a secret-bearing config (must NEVER push)")
+	// 3. Extraction happened: the store under secrets-local holds the key
+	// material INCLUDING the body line (span extraction is the contiguous
+	// BEGIN..END run — a header-only extraction fails here).
+	storeDir := filepath.Join(s.Home, ".config", "ferry", "secrets-local")
+	if findFileContaining(t, storeDir, "BEGIN OPENSSH PRIVATE KEY") == "" {
+		t.Errorf("AC-github-secret-extracted: extracted key material not found under %s (fallback must auto-route the secret span to the store)", storeDir)
 	}
-	if git.invokedSubcommand("commit") {
-		t.Errorf("AC-github-secret-blocked (CRITICAL): a git commit was invoked with a secret-bearing tree (the secret must never enter a commit).\ngit: %v", git.lines())
+	if findFileContaining(t, storeDir, fakeGitHubSecretBody) == "" {
+		t.Errorf("AC-github-secret-extracted: the PEM BODY line is not in the store under %s — the stored span must be the whole BEGIN..END run, not just the header", storeDir)
 	}
-
-	// 3. The secret bytes appear NOWHERE in the repo: working tree, reachable history,
-	// AND the object store / reflog (a commit-then-reset leaves the blob dangling but
-	// recoverable). managedRepoPath resolves the repo ferry would have used.
+	// 4. The committed seed carries a placeholder in place of the key — and no
+	// key BODY line (a header-only placeholder swap that leaks body lines fails).
 	repo := managedRepoPath(s)
+	seed := wizReadSharedSeed(t, repo)
+	if !strings.Contains(seed, "{{ferry.secret") {
+		t.Errorf("AC-github-secret-extracted: committed seed carries no placeholder\n%s", seed)
+	}
+	if strings.Contains(seed, fakeGitHubSecretBody) {
+		t.Errorf("AC-github-secret-extracted: the PEM BODY line leaked into the committed seed (header-only swap?)\n%s", seed)
+	}
+	// 5. The secret bytes — header AND body — appear NOWHERE in the pushed tree
+	// or its recorded push history: working tree, every reachable/reflog commit,
+	// AND the object store (a commit-then-reset leak would survive only there).
 	scan := &Sandbox{t: s.t, Home: s.Home, Repo: repo, BinDir: s.BinDir}
-	scan.AssertNoSecretInRepo(t, fakeGitHubSecret)                   // working tree + git log -p --all + rev-list
-	scan.AssertNoSecretInRepo(t, "BEGIN OPENSSH PRIVATE KEY")        // and the header alone
+	scan.AssertNoSecretInRepo(t, fakeGitHubSecret)                   // whole blob: working tree + git log -p --all + rev-list
+	scan.AssertNoSecretInRepo(t, "BEGIN OPENSSH PRIVATE KEY")        // the header alone
+	scan.AssertNoSecretInRepo(t, fakeGitHubSecretBody)               // the BODY line alone
 	assertNoSecretInGitObjects(t, repo, "BEGIN OPENSSH PRIVATE KEY") // dangling/unreachable objects too
+	assertNoSecretInGitObjects(t, repo, fakeGitHubSecretBody)        // ... including body-only leaks
 
-	// 4. No ferry-owned file under HOME carries the secret bytes.
-	assertNoSecretUnderHome(t, s, "BEGIN OPENSSH PRIVATE KEY")
+	// 6. And never on either output stream — header or body.
+	if strings.Contains(combined, "BEGIN OPENSSH PRIVATE KEY") {
+		t.Errorf("AC-github-secret-extracted: key material printed to the terminal\n%s", combined)
+	}
+	if strings.Contains(combined, fakeGitHubSecretBody) {
+		t.Errorf("AC-github-secret-extracted: the PEM BODY line was printed to the terminal\n%s", combined)
+	}
+
+	// 7. PUSHED CONTENT: the bare remote actually received the placeholder seed
+	// (curated line + placeholder, no key material) and NO pushed object carries
+	// the header or the body line.
+	pushed := wizPushedSharedSeed(t, bare)
+	if pushed != "" {
+		if !strings.Contains(pushed, "{{ferry.secret") {
+			t.Errorf("AC-github-secret-extracted: the PUSHED seed carries no placeholder\n%s", pushed)
+		}
+		if !strings.Contains(pushed, "export EDITOR=vim") {
+			t.Errorf("AC-github-secret-extracted: the PUSHED seed lost the curated content\n%s", pushed)
+		}
+		if strings.Contains(pushed, "BEGIN OPENSSH PRIVATE KEY") || strings.Contains(pushed, fakeGitHubSecretBody) {
+			t.Errorf("AC-github-secret-extracted: key material in the PUSHED seed\n%s", pushed)
+		}
+	}
+	assertNoSecretInGitObjects(t, bare, "BEGIN OPENSSH PRIVATE KEY")
+	assertNoSecretInGitObjects(t, bare, fakeGitHubSecretBody)
 }
 
 // assertNoSecretInGitObjects scans EVERY object in the repo's object store — including
 // UNREACHABLE / dangling blobs a commit-then-reset would leave behind (which git log /
 // rev-list --all would miss) — for the needle. This closes the "committed then reset,
-// object still recoverable" leak path. A no-op when repo has no .git or git is absent.
+// object still recoverable" leak path. Works on working-tree repos AND bare repos
+// (a pushed-to bare remote). A no-op when the path is no git repo or git is absent.
 func assertNoSecretInGitObjects(t *testing.T, repo, needle string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(repo, ".git")); err != nil {
-		return // no git repo: nothing to scan (working-tree scan already ran)
+		// Not a working tree — accept a BARE repo (HEAD at the top level).
+		if _, bareErr := os.Stat(filepath.Join(repo, "HEAD")); bareErr != nil {
+			return // no git repo at all: nothing to scan
+		}
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return
@@ -830,7 +949,7 @@ func assertNoSecretInGitObjects(t *testing.T, repo, needle string) {
 		cat := exec.Command("git", "-C", repo, "cat-file", "-p", id)
 		cat.Env = env
 		if body, err := cat.CombinedOutput(); err == nil && strings.Contains(string(body), needle) {
-			t.Errorf("AC-github-secret-blocked (CRITICAL): secret found in a git OBJECT %s (a commit-then-reset leak — recoverable from the object store)", id)
+			t.Errorf("secret leak: secret found in a git OBJECT %s (a commit-then-reset leak — recoverable from the object store)", id)
 			return
 		}
 	}
@@ -867,7 +986,7 @@ func assertNoSecretUnderHome(t *testing.T, s *Sandbox, needle string) {
 			data, rerr := os.ReadFile(path)
 			if rerr == nil && strings.Contains(string(data), needle) {
 				rel, _ := filepath.Rel(s.Home, path)
-				t.Errorf("AC-github-secret-blocked: secret bytes found in ferry-owned file ~/%s", rel)
+				t.Errorf("secret leak: secret bytes found in ferry-owned file ~/%s", rel)
 			}
 			return nil
 		})

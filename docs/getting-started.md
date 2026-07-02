@@ -66,12 +66,52 @@ A bare `ferry init` creates the repo at ferry's own default location,
 `~/.config/ferry/repo`: you do not need to pick a path. To place it somewhere
 else, pass a directory: `ferry init --fresh ~/somewhere`.
 
-If you already have a `~/.zshrc`, a fresh `ferry init` **adopts** it: the repo's
-managed source starts as a copy of your current file, so the first `ferry apply`
-matches what is already on disk and changes nothing. Your existing shell config is
-never zeroed. If you have no `~/.zshrc`, ferry seeds no shell source at all —
+### First run: adopt or build your shell config
+
+On an interactive terminal (stdin and stdout both ttys), a fresh `ferry init` runs a
+**first-run wizard** over your existing `~/.zshrc`:
+
+- **Keep everything as-is** (the default): adopt the file verbatim, except any
+  detected secret-shaped lines, which still get the forced store/drop routing below
+  (with no secrets present it is one keypress to a verbatim adopt).
+- **Choose per block**: the wizard splits the file into paragraph blocks and lets you
+  route each one **shared** (committed, deploys everywhere), **local** (this machine's
+  gitignored `~/.zshrc.local` sidecar), or **drop** (removed from the deployed config;
+  it survives in the backup).
+- **Start fresh**: answer a few questions and seed a portable, commented starter
+  instead (your original stays in the backup).
+
+Two safety properties hold on every path:
+
+- **Secret routing is always on.** A secret-shaped line (token, private key, credential
+  assignment) is never seeded: the wizard forces a choice between the out-of-repo
+  secret store (`~/.config/ferry/secrets-local`, with a placeholder in the seed) and
+  dropping the line. This is not optional and not part of `--repair`.
+- **Nothing is written before you confirm.** The wizard shows a full preview (seed
+  bytes plus a diff of your `~/.zshrc` after the first apply, secret values masked) and
+  only then writes: a visible timestamped backup (`~/.zshrc.ferry-<ts>.bak`), the
+  secret store entries, and the repo seed. Declining exits with nothing changed.
+
+Opt-in repairs (`ferry init --repair`) additionally offer lint-style fixes — hardcoded
+`/Users/<name>` paths to `$HOME`, duplicate `PATH` exports, dead `source` lines — each
+accepted or declined individually.
+
+Non-interactively (piped stdin/stdout, `--yes`, or `--no-wizard`) there is no TUI and
+no prompt: ferry adopts the whole file shared, automatically extracts every detected
+secret to the local store (the extracted ref names are listed on stderr; nothing is
+ever dropped without you), and seeds placeholders in their place. A secret-free
+`~/.zshrc` is adopted byte-identically, so the first `ferry apply` matches what is
+already on disk and changes nothing. Your existing shell config is never zeroed.
+Scripting the wizard itself is possible with `ferry init --wizard-answers <file>`
+(a TOML file carrying every decision).
+
+If you have no `~/.zshrc` (and skip the starter), ferry seeds no shell source at all —
 `.zshrc` is still in scope, and your first `ferry capture` fills the repo from the
-file once you have one.
+file once you have one. A symlinked or unreadable `~/.zshrc` is left entirely alone:
+ferry declares it but does not manage, back up, or replace it.
+
+The wizard's plugin set is currently **zsh** (`~/.zshrc`); more config domains come
+with later releases.
 
 `ferry capture` is interactive and selective: it shows you each change and lets you
 route it **shared** (synced to every machine) or **local** (this machine only). Things
@@ -103,10 +143,12 @@ What it guarantees:
   before pushing; it never passes `--public`.
 - **Never touches an existing repo.** If a repo with that name already exists, ferry
   aborts and asks you to pass a different name — it never reuses or overwrites one.
-- **Won't push a file that looks like a secret.** The same secret scan `capture` uses
-  runs before the first commit and again before the push: if your `~/.zshrc` looks like
-  it holds a private key or token, ferry refuses and tells you to move it out of band
-  (a secret store or `~/.zshrc.local`).
+- **Never pushes a secret.** Detected secret-shaped content in your `~/.zshrc` (a
+  private key, a token) is routed by the first-run wizard — or extracted automatically
+  on a non-interactive run — into the out-of-repo secret store before anything is
+  committed, so the pushed repo carries only placeholders. The same secret scan
+  `capture` uses still runs before the first commit and again before the push as
+  defense in depth: a raw secret somehow left in the planned commit blocks the push.
 - **HTTPS only.** The remote ferry sets is always `https://…`; it never sets an `ssh://`
   remote and never touches `~/.ssh`.
 

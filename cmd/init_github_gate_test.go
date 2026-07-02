@@ -52,15 +52,48 @@ func TestWholeCommitGate_BlocksNonZshrcFile(t *testing.T) {
 	}
 }
 
-// TestPlannedCommitGate_BlocksAdoptedSecret confirms the pre-create planner scans
-// the adopted ~/.zshrc content as part of the whole-commit set (belt with the
-// pre-push braces). We drive plannedCommitContents indirectly by checking the
-// generated files are all present in the planned set.
+// TestPlannedCommitGate_PlansGeneratedFiles confirms the pre-create gate scans
+// the whole planned commit set, rendered from the SAME seedPlan the seeding
+// writes ("lockstep with the SeedPlan", F2-4): generated files always, the
+// shared seed exactly when the plan carries one.
 func TestPlannedCommitGate_PlansGeneratedFiles(t *testing.T) {
-	files := plannedCommitContents()
-	for _, want := range []string{"ferry.toml", ".gitignore"} {
+	plan := &seedPlan{manifest: sharedManifestBody, shared: []byte("# adopted\nexport EDITOR=vim\n")}
+	files := plannedCommitContents(plan)
+	for _, want := range []string{"ferry.toml", ".gitignore", "dotfiles/zshrc"} {
 		if _, ok := files[want]; !ok {
-			t.Errorf("plannedCommitContents missing generated file %q — whole-commit gate would skip it", want)
+			t.Errorf("plannedCommitContents missing planned file %q — whole-commit gate would skip it", want)
 		}
+	}
+	if files["dotfiles/zshrc"] != "# adopted\nexport EDITOR=vim\n" {
+		t.Errorf("planned dotfiles/zshrc is not the seedPlan's shared bytes: %q", files["dotfiles/zshrc"])
+	}
+	// A plan with no shared seed plans no zshrc source (declared, no seed).
+	if files := plannedCommitContents(declareOnlyPlan("")); len(files) != 2 {
+		t.Errorf("declare-only plan planned %d files, want 2 (manifest + gitignore): %v", len(files), files)
+	}
+}
+
+// UNIT-PHASE arm of AC-github-seedplan / AC-github-secret-extracted: a seedPlan
+// BUG leaking a RAW secret into the planned commit still blocks (the retained
+// defense-in-depth gate) — and the gate is PURE: abort creates NOTHING (the old
+// MkdirAll-on-abort is gone, F3-6).
+func TestPlannedCommitGate_BlocksLeakedSecret(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	plan := &seedPlan{manifest: sharedManifestBody, shared: []byte("# leaked\n" + fakeGateSecret)}
+	err := gateManagedContentBeforeCommit(plan)
+	if err == nil {
+		t.Fatal("gateManagedContentBeforeCommit passed a seedPlan carrying a raw secret (defense-in-depth gate must block)")
+	}
+	if !strings.Contains(err.Error(), "dotfiles/zshrc") {
+		t.Errorf("gate error does not name the offending planned file: %v", err)
+	}
+	// Purity: no repo dir (or anything else) materialised under ~/.config/ferry.
+	if _, statErr := os.Stat(filepath.Join(home, ".config", "ferry", "repo")); statErr == nil {
+		t.Error("gate abort created the repo dir (MkdirAll-on-abort must be removed, F3-6)")
+	}
+	entries, _ := os.ReadDir(home)
+	if len(entries) != 0 {
+		t.Errorf("gate abort wrote into HOME: %v", entries)
 	}
 }

@@ -16,18 +16,30 @@ import (
 	"github.com/REPPL/ferry/internal/config"
 	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/paths"
+	"github.com/REPPL/ferry/internal/plugin"
 )
 
 func init() {
 	// init-only flags, registered here (not commands.go, which the skeleton wave owns).
-	//   --fresh    force the fresh path (new repo) even if a source arg looks present;
-	//              optionally takes a positional dir to place the repo (see below)
-	//   --yes      assume "yes" for the closing apply confirmation
-	//   --apply    actually run apply at the end (default: show the plan and stop)
+	//   --fresh           force the fresh path (new repo) even if a source arg looks
+	//                     present; optionally takes a positional dir (see below)
+	//   --yes             don't ask anything: skip the first-run wizard (plain adopt
+	//                     with automatic secret extraction) and assume yes for the
+	//                     confirmations init would otherwise ask (the --github
+	//                     create-confirm; the closing apply confirm with --apply)
+	//   --apply           actually run apply at the end (default: show the plan and stop)
+	//   --no-wizard       skip the interactive first-run wizard (same fallback as --yes)
+	//   --repair          opt into the wizard's repair review (hardcoded-home,
+	//                     duplicate-PATH, dead-source fixes); needs the interactive
+	//                     wizard or --wizard-answers
+	//   --wizard-answers  drive the wizard from a TOML answers file (no TUI, no tty)
 	initCmd.Flags().Bool("fresh", false, "set up a NEW config repo (capture this machine) instead of cloning")
-	initCmd.Flags().Bool("yes", false, "assume yes for the closing apply confirmation")
+	initCmd.Flags().Bool("yes", false, "don't ask anything: skip the first-run wizard (adopt with automatic secret extraction) and assume yes for init's confirmations")
 	initCmd.Flags().Bool("apply", false, "run apply at the end of init (default: show the plan and stop)")
 	initCmd.Flags().Bool("github", false, "create a NEW private GitHub repo via the gh CLI and manage it as ferry's remote")
+	initCmd.Flags().Bool("no-wizard", false, "skip the interactive first-run wizard (plain adopt with automatic secret extraction)")
+	initCmd.Flags().Bool("repair", false, "review opt-in repairs (hardcoded home paths, duplicate PATH exports, dead source lines) in the wizard")
+	initCmd.Flags().String("wizard-answers", "", "drive the first-run wizard from a TOML answers file instead of the interactive TUI")
 }
 
 // defaultRepoDir returns ferry's neutral, ferry-owned default location for a
@@ -70,6 +82,13 @@ func runInit(c *cobra.Command, args []string) error {
 	fresh, _ := c.Flags().GetBool("fresh")
 	github, _ := c.Flags().GetBool("github")
 
+	// --repair is consent-per-finding by design: it REQUIRES the interactive
+	// wizard (or a --wizard-answers file, which replaces only the TUI). Reject
+	// conflicting invocations BEFORE any work, naming the conflict (r2-m4).
+	if err := validateRepairFlags(c); err != nil {
+		return err
+	}
+
 	// Route 2 (managed GitHub) is a distinct starting point, mutually exclusive
 	// with --fresh and with a clone-source positional. Validate BEFORE any work so
 	// a conflicting invocation is rejected without touching gh/git or the FS.
@@ -111,6 +130,7 @@ func runInit(c *cobra.Command, args []string) error {
 	//    b. an already-configured repo (config.toml from a prior init or the harness),
 	//    c. otherwise initialise a fresh repo (at the neutral default or an explicit dir).
 	var repoPath string
+	var declined bool
 	switch {
 	case source != "" && !fresh:
 		repoPath, err = cloneExisting(out, source)
@@ -119,18 +139,25 @@ func runInit(c *cobra.Command, args []string) error {
 			// Guard the configured repo path BEFORE runInit reads/writes it via
 			// ensureLocalLayerIgnored/ensureLocalManifest: a config.toml pointing
 			// under ~/.ssh must be refused before any FS op on that path.
+			// The wizard runs only on the FRESH path — a configured machine
+			// never re-enters it (AC-init-rerun-guard).
 			if repoPath, err = guardRepoPath("configured repo path", existing); err != nil {
 				return err
 			}
 			fmt.Fprintf(out, "using already-configured config repo at %s\n", repoPath)
 		} else {
-			repoPath, err = initFresh(out, freshDir)
+			repoPath, declined, err = initFresh(c, in, out, freshDir)
 		}
 	default:
-		repoPath, err = initFresh(out, freshDir)
+		repoPath, declined, err = initFresh(c, in, out, freshDir)
 	}
 	if err != nil {
 		return err
+	}
+	if declined {
+		// Wizard declined at the preview gate: PURE by construction — no repo
+		// dir, no config.toml, no store entry, no .bak (F2-6).
+		return nil
 	}
 
 	// Ensure the per-machine .local layer is gitignored in the resolved repo. This
@@ -254,13 +281,146 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	return dest, nil
 }
 
-// initFresh creates a NEW config repo: git init a working tree, seed a minimal
-// shared manifest (ferry.toml) so scope exists, ignore the per-machine .local
-// layer, and make an initial commit so HEAD is attached and the tree is clean.
-// The result is a real committable working clone "capture this machine" writes into.
-func initFresh(out io.Writer, freshDir string) (string, error) {
-	// Default fresh-repo location is ferry-owned and neutral (~/.config/ferry/repo);
-	// an explicit `ferry init --fresh <dir>` override places it elsewhere.
+// initFresh sets up a NEW config repo on the fresh path. It builds ONE
+// in-memory seedPlan — via the interactive wizard (both stdin AND stdout
+// ttys), the --wizard-answers data model, or the non-interactive
+// gate-and-extract fallback — PURELY, then executes it (re-gate -> visible
+// .bak -> secret puts -> git init + seed). declined=true means the user
+// backed out at the preview gate: nothing was written, and runInit must not
+// write config.toml either.
+func initFresh(c *cobra.Command, in *bufio.Reader, out io.Writer, freshDir string) (repoPath string, declined bool, err error) {
+	errOut := c.ErrOrStderr()
+	yes, _ := c.Flags().GetBool("yes")
+	noWizard, _ := c.Flags().GetBool("no-wizard")
+	repair, _ := c.Flags().GetBool("repair")
+	answersPath, _ := c.Flags().GetString("wizard-answers")
+
+	plan, declined, err := buildInitSeedPlan(in, out, errOut, freshInitOpts{
+		yes:         yes,
+		noWizard:    noWizard,
+		repair:      repair,
+		answersPath: answersPath,
+	})
+	if err != nil || declined {
+		return "", declined, err
+	}
+	repoPath, err = executeSeedPlan(out, plan, freshDir)
+	return repoPath, false, err
+}
+
+// freshInitOpts carries the wizard-relevant init flags.
+type freshInitOpts struct {
+	yes         bool
+	noWizard    bool
+	repair      bool
+	answersPath string
+}
+
+// buildInitSeedPlan builds the fresh-init seedPlan PURELY (no filesystem or
+// network mutation). Surface selection (pinned FLAG PRECEDENCE):
+//   - --wizard-answers drives the full data model (outranks the wizard-skip
+//     meaning of --yes / non-tty);
+//   - otherwise the interactive TUI wizard runs when BOTH stdin and stdout are
+//     ttys and neither --yes nor --no-wizard was given;
+//   - otherwise the non-interactive gate-and-extract fallback runs (no TUI,
+//     no prompts, never blocks on stdin).
+func buildInitSeedPlan(in *bufio.Reader, out, errOut io.Writer, opts freshInitOpts) (*seedPlan, bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false, err
+	}
+	p, err := wizardRegistry.Get("zsh")
+	if err != nil {
+		return nil, false, err
+	}
+	det, err := p.Detect(home)
+	if err != nil {
+		return nil, false, err
+	}
+
+	// A symlinked / irregular / unreadable rc short-circuits BEFORE any answers
+	// or wizard step: ferry does not manage the file at all (declared, no seed;
+	// no adopt, no from-scratch — r5-M1). An unused answers file is not an error.
+	switch det.Reason {
+	case plugin.Symlink, plugin.Irregular, plugin.Unreadable:
+		note := fmt.Sprintf("~/.zshrc is %s: ferry will not manage the file — .zshrc stays declared with no managed source (nothing is adopted, backed up, or replaced)", det.Reason)
+		fmt.Fprintln(out, note)
+		return declareOnlyPlan(note), false, nil
+	}
+
+	switch {
+	case opts.answersPath != "":
+		return buildAnswersSeedPlan(out, opts, p, det)
+	case !opts.yes && !opts.noWizard && stdinIsTerminal() && stdoutIsTerminal():
+		return runWizardTUI(in, out, opts, p, det)
+	default:
+		plan, err := buildFallbackSeedPlan(p, det, errOut)
+		return plan, false, err
+	}
+}
+
+// buildAnswersSeedPlan drives the wizard data model from a --wizard-answers
+// file: every invariant (pure-until-confirm, forced secret routing, gates,
+// scaffold, masking) runs identically to the TUI; only the TUI is bypassed.
+// The rendered preview goes to stdout before seeding.
+func buildAnswersSeedPlan(out io.Writer, opts freshInitOpts, p plugin.Plugin, det plugin.Detection) (*seedPlan, bool, error) {
+	ch, err := parseWizardAnswers(opts.answersPath)
+	if err != nil {
+		return nil, false, err
+	}
+	// LOUD schema failure on inapplicable tables (each mode rejects the tables
+	// that do not apply to it; [repairs] needs --repair in every mode).
+	if err := validateChoicesApplicability(ch, opts.repair); err != nil {
+		return nil, false, err
+	}
+	var plan *seedPlan
+	switch det.Reason {
+	case plugin.Absent, plugin.NearEmpty:
+		if ch.mode == "start-fresh" {
+			starter, serr := p.Starter(ch.starter)
+			if serr != nil {
+				return nil, false, serr
+			}
+			plan = &seedPlan{manifest: sharedManifestBody, shared: starter}
+			// A NEAR-EMPTY original still EXISTS: back it up and show the
+			// replacement diff, exactly like start-fresh over a substantial rc.
+			if orig := nearEmptyOriginal(det); orig != nil {
+				plan.backup = orig
+				plan.original = orig
+				plan.maskPairs = maskPairsFromSpans(orig, p.Domain())
+			}
+		} else {
+			// Nothing usable to adopt (zero blocks): a populated routing table
+			// can never apply, so it fails LOUDLY — every index is out of range
+			// by definition, and a silent declare-only exit would swallow the
+			// user's explicit routing intent. Empty tables proceed declare-only
+			// (v0.2.1 parity).
+			if len(ch.routes) > 0 || len(ch.secretRoutes) > 0 || len(ch.repairs) > 0 {
+				return nil, false, fmt.Errorf("~/.zshrc is %s: there are no blocks to route or repair, but the answers file carries [routes]/[secret-routes]/[repairs] entries — remove them, or use mode start-fresh to build a config", det.Reason)
+			}
+			plan = declareOnlyPlan("")
+		}
+	default:
+		in, lerr := loadWizardInputs(p, det)
+		if lerr != nil {
+			return nil, false, lerr
+		}
+		plan, err = buildPlanFromChoices(in, ch, opts.repair)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	printSeedPlanPreview(out, plan)
+	if !ch.confirm {
+		fmt.Fprintln(out, "declined at the preview gate: nothing was changed.")
+		return nil, true, nil
+	}
+	return plan, false, nil
+}
+
+// resolveFreshRepoDest resolves and guards the fresh-repo destination:
+// ferry's neutral default (~/.config/ferry/repo) or an explicit --fresh dir.
+func resolveFreshRepoDest(freshDir string) (string, error) {
 	var base string
 	if freshDir != "" {
 		expanded, err := expandUser(freshDir)
@@ -297,58 +457,53 @@ func initFresh(out io.Writer, freshDir string) (string, error) {
 	if _, err := guardRepoPath("fresh repo destination", dest); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		return "", fmt.Errorf("create repo dir: %w", err)
-	}
+	return dest, nil
+}
 
+// createFreshRepo makes the destination directory and git-inits the working tree.
+func createFreshRepo(out io.Writer, dest string) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return fmt.Errorf("create repo dir: %w", err)
+	}
 	fmt.Fprintf(out, "initialising a new config repo at %s\n", dest)
 	if out2, err := runGitIn(dest, "init"); err != nil {
-		return "", fmt.Errorf("git init %s failed: %w\n%s", dest, err, out2)
+		return fmt.Errorf("git init %s failed: %w\n%s", dest, err, out2)
 	}
+	return nil
+}
 
-	// ADOPT the existing ~/.zshrc (the confirmed-incident fix). Read the user's
-	// real shell rc BEFORE writing the manifest, so the Fresh flow's scope tracks
-	// what actually got seeded:
-	//   - ~/.zshrc exists with content  -> seed dotfiles/zshrc with THOSE bytes and
-	//     declare .zshrc in scope. A subsequent apply then sees repo == live (a
-	//     StateClean adoption) and is a NO-OP — never a wipe.
-	//   - ~/.zshrc absent (or empty)    -> seed NO deployable source and DO NOT
-	//     declare .zshrc. There is no managed source, so a later apply can never
-	//     deploy an empty file over a real ~/.zshrc the user creates afterward.
-	// This never seeds a deployable EMPTY source (the empty-seed data-loss bug).
-	adoptedZshrc, haveZshrc := readExistingZshrc()
-
-	// Minimal shared manifest so a scope exists from the first capture. .zshrc is
-	// the common starting target, so the Fresh "capture this machine" flow has
-	// something in scope to route into the repo; the user edits ferry.toml to
-	// add/remove more. Declaring it in scope is SAFE even with no repo source: a
-	// declared dotfile with no source on disk is simply skipped by apply (nothing
-	// to materialise), so it never deploys an empty file over a real one.
-	manifest := "[manage]\ndotfiles = [\".zshrc\"]\n"
-	if err := os.WriteFile(filepath.Join(dest, config.SharedManifestName), []byte(manifest), 0o644); err != nil {
-		return "", fmt.Errorf("write %s: %w", config.SharedManifestName, err)
+// seedRepoFromPlan writes exactly the seedPlan's files into the fresh repo —
+// manifest, shared seed (only when the plan carries one; never a near-empty
+// deployable source), per-machine sidecar seed (only when non-empty, F3-7) —
+// gitignores the local layer, and makes the initial commit. This is the ONLY
+// seeding writer, so the preview/pre-commit gate and the seeded bytes cannot
+// diverge.
+func seedRepoFromPlan(dest string, plan *seedPlan) error {
+	if err := os.WriteFile(filepath.Join(dest, config.SharedManifestName), []byte(plan.manifest), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", config.SharedManifestName, err)
 	}
-
-	// Seed the repo source ONLY when we adopted real content from an existing
-	// ~/.zshrc: the Fresh flow then has a managed target that already matches the
-	// live file (apply is a no-op), and `ferry capture` has a base to diff future
-	// edits against. With NO existing ~/.zshrc we deliberately seed NOTHING
-	// deployable — never an empty source that a later apply would zero a real file
-	// with (the confirmed data-loss bug). The dotfile stays declared in scope; apply
-	// skips it until a source exists, and capture is the path that first fills it.
-	if haveZshrc {
+	if plan.shared != nil {
 		if err := os.MkdirAll(filepath.Join(dest, dotfile.RepoSubdir), 0o755); err != nil {
-			return "", fmt.Errorf("create dotfiles dir: %w", err)
+			return fmt.Errorf("create dotfiles dir: %w", err)
 		}
-		if err := os.WriteFile(filepath.Join(dest, dotfile.RepoSubdir, "zshrc"), adoptedZshrc, 0o644); err != nil {
-			return "", fmt.Errorf("seed dotfile source: %w", err)
+		if err := os.WriteFile(filepath.Join(dest, dotfile.RepoSubdir, "zshrc"), plan.shared, 0o644); err != nil {
+			return fmt.Errorf("seed dotfile source: %w", err)
+		}
+	}
+	if len(plan.local) > 0 {
+		localDir := filepath.Join(dest, dotfile.LocalSubdir, "zsh")
+		if err := os.MkdirAll(localDir, 0o755); err != nil {
+			return fmt.Errorf("create local overlay dir: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(localDir, "zshrc.local"), plan.local, 0o644); err != nil {
+			return fmt.Errorf("seed local overlay: %w", err)
 		}
 	}
 
 	// Ignore the per-machine .local layer (ferry.local.toml + local/) so capture's
 	// local-route writes never get committed. (Shared with the existing-repo path.)
 	if err := ensureLocalLayerIgnored(dest); err != nil {
-		return "", err
+		return err
 	}
 
 	// Initial commit so the working tree starts clean and HEAD is attached. Use a
@@ -358,62 +513,46 @@ func initFresh(out io.Writer, freshDir string) (string, error) {
 		{"-c", "user.name=ferry", "-c", "user.email=ferry@localhost", "commit", "-m", "ferry init: scaffold config repo"},
 	} {
 		if cout, err := runGitIn(dest, args...); err != nil {
-			return "", fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, cout)
+			return fmt.Errorf("git %s failed: %w\n%s", strings.Join(args, " "), err, cout)
 		}
 	}
-	return dest, nil
+	return nil
 }
 
-// readExistingZshrc reads the user's real ~/.zshrc for the Fresh-init adoption,
-// returning its bytes and ok=true ONLY when it is present AND carries real
-// content. It returns ok=false (adopt nothing) when the file is absent, empty,
-// unreadable, or unsafe to read:
-//   - A regular ~/.zshrc is read directly.
-//   - A SYMLINKED ~/.zshrc is refused outright (ok=false) — never resolved. Its
-//     target could point into ~/.ssh, and resolving it (EvalSymlinks / Stat) would
-//     traverse that target, violating ferry's absolute "never touch ~/.ssh"
-//     contract. Declining to adopt leaves the real file untouched, which is safe.
-//   - A directory / device / other non-regular kind is refused.
-//
-// An absent or empty rc is the "no deployable seed" path; a substantial rc is the
-// content the repo adopts so the first apply is a no-op, not a wipe.
-func readExistingZshrc() ([]byte, bool) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, false
+// validateRepairFlags enforces --repair's interactivity requirement: repairs
+// are consent-per-finding, so --repair needs the interactive wizard OR a
+// --wizard-answers file (which replaces only the TUI). Combined with --yes or
+// --no-wizard — or without a full tty pair and no answers file — it errors,
+// naming the conflict.
+func validateRepairFlags(c *cobra.Command) error {
+	repair, _ := c.Flags().GetBool("repair")
+	if !repair {
+		return nil
 	}
-	path := filepath.Join(home, ".zshrc")
+	if answers, _ := c.Flags().GetString("wizard-answers"); answers != "" {
+		return nil // the answers file satisfies the interactivity requirement
+	}
+	if yes, _ := c.Flags().GetBool("yes"); yes {
+		return fmt.Errorf("--repair conflicts with --yes: repairs are reviewed one by one in the interactive wizard, which --yes skips. Drop --yes, or drive the wizard with --wizard-answers")
+	}
+	if noWizard, _ := c.Flags().GetBool("no-wizard"); noWizard {
+		return fmt.Errorf("--repair conflicts with --no-wizard: repairs are reviewed one by one in the interactive wizard. Drop --no-wizard, or drive the wizard with --wizard-answers")
+	}
+	if !stdinIsTerminal() || !stdoutIsTerminal() {
+		return fmt.Errorf("--repair needs an interactive terminal (repairs are reviewed one by one in the wizard, and stdin/stdout is not a tty here) — run it interactively, or drive the wizard with --wizard-answers")
+	}
+	return nil
+}
 
-	li, err := os.Lstat(path)
+// stdoutIsTerminal reports whether stdout is an interactive character device.
+// The wizard requires BOTH stdin and stdout ttys (Codex M3: `ferry init > log`
+// from an interactive shell must take the fallback, not paint a TUI into a file).
+func stdoutIsTerminal() bool {
+	fi, err := os.Stdout.Stat()
 	if err != nil {
-		return nil, false // absent (or unreadable) -> adopt nothing.
+		return false
 	}
-	if li.Mode()&os.ModeSymlink != 0 {
-		// A symlinked ~/.zshrc: adopt NOTHING. We must never resolve an untrusted
-		// home symlink, because its target could point INTO ~/.ssh and any
-		// resolution (EvalSymlinks / Stat-through-symlink) would stat/traverse that
-		// target — violating ferry's absolute "never touch ~/.ssh" contract.
-		// Adoption is a best-effort convenience; declining here leaves the user's
-		// real file 100% untouched (init seeds no source; the defect-B empty-over
-		// guard still prevents apply from deploying an empty over it), so refusing
-		// is strictly safe. We deliberately do not os.Readlink either — there is no
-		// need to read the target at all.
-		return nil, false
-	} else if !li.Mode().IsRegular() {
-		return nil, false // a directory/device/etc. is not adoptable content.
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, false
-	}
-	if dotfile.IsNearEmpty(data) {
-		// Empty, whitespace-only, or comments-only -> nothing worth managing. Uses
-		// the SAME near-empty definition as the apply data-loss guard so init-adopt
-		// and the guard agree on what counts as substantial content.
-		return nil, false
-	}
-	return data, true
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // checkCloneSource enforces ferry's clone contract on a source argument. It
@@ -766,7 +905,7 @@ func finishWithApply(c *cobra.Command, in *bufio.Reader, out io.Writer) error {
 	printPlan(out, plan)
 
 	if !applyFlag {
-		fmt.Fprintln(out, "init complete. Run `ferry apply` to reconcile this machine (or `ferry init --apply --yes`).")
+		fmt.Fprintln(out, "init complete. Run `ferry apply` to reconcile this machine (or `ferry init --apply --yes` to answer every prompt, wizard included, with yes).")
 		return nil
 	}
 

@@ -57,6 +57,16 @@ differences always win and are never overwritten.
 4. **Secret scan**: if a change looks like a secret (private key, token), it is
    blocked from the repo entirely and only the out-of-band path is offered.
 
+For a repo source that references stored secrets (`{{ferry.secret "domain.key"}}`
+placeholders), capture **reverse-renders**: it renders the source in memory, compares
+your live file against the rendered content, and splices your edits back around the
+placeholders. Stored values never re-enter the repo, an unchanged stored secret never
+trips the gate, and only genuinely new secret material is gated: taking its store
+route stores only that span under a new ref and patches only that span to a
+placeholder, preserving the rest of the file. On a machine whose local store does not
+hold a referenced secret, capture falls back to comparing the raw source, notes the
+missing refs, and reports any gate block read-only (populate the store, then re-run).
+
 ## How apply stays safe
 
 - Only in-scope domains are touched on this machine.
