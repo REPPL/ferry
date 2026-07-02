@@ -31,6 +31,12 @@ const maxRepoNameLen = 100
 // rejected before any gh call.
 var repoNameChars = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// repoNameHasAlnum requires at least one letter or digit: a name that is ONLY
+// punctuation ("-", "_", ".", "--") passes the character grammar but is almost
+// always an argument mistake, and GitHub will happily create it (a private repo
+// literally named "-" was found in the wild, 2026-07-02).
+var repoNameHasAlnum = regexp.MustCompile(`[A-Za-z0-9]`)
+
 // validateRepoName enforces the strict, personal-repo, basename-only grammar for
 // a managed repo name (PLAN step 2). It rejects — with a clear message — any
 // slash (incl. the org/repo form), URL, `.git` suffix, whitespace, out-of-grammar
@@ -54,6 +60,9 @@ func validateRepoName(name string) error {
 	}
 	if !repoNameChars.MatchString(name) {
 		return fmt.Errorf("repo name %q contains characters outside [A-Za-z0-9._-] — GitHub repo names allow only letters, digits, '.', '_' and '-'", name)
+	}
+	if !repoNameHasAlnum.MatchString(name) {
+		return fmt.Errorf("repo name %q has no letters or digits — punctuation-only names are almost always an argument mistake; pass a real name (e.g. `ferry init --github ferry-config`)", name)
 	}
 	if len(name) > maxRepoNameLen {
 		return fmt.Errorf("repo name is %d characters — GitHub caps repo names at %d", len(name), maxRepoNameLen)

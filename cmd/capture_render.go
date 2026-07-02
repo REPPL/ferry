@@ -182,7 +182,7 @@ func consentSpanStoreRoute(in *bufio.Reader, out io.Writer, store *secret.Store,
 	fmt.Fprintf(out, "  %s: SECRET / credential material detected in the accepted change (e.g. a private key or token).\n", label)
 	fmt.Fprintf(out, "  It is BLOCKED from the repo entirely (both shared and local). It is never committed.\n")
 	fmt.Fprintf(out, "  Only the out-of-band path is offered: [r]eject, or route ONLY the new secret span(s) to the out-of-repo secret store [x].\n")
-	ans := prompt(in, "route blocked change? [r]eject / secret-store [x] (default r): ")
+	ans := prompt(in, out, "route blocked change? [r]eject / secret-store [x] (default r): ")
 	if ans != "x" {
 		fmt.Fprintf(out, "  %s: rejected; secret kept out of the repo\n", label)
 		return "", nil, false, nil

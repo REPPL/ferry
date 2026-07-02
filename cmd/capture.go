@@ -306,7 +306,7 @@ func captureOne(cc captureCtx) (bool, error) {
 	anyAccepted := false
 	for i, h := range hunks {
 		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), maskCaptureText(renderHunk(h), hunkMasks))
-		ans := prompt(cc.in, "accept this hunk? [y]es / [n]o (default n): ")
+		ans := prompt(cc.in, cc.out, "accept this hunk? [y]es / [n]o (default n): ")
 		if ans == "y" || ans == "yes" {
 			accepted[i] = true
 			anyAccepted = true
@@ -566,7 +566,7 @@ func captureBlocked(cc captureCtx, bare string) (bool, error) {
 	fmt.Fprintf(cc.out, "  This change is BLOCKED from the repo entirely (both shared and local). It is never committed.\n")
 	fmt.Fprintf(cc.out, "  Only the out-of-band path is offered: [r]eject, or route to the out-of-repo secret store [x].\n")
 
-	ans := prompt(cc.in, "route blocked change? [r]eject / secret-store [x] (default r): ")
+	ans := prompt(cc.in, cc.out, "route blocked change? [r]eject / secret-store [x] (default r): ")
 	if ans != "x" {
 		fmt.Fprintf(cc.out, "  %s: rejected; secret kept out of the repo\n", "."+bare)
 		return false, nil
@@ -821,7 +821,7 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 	anyAccepted := false
 	for i, h := range hunks {
 		fmt.Fprintf(cc.out, "\n--- hunk %d/%d ---\n%s", i+1, len(hunks), maskCaptureText(renderHunk(h), hunkMasks))
-		ans := prompt(cc.in, "accept this hunk? [y]es / [n]o (default n): ")
+		ans := prompt(cc.in, cc.out, "accept this hunk? [y]es / [n]o (default n): ")
 		if ans == "y" || ans == "yes" {
 			accepted[i] = true
 			anyAccepted = true
@@ -863,7 +863,7 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 	// Route confirmation: the sidecar IS the local overlay, so the only repo route
 	// is local (no shared). Offer [l]ocal / [r]eject so the user keeps an explicit
 	// opt-in; EOF / anything else rejects (safe default).
-	ans := prompt(cc.in, "capture this sidecar to the repo overlay? [l]ocal / [r]eject (default r): ")
+	ans := prompt(cc.in, cc.out, "capture this sidecar to the repo overlay? [l]ocal / [r]eject (default r): ")
 	if ans != "l" && ans != "local" {
 		fmt.Fprintf(cc.out, "  %s: rejected; nothing written\n", "."+bare+".local")
 		notifyStoredNotWritten(cc.out, "."+bare+".local", sidecarStoredRefs)
@@ -911,7 +911,7 @@ func captureBlockedSidecar(cc captureCtx, bare, overlaySrc string, liveBytes []b
 	fmt.Fprintf(cc.out, "  This change is BLOCKED from the repo entirely (the overlay is committed too). It is never committed.\n")
 	fmt.Fprintf(cc.out, "  Only the out-of-band path is offered: [r]eject, or route to the out-of-repo secret store [x].\n")
 
-	ans := prompt(cc.in, "route blocked change? [r]eject / secret-store [x] (default r): ")
+	ans := prompt(cc.in, cc.out, "route blocked change? [r]eject / secret-store [x] (default r): ")
 	if ans != "x" {
 		fmt.Fprintf(cc.out, "  %s: rejected; secret kept out of the repo\n", "."+bare+".local")
 		return false, nil
@@ -1038,7 +1038,7 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	}
 
 	// Whole-domain accept/reject: an opaque plist cannot be reviewed hunk-by-hunk.
-	ans := prompt(cc.in, "capture this whole preference domain? [y]es / [n]o (default n): ")
+	ans := prompt(cc.in, cc.out, "capture this whole preference domain? [y]es / [n]o (default n): ")
 	if ans != "y" && ans != "yes" {
 		fmt.Fprintf(cc.out, "  %s: rejected; nothing written\n", domain)
 		return false, true, nil
@@ -1080,7 +1080,7 @@ func captureBlockedTerminal(cc captureCtx, domain, prefID, repoDest string, live
 	fmt.Fprintf(cc.out, "  This change is BLOCKED from the repo entirely (both shared and local). It is never committed.\n")
 	fmt.Fprintf(cc.out, "  Only the out-of-band path is offered: [r]eject, or route to the out-of-repo secret store [x].\n")
 
-	ans := prompt(cc.in, "route blocked change? [r]eject / secret-store [x] (default r): ")
+	ans := prompt(cc.in, cc.out, "route blocked change? [r]eject / secret-store [x] (default r): ")
 	if ans != "x" {
 		fmt.Fprintf(cc.out, "  %s: rejected; secret kept out of the repo\n", domain)
 		return false, nil
@@ -1124,7 +1124,7 @@ func terminalLocalDest(repo, domain, prefID string) string {
 // promptRoute asks for the shared/local/reject route for a clean (non-secret)
 // accepted change. EOF / anything else defaults to reject (the safe default).
 func promptRoute(in *bufio.Reader, out io.Writer) secret.Route {
-	ans := prompt(in, "route this change? [s]hared / [l]ocal / [r]eject (default r): ")
+	ans := prompt(in, out, "route this change? [s]hared / [l]ocal / [r]eject (default r): ")
 	switch ans {
 	case "s", "shared":
 		return secret.RouteShared
@@ -1135,10 +1135,18 @@ func promptRoute(in *bufio.Reader, out io.Writer) secret.Route {
 	}
 }
 
-// prompt prints a prompt and reads one trimmed, lower-cased line. On EOF (empty
-// stdin) it returns "" so the caller can apply its safe default — capture never
-// hangs and never writes without an explicit answer.
-func prompt(in *bufio.Reader, label string) string {
+// prompt PRINTS the label (no trailing newline, so the answer is typed on the
+// same line) and reads one trimmed, lower-cased line. On EOF (empty stdin) it
+// returns "" so the caller can apply its safe default — capture never hangs and
+// never writes without an explicit answer.
+//
+// The label print is load-bearing: through v0.3.0 this function silently
+// DROPPED the label, so every interactive capture question was invisible and a
+// real user faced a blank, waiting terminal (first field report, 2026-07-02).
+// The evals never caught it because they script stdin and assert end-state;
+// TestCaptureOne_PromptLabelsVisible now pins the label's presence in output.
+func prompt(in *bufio.Reader, out io.Writer, label string) string {
+	fmt.Fprint(out, label)
 	line, err := in.ReadString('\n')
 	line = strings.ToLower(strings.TrimSpace(line))
 	if err != nil && line == "" {

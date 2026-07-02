@@ -479,3 +479,34 @@ func TestConsentSpanStoreRoute_PartialPutFailureNamesStoredRefs(t *testing.T) {
 		t.Errorf("the already-stored span vanished: (%q, %v)", v, found)
 	}
 }
+
+// TestCaptureOne_PromptLabelsVisible pins the fix for the invisible-prompt bug
+// (first field report, 2026-07-02; present since v0.2.x): prompt() dropped its
+// label, so an interactive capture showed the hunk and then silently blocked on
+// stdin with NO question visible. The evals script stdin and assert end-state,
+// so only a label-presence assertion can catch this class.
+func TestCaptureOne_PromptLabelsVisible(t *testing.T) {
+	store := secret.OpenAt(t.TempDir())
+	src := "# curated\nalias gs='git status'\n"
+	live := src + "alias gd='git diff'\n"
+
+	var out bytes.Buffer
+	if _, err := captureOne(captureCtx{
+		out:         &out,
+		in:          bufio.NewReader(strings.NewReader("y\nr\n")), // accept hunk, reject route
+		name:        ".zshrc",
+		repoBytes:   []byte(src),
+		liveBytes:   []byte(live),
+		secretStore: store,
+	}); err != nil {
+		t.Fatalf("captureOne: %v", err)
+	}
+	for _, label := range []string{
+		"accept this hunk? [y]es / [n]o (default n): ",
+		"route this change? [s]hared / [l]ocal / [r]eject (default r): ",
+	} {
+		if !strings.Contains(out.String(), label) {
+			t.Errorf("prompt label %q not printed — the user would face a blank, waiting terminal:\n%s", label, out.String())
+		}
+	}
+}

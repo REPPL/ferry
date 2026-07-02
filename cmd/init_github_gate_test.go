@@ -97,3 +97,21 @@ func TestPlannedCommitGate_BlocksLeakedSecret(t *testing.T) {
 		t.Errorf("gate abort wrote into HOME: %v", entries)
 	}
 }
+
+// TestValidateRepoNameRejectsPunctuationOnly pins the fix for the stray
+// `REPPL/-` repo found in the wild (2026-07-02): a bare "-" (or any
+// punctuation-only name) passed the character grammar and reached gh repo
+// create. Punctuation-only names are argument mistakes; real names have at
+// least one letter or digit.
+func TestValidateRepoNameRejectsPunctuationOnly(t *testing.T) {
+	for _, bad := range []string{"-", "_", ".", "--", "-_", "..", "._-"} {
+		if err := validateRepoName(bad); err == nil {
+			t.Errorf("validateRepoName(%q) = nil, want punctuation-only rejection", bad)
+		}
+	}
+	for _, good := range []string{"ferry-config", "a", "a-b", "dotfiles.2", "_x"} {
+		if err := validateRepoName(good); err != nil {
+			t.Errorf("validateRepoName(%q) = %v, want nil", good, err)
+		}
+	}
+}
