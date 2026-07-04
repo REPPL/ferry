@@ -144,7 +144,10 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 	// Bridges: Claude Code + companion both read CLAUDE.md; Gemini reads
 	// GEMINI.md. (Codex CLI and OpenCode read AGENTS.md natively.) These are
 	// RELATIVE symlinks INSIDE the user's project repo — tracked project
-	// content, not a $HOME deploy. A real file in the way is never replaced.
+	// content, not a $HOME deploy. NOTHING pre-existing is ever replaced: a
+	// real file is skipped, and a symlink pointing anywhere OTHER than
+	// AGENTS.md is the user's own wiring — reported and left alone, exactly
+	// like a real file. Only an absent path is linked.
 	for _, f := range []string{"CLAUDE.md", "GEMINI.md"} {
 		link := filepath.Join(repo, f)
 		if fi, lerr := os.Lstat(link); lerr == nil {
@@ -152,9 +155,13 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 				fmt.Fprintf(out, "exists:   %s is a real file (skipped — merge into AGENTS.md first)\n", f)
 				continue
 			}
-			if rerr := os.Remove(link); rerr != nil {
-				return rerr
+			target, rerr := os.Readlink(link)
+			if rerr == nil && target == "AGENTS.md" {
+				fmt.Fprintf(out, "linked:   %s -> AGENTS.md (already)\n", f)
+				continue
 			}
+			fmt.Fprintf(out, "exists:   %s is a symlink to %s (skipped — repoint it to AGENTS.md yourself)\n", f, target)
+			continue
 		}
 		if serr := os.Symlink("AGENTS.md", link); serr != nil {
 			return serr

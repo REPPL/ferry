@@ -155,6 +155,45 @@ func TestScaffoldSkipsRealFileInLinkPosition(t *testing.T) {
 	}
 }
 
+// TestScaffoldNeverRepointsForeignSymlinks pins the never-overwrite rule for
+// link positions: a pre-existing CLAUDE.md/GEMINI.md symlink pointing
+// anywhere OTHER than AGENTS.md is the user's own wiring and must be reported
+// and left untouched — never deleted and repointed. A link already at
+// AGENTS.md stays as-is on re-run.
+func TestScaffoldNeverRepointsForeignSymlinks(t *testing.T) {
+	templates, repo := scaffoldFixture(t, false)
+	// The user's own wiring: CLAUDE.md points at their docs file.
+	if err := os.WriteFile(filepath.Join(repo, "OTHER.md"), []byte("other\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("OTHER.md", filepath.Join(repo, "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-04"})
+
+	target, err := os.Readlink(filepath.Join(repo, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("CLAUDE.md is no longer a symlink: %v", err)
+	}
+	if target != "OTHER.md" {
+		t.Errorf("foreign symlink was repointed: CLAUDE.md -> %q, want OTHER.md", target)
+	}
+	if !strings.Contains(out, "CLAUDE.md is a symlink to OTHER.md (skipped") {
+		t.Errorf("output missing the foreign-symlink skip: %q", out)
+	}
+	// GEMINI.md had nothing in the way and is linked normally.
+	if target, err := os.Readlink(filepath.Join(repo, "GEMINI.md")); err != nil || target != "AGENTS.md" {
+		t.Errorf("GEMINI.md -> %q, %v; want AGENTS.md", target, err)
+	}
+
+	// Re-run: the AGENTS.md link is recognised, not churned.
+	out = runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-04"})
+	if !strings.Contains(out, "GEMINI.md -> AGENTS.md (already)") {
+		t.Errorf("output missing the already-linked line: %q", out)
+	}
+}
+
 func TestScaffoldPrivateMode(t *testing.T) {
 	templates, repo := scaffoldFixture(t, true)
 	out := runScaffold(t, ScaffoldOptions{
