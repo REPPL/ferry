@@ -1,0 +1,216 @@
+package agents
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/REPPL/ferry/internal/config"
+)
+
+func TestImportSST(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+
+	write := func(rel, content string, perm os.FileMode) {
+		t.Helper()
+		path := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), perm); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("general.md", "GENERAL\n", 0o644)
+	write("coding.md", "CODING\n", 0o644)
+	write("templates/AGENTS.md", "# {{PROJECT}}\n", 0o644)
+	write("skills/demo/SKILL.md", "skill\n", 0o644)
+	write("hooks/guard.sh", "#!/bin/sh\n", 0o755)
+	// Pieces that must NOT be imported: a generated combined.md and the old
+	// scripts live outside the imported set.
+	write("combined.md", "GENERATED\n", 0o644)
+	write("bin/sync.sh", "#!/bin/sh\n", 0o755)
+
+	var buf bytes.Buffer
+	if err := ImportSST(src, dest, &buf); err != nil {
+		t.Fatalf("ImportSST: %v", err)
+	}
+
+	for rel, want := range map[string]string{
+		"general.md":           "GENERAL\n",
+		"coding.md":            "CODING\n",
+		"templates/AGENTS.md":  "# {{PROJECT}}\n",
+		"skills/demo/SKILL.md": "skill\n",
+		"hooks/guard.sh":       "#!/bin/sh\n",
+	} {
+		got, err := os.ReadFile(filepath.Join(dest, rel))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", rel, got, err, want)
+		}
+	}
+	fi, err := os.Stat(filepath.Join(dest, "hooks", "guard.sh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("imported hook lost its executable bit: %v", fi.Mode())
+	}
+	for _, rel := range []string{"combined.md", "bin/sync.sh"} {
+		if _, err := os.Lstat(filepath.Join(dest, rel)); err == nil {
+			t.Errorf("%s was imported but must not be", rel)
+		}
+	}
+
+	// Source must be untouched (non-destructive).
+	if _, err := os.Stat(filepath.Join(src, "general.md")); err != nil {
+		t.Errorf("source file went missing: %v", err)
+	}
+}
+
+func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "general.md"), []byte("from src\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repoVersion := []byte("repo edit\n")
+	if err := os.WriteFile(filepath.Join(dest, "general.md"), repoVersion, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := ImportSST(src, dest, &buf); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "general.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, repoVersion) {
+		t.Errorf("repo file was overwritten: %q", got)
+	}
+	if !strings.Contains(buf.String(), "differs — reconcile manually") {
+		t.Errorf("output missing the differs skip: %q", buf.String())
+	}
+
+	// Idempotence: identical files re-import silently.
+	buf.Reset()
+	if err := os.WriteFile(filepath.Join(dest, "general.md"), []byte("from src\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := ImportSST(src, dest, &buf); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "general.md") {
+		t.Errorf("identical file produced output: %q", buf.String())
+	}
+}
+
+func TestFindBridges(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+
+	// Populate the adopted dir so the links have real destinations.
+	for _, rel := range []string{"general.md", "combined.md", "coding.md"} {
+		if err := os.WriteFile(filepath.Join(adopted, rel), []byte(rel), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(adopted, "skills", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(adopted, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	link := func(target, linkPath string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, linkPath); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// sync.sh-era bridges: harness files, a devtree file, a skill dir link,
+	// and a whole-dir hooks link.
+	link(filepath.Join(adopted, "general.md"), filepath.Join(home, ".claude", "CLAUDE.md"))
+	link(filepath.Join(adopted, "combined.md"), filepath.Join(home, ".codex", "AGENTS.md"))
+	link(filepath.Join(adopted, "coding.md"), filepath.Join(home, "Workspace", "CLAUDE.md"))
+	link(filepath.Join(adopted, "skills", "demo"), filepath.Join(home, ".claude", "skills", "demo"))
+	link(filepath.Join(adopted, "hooks"), filepath.Join(home, ".claude", "hooks"))
+	// Distractors: a symlink to somewhere else, and a real file.
+	elsewhere := t.TempDir()
+	if err := os.WriteFile(filepath.Join(elsewhere, "other.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link(filepath.Join(elsewhere, "other.md"), filepath.Join(home, ".gemini", "GEMINI.md"))
+	if err := os.MkdirAll(filepath.Join(home, ".companion"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".companion", "COMPANION.md"), []byte("real"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	bridges, err := FindBridges(home, adopted, config.AgentsConfig{Devtree: "Workspace"})
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	got := map[string]bool{}
+	for _, b := range bridges {
+		got[b.Path] = true
+	}
+	want := []string{
+		filepath.Join(home, ".claude", "CLAUDE.md"),
+		filepath.Join(home, ".codex", "AGENTS.md"),
+		filepath.Join(home, "Workspace", "CLAUDE.md"),
+		filepath.Join(home, ".claude", "skills", "demo"),
+		filepath.Join(home, ".claude", "hooks"),
+	}
+	if len(bridges) != len(want) {
+		t.Errorf("found %d bridges (%v), want %d", len(bridges), got, len(want))
+	}
+	for _, p := range want {
+		if !got[p] {
+			t.Errorf("bridge %s not found", p)
+		}
+	}
+	if got[filepath.Join(home, ".gemini", "GEMINI.md")] {
+		t.Error("a symlink pointing OUTSIDE the adopted dir was reported as a bridge")
+	}
+	if got[filepath.Join(home, ".companion", "COMPANION.md")] {
+		t.Error("a REAL file was reported as a bridge")
+	}
+}
+
+func TestFindBridgesResolvesRelativeLinks(t *testing.T) {
+	home := t.TempDir()
+	adopted := filepath.Join(home, "Workspace", ".agents")
+	if err := os.MkdirAll(adopted, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "general.md"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A RELATIVE symlink into the adopted dir must be resolved from the
+	// link's own directory.
+	if err := os.Symlink(filepath.Join("..", "Workspace", ".agents", "general.md"),
+		filepath.Join(home, ".claude", "CLAUDE.md")); err != nil {
+		t.Fatal(err)
+	}
+
+	bridges, err := FindBridges(home, adopted, config.AgentsConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bridges) != 1 || bridges[0].Path != filepath.Join(home, ".claude", "CLAUDE.md") {
+		t.Errorf("bridges = %+v, want the relative-linked CLAUDE.md", bridges)
+	}
+}
