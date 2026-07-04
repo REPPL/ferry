@@ -233,6 +233,144 @@ func TestScaffoldPrivateMode(t *testing.T) {
 	}
 }
 
+// TestResolveGitDir covers the three layouts git produces: a plain .git
+// directory, a gitfile pointing at a separate git dir (submodule-style), and
+// a linked worktree whose gitdir names the shared common dir — info/exclude
+// must land in the COMMON dir there, because that is where git reads it.
+func TestResolveGitDir(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, repo string) (wantGitDir string, wantOK bool)
+	}{
+		{
+			name: "no .git at all",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				return "", false
+			},
+		},
+		{
+			name: "plain .git directory",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				gitDir := filepath.Join(repo, ".git")
+				mustMkdirAll(t, filepath.Join(gitDir, "info"))
+				return gitDir, true
+			},
+		},
+		{
+			name: "gitfile pointing at a separate git dir (submodule)",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				gitDir := filepath.Join(t.TempDir(), "modules", "sub")
+				mustMkdirAll(t, gitDir)
+				mustWrite(t, filepath.Join(repo, ".git"), "gitdir: "+gitDir+"\n")
+				return gitDir, true
+			},
+		},
+		{
+			name: "linked worktree resolves to the COMMON git dir",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				mainGit := filepath.Join(t.TempDir(), ".git")
+				wtGit := filepath.Join(mainGit, "worktrees", "wt")
+				mustMkdirAll(t, filepath.Join(mainGit, "info"))
+				mustMkdirAll(t, wtGit)
+				// git writes a RELATIVE commondir ("../..") in worktree git dirs.
+				mustWrite(t, filepath.Join(wtGit, "commondir"), "../..\n")
+				mustWrite(t, filepath.Join(repo, ".git"), "gitdir: "+wtGit+"\n")
+				return mainGit, true
+			},
+		},
+		{
+			name: "gitfile with a RELATIVE gitdir pointer",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				gitDir := filepath.Join(repo, "actual-git")
+				mustMkdirAll(t, gitDir)
+				mustWrite(t, filepath.Join(repo, ".git"), "gitdir: actual-git\n")
+				return gitDir, true
+			},
+		},
+		{
+			name: "unparseable gitfile",
+			setup: func(t *testing.T, repo string) (string, bool) {
+				mustWrite(t, filepath.Join(repo, ".git"), "not a pointer\n")
+				return "", false
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := t.TempDir()
+			wantDir, wantOK := tt.setup(t, repo)
+			gotDir, gotOK := resolveGitDir(repo)
+			if gotOK != wantOK {
+				t.Fatalf("ok = %v, want %v (dir %q)", gotOK, wantOK, gotDir)
+			}
+			if wantOK && gotDir != wantDir {
+				t.Errorf("gitDir = %q, want %q", gotDir, wantDir)
+			}
+		})
+	}
+}
+
+// TestScaffoldPrivateModeInLinkedWorktree pins the end-to-end behaviour the
+// gitfile support exists for: scaffolding --private inside a linked worktree
+// must write the exclude entry into the SHARED common git dir's info/exclude
+// (where git actually reads it), not warn "not a git repo" or write a dead
+// worktree-local file.
+func TestScaffoldPrivateModeInLinkedWorktree(t *testing.T) {
+	templates, repo := scaffoldFixture(t, false)
+	mainGit := filepath.Join(t.TempDir(), ".git")
+	wtGit := filepath.Join(mainGit, "worktrees", "wt")
+	mustMkdirAll(t, filepath.Join(mainGit, "info"))
+	mustMkdirAll(t, wtGit)
+	mustWrite(t, filepath.Join(wtGit, "commondir"), "../..\n")
+	mustWrite(t, filepath.Join(repo, ".git"), "gitdir: "+wtGit+"\n")
+
+	out := runScaffold(t, ScaffoldOptions{
+		RepoDir: repo, Private: true, TemplatesDir: templates, Date: "2026-07-04",
+	})
+	if strings.Contains(out, "WARN: not a git repo") {
+		t.Fatalf("worktree misdetected as non-git: %q", out)
+	}
+	exclude, err := os.ReadFile(filepath.Join(mainGit, "info", "exclude"))
+	if err != nil {
+		t.Fatalf("common-dir exclude not written: %v", err)
+	}
+	if !strings.Contains(string(exclude), ".work.local/") {
+		t.Errorf("common-dir exclude missing entry: %q", exclude)
+	}
+}
+
+// TestScaffoldTrackedGitignoreWithGitfile: the .gitignore step must treat a
+// gitfile repo as a git repo too.
+func TestScaffoldTrackedGitignoreWithGitfile(t *testing.T) {
+	templates, repo := scaffoldFixture(t, false)
+	gitDir := filepath.Join(t.TempDir(), "gitdir")
+	mustMkdirAll(t, gitDir)
+	mustWrite(t, filepath.Join(repo, ".git"), "gitdir: "+gitDir+"\n")
+
+	runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-04"})
+	gi, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	if err != nil {
+		t.Fatalf(".gitignore not written in a gitfile repo: %v", err)
+	}
+	if !strings.Contains(string(gi), ".work/scratch/") {
+		t.Errorf(".gitignore missing entries: %q", gi)
+	}
+}
+
+func mustMkdirAll(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestScaffoldPrivateModeWarnsWithoutGit(t *testing.T) {
 	templates, repo := scaffoldFixture(t, false)
 	out := runScaffold(t, ScaffoldOptions{

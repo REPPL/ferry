@@ -108,13 +108,16 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 		return err
 	}
 
-	// Hide .work.local/ from git without touching any tracked file.
-	if fi, err := os.Stat(filepath.Join(repo, ".git")); err == nil && fi.IsDir() {
-		exclude := filepath.Join(repo, ".git", "info", "exclude")
+	// Hide .work.local/ from git without touching any tracked file. The
+	// exclude file lives in the repo's REAL git dir — resolveGitDir follows a
+	// gitfile (linked worktree, submodule) and the worktree commondir, since
+	// git reads info/exclude from the common dir.
+	if gitDir, ok := resolveGitDir(repo); ok {
+		exclude := filepath.Join(gitDir, "info", "exclude")
 		if err := appendLineOnce(exclude, ".work.local/"); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "excluded: .work.local/ via .git/info/exclude (local-only, not committed)")
+		fmt.Fprintln(out, "excluded: .work.local/ via git info/exclude (local-only, not committed)")
 	} else {
 		fmt.Fprintln(out, "WARN: not a git repo — .work.local/ cannot be excluded locally")
 	}
@@ -183,8 +186,10 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		fmt.Fprintln(out, "created:  .pre-commit-config.yaml (activate with: pre-commit install)")
 	}
 
-	// Gitignore the scratch parts of .work/ (NEXT.md / DECISIONS.md ARE committed).
-	if fi, err := os.Stat(filepath.Join(repo, ".git")); err == nil && fi.IsDir() {
+	// Gitignore the scratch parts of .work/ (NEXT.md / DECISIONS.md ARE
+	// committed). ANY .git — a directory OR a gitfile (linked worktree,
+	// submodule) — counts as a git repo here.
+	if _, ok := resolveGitDir(repo); ok {
 		gi := filepath.Join(repo, ".gitignore")
 		updated, aerr := appendGitignoreBlock(gi)
 		if aerr != nil {
@@ -216,6 +221,57 @@ func readTemplate(opts ScaffoldOptions, name string) ([]byte, error) {
 		return nil, err
 	}
 	return content, nil
+}
+
+// resolveGitDir locates a repo's git directory for info/exclude purposes,
+// covering all three layouts git produces:
+//
+//   - a .git DIRECTORY (the standard checkout): used as-is;
+//   - a .git FILE (a linked worktree or submodule): its "gitdir: <path>"
+//     pointer is followed, with a relative path anchored at the repo;
+//   - a resolved git dir containing a "commondir" file (a linked worktree):
+//     the shared COMMON dir is resolved too (relative paths anchored at the
+//     git dir), because git reads info/exclude from $GIT_COMMON_DIR — a
+//     worktree-local exclude would silently not apply.
+//
+// ok is false when the repo has no .git at all (or an unparseable gitfile).
+func resolveGitDir(repo string) (gitDir string, ok bool) {
+	gitPath := filepath.Join(repo, ".git")
+	fi, err := os.Stat(gitPath)
+	if err != nil {
+		return "", false
+	}
+	gitDir = gitPath
+	if !fi.IsDir() {
+		data, rerr := os.ReadFile(gitPath)
+		if rerr != nil {
+			return "", false
+		}
+		line, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
+		const prefix = "gitdir:"
+		if !strings.HasPrefix(line, prefix) {
+			return "", false
+		}
+		gitDir = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if gitDir == "" {
+			return "", false
+		}
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(repo, gitDir)
+		}
+		gitDir = filepath.Clean(gitDir)
+	}
+	// GIT_COMMON_DIR semantics: a linked worktree's git dir names the shared
+	// git dir in a "commondir" file; info/exclude lives THERE.
+	if data, err := os.ReadFile(filepath.Join(gitDir, "commondir")); err == nil {
+		if common := strings.TrimSpace(string(data)); common != "" {
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(gitDir, common)
+			}
+			gitDir = filepath.Clean(common)
+		}
+	}
+	return gitDir, true
 }
 
 // appendLineOnce appends line (plus newline) to path unless the file already
