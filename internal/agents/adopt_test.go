@@ -187,6 +187,56 @@ func TestFindBridges(t *testing.T) {
 	}
 }
 
+// TestFindBridgesDetectsDirectoryLevelBridges pins the ancestor scan: a setup
+// that symlinked ~/.claude ITSELF (or another managed ancestor) into the
+// instruction directory must surface as ONE directory-level bridge — never be
+// written through — with anything nested under it dropped (removing the outer
+// link retires the whole subtree).
+func TestFindBridgesDetectsDirectoryLevelBridges(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+
+	// The adopted dir doubles as the "claude home": it holds the files the
+	// directory bridge exposes.
+	if err := os.MkdirAll(filepath.Join(adopted, "skills", "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "CLAUDE.md"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ~/.claude -> <adopted> (a DIRECTORY-level bridge).
+	if err := os.Symlink(adopted, filepath.Join(home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+
+	bridges, err := FindBridges(home, adopted, config.AgentsConfig{})
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	if len(bridges) != 1 {
+		t.Fatalf("bridges = %+v, want exactly the one directory-level bridge", bridges)
+	}
+	if bridges[0].Path != filepath.Join(home, ".claude") {
+		t.Errorf("bridge path = %s, want %s", bridges[0].Path, filepath.Join(home, ".claude"))
+	}
+}
+
+// TestFindBridgesDropsNestedBridges: when both an ancestor and something the
+// ancestor exposes would match, only the outermost link is reported.
+func TestFindBridgesDropsNestedBridges(t *testing.T) {
+	bridges := dropNestedBridges([]Bridge{
+		{Path: "/home/u/.claude/skills/demo", Dest: "/sst/skills/demo"},
+		{Path: "/home/u/.claude", Dest: "/sst"},
+		{Path: "/home/u/.codex/AGENTS.md", Dest: "/sst/combined.md"},
+	})
+	if len(bridges) != 2 {
+		t.Fatalf("bridges = %+v, want 2 (nested skills entry dropped)", bridges)
+	}
+	if bridges[0].Path != "/home/u/.claude" || bridges[1].Path != "/home/u/.codex/AGENTS.md" {
+		t.Errorf("unexpected bridge set: %+v", bridges)
+	}
+}
+
 func TestFindBridgesResolvesRelativeLinks(t *testing.T) {
 	home := t.TempDir()
 	adopted := filepath.Join(home, "Workspace", ".agents")

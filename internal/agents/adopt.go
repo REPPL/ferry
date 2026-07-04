@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/REPPL/ferry/internal/config"
@@ -113,9 +114,15 @@ type Bridge struct {
 // resolved harness target, the optional devtree file, and the
 // ~/.claude/{skills,agents,hooks} asset locations (the location itself plus
 // its immediate entries) — and returns each one that is currently a symlink
-// resolving into adoptedDir. It looks ONLY at those known locations: it never
-// walks $HOME at large and never goes near ~/.ssh (harness targets are built
-// through the same validation as the planner, which refuses ~/.ssh).
+// resolving into adoptedDir. DIRECTORY-level bridges are detected too: every
+// ancestor directory of a managed location (strictly below $HOME) is checked,
+// so a setup that symlinked ~/.claude itself into the instruction directory
+// is migrated rather than written through. A bridge nested under another
+// bridge is dropped (removing the outermost link retires the whole subtree).
+//
+// It looks ONLY at those known locations: it never walks $HOME at large and
+// never goes near ~/.ssh (harness targets are built through the same
+// validation as the planner, which refuses ~/.ssh).
 func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, error) {
 	// The instruction destinations come from the SAME enumeration the planner
 	// deploys (instructionSpecs), so adopt can never scan a different set of
@@ -139,6 +146,21 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 				candidates = append(candidates, filepath.Join(dir, ent.Name()))
 			}
 		}
+	}
+
+	// Directory-level bridges: check every ancestor of a managed location,
+	// strictly below $HOME, so a symlinked ~/.claude (or a symlinked devtree
+	// segment) pointing into the adopted directory is found — a leaf-only
+	// scan would write THROUGH such a link into the source it is migrating.
+	cleanHome := filepath.Clean(home)
+	ancestorSet := map[string]bool{}
+	for _, cand := range candidates {
+		for d := filepath.Dir(cand); d != cleanHome && strictlyWithin(cleanHome, d); d = filepath.Dir(d) {
+			ancestorSet[d] = true
+		}
+	}
+	for d := range ancestorSet {
+		candidates = append(candidates, d)
 	}
 
 	adopted, err := filepath.Abs(adoptedDir)
@@ -170,7 +192,35 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 			bridges = append(bridges, Bridge{Path: cand, Dest: target})
 		}
 	}
-	return bridges, nil
+	return dropNestedBridges(bridges), nil
+}
+
+// dropNestedBridges removes any bridge that sits UNDER another bridge's path:
+// removing the outermost symlink retires the whole subtree, and a nested
+// entry's path only existed through the outer link anyway. Output order is
+// deterministic (sorted by path).
+func dropNestedBridges(bridges []Bridge) []Bridge {
+	sort.Slice(bridges, func(i, j int) bool { return bridges[i].Path < bridges[j].Path })
+	var out []Bridge
+	for _, b := range bridges {
+		nested := false
+		for _, outer := range out {
+			if b.Path != outer.Path && pathWithin(outer.Path, b.Path) {
+				nested = true
+				break
+			}
+		}
+		if !nested {
+			out = append(out, b)
+		}
+	}
+	return out
+}
+
+// strictlyWithin reports whether p is a strict descendant of base, by pure
+// path arithmetic.
+func strictlyWithin(base, p string) bool {
+	return p != base && pathWithin(base, p)
 }
 
 // pathWithin reports whether p equals base or is a descendant of it, by pure
