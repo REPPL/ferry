@@ -275,6 +275,15 @@ func adoptTransaction(ctx *cmdContext, items []agents.Item, bridges []agents.Bri
 	if err := dotfile.CommitLastApplied(deferred, lastApplied); err != nil {
 		return fmt.Errorf("commit last-applied: %w", err)
 	}
+	// The REMOVED bridge paths join the target record too: they are
+	// agents-domain paths ferry mutated (baselined symlinks), and recording
+	// them is what lets the SCOPED `ferry restore agents` reverse the whole
+	// swap — copies AND bridges (e.g. a directory-level ~/.claude link) — not
+	// just the deployed targets. The record is path-keyed, so a bridge that
+	// coincides with a deployed target unions to one entry.
+	for _, br := range bridges {
+		agentsTargets["agents/bridge:"+br.Path] = br.Path
+	}
 	if len(agentsTargets) > 0 {
 		stateDir, serr := paths.StateDir()
 		if serr != nil {

@@ -80,6 +80,22 @@ func TestAdoptTransactionJournalsBridgeRemoval(t *testing.T) {
 		t.Fatal("no baseline recorded for the removed bridge symlink — restore could not revert the adopt")
 	}
 
+	// The bridge path is in the persisted target record, so the SCOPED
+	// `ferry restore agents` covers it too (not only a full restore).
+	recorded, err := agentsRestorePaths()
+	if err != nil {
+		t.Fatalf("agentsRestorePaths: %v", err)
+	}
+	inRecord := false
+	for _, p := range recorded {
+		if p == bridgePath {
+			inRecord = true
+		}
+	}
+	if !inRecord {
+		t.Errorf("bridge path missing from the agents target record: %v", recorded)
+	}
+
 	// And restore actually brings the symlink back, byte-identical wiring.
 	if _, err := eng.Restore(); err != nil {
 		t.Fatalf("restore: %v", err)
