@@ -281,11 +281,11 @@ func TestPlanHonoursGuard(t *testing.T) {
 	}
 }
 
-// TestEnumerationIsSingleSourced pins the one-enumerator contract: every
-// consumer of the domain's destination list (Plan's deployed targets and the
-// path projection TargetPaths) must observe the IDENTICAL set for the same
-// config — including a user-defined harness, a devtree, and asset files — so
-// no consumer can drift onto its own private enumeration again.
+// TestEnumerationIsSingleSourced pins the one-enumerator contract: Plan's
+// deployed targets must be exactly the shared enumeration's specs (content
+// attached, targets resolved) for the same config — including a user-defined
+// harness, a devtree, and asset files — so no consumer can drift onto its own
+// private enumeration again.
 func TestEnumerationIsSingleSourced(t *testing.T) {
 	repo := writeSST(t, map[string]string{
 		"general.md":           "G\n",
@@ -305,51 +305,26 @@ func TestEnumerationIsSingleSourced(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	planDests := map[string]bool{}
+	planKeys := map[string]string{} // key -> resolved destination
 	for _, it := range items {
-		planDests[it.Target.Home] = true
+		planKeys[it.Key] = it.Target.Home
 	}
 
-	paths, err := TargetPaths(repo, home, cfg)
+	specs, _, err := enumerateSpecs(repo, cfg, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(paths) != len(planDests) {
-		t.Fatalf("TargetPaths has %d paths, Plan deploys %d targets", len(paths), len(planDests))
+	if len(specs) != len(planKeys) {
+		t.Fatalf("enumerateSpecs has %d specs, Plan deploys %d targets", len(specs), len(planKeys))
 	}
-	for _, p := range paths {
-		if !planDests[p] {
-			t.Errorf("TargetPaths includes %s, which Plan does not deploy", p)
+	for _, spec := range specs {
+		dest, ok := planKeys[spec.Key]
+		if !ok {
+			t.Errorf("spec %s not deployed by Plan", spec.Key)
+			continue
 		}
-	}
-}
-
-func TestTargetPaths(t *testing.T) {
-	repo := writeSST(t, map[string]string{
-		"general.md":           "G\n",
-		"coding.md":            "C\n",
-		"skills/demo/SKILL.md": "s\n",
-	})
-	home := t.TempDir()
-	paths, err := TargetPaths(repo, home, config.AgentsConfig{Devtree: "Workspace"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]bool{
-		filepath.Join(home, ".claude/CLAUDE.md"):            true,
-		filepath.Join(home, ".codex/AGENTS.md"):             true,
-		filepath.Join(home, ".config/opencode/AGENTS.md"):   true,
-		filepath.Join(home, ".companion/COMPANION.md"):          true,
-		filepath.Join(home, ".gemini/GEMINI.md"):            true,
-		filepath.Join(home, "Workspace/CLAUDE.md"):          true,
-		filepath.Join(home, ".claude/skills/demo/SKILL.md"): true,
-	}
-	if len(paths) != len(want) {
-		t.Errorf("TargetPaths = %v, want %d paths", paths, len(want))
-	}
-	for _, p := range paths {
-		if !want[p] {
-			t.Errorf("unexpected path %s", p)
+		if want := filepath.Join(home, spec.Rel); dest != want {
+			t.Errorf("spec %s deploys to %s, want %s", spec.Key, dest, want)
 		}
 	}
 }

@@ -178,11 +178,11 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 		return err
 	}
 	// The "agents" domain fans out to MANY file paths (one per harness target,
-	// devtree file, and asset copy), resolved from the manifest's [agents]
-	// config — so it is expanded here, BEFORE resolveScopedPaths would
-	// misread the name as a dotfile (~/.agents). Resolution needs the config
-	// repo; without one the user is pointed at a full restore, which reverts
-	// every baselined path repo-free.
+	// devtree file, and asset copy), resolved from ferry's PERSISTED target
+	// record (agents-targets.json) — never the live manifest — so it covers
+	// later-de-scoped targets and needs NO config repo (restore's
+	// repo-independence guarantee holds). It is expanded here, BEFORE
+	// resolveScopedPaths would misread the name as a dotfile (~/.agents).
 	var rest []string
 	agentsRequested := false
 	for _, d := range domains {
@@ -198,7 +198,7 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 	// path. validDomains stays parallel to absPaths for the report loop below.
 	validDomains, absPaths, refusals := resolveScopedPaths(rest)
 	if agentsRequested {
-		apaths, aerr := agentsRestorePaths(ctx)
+		apaths, aerr := agentsRestorePaths()
 		if aerr != nil {
 			refusals = append(refusals, fmt.Sprintf("restore: cannot resolve the agents domain's targets (%v); run a full `ferry restore` instead", aerr))
 		}

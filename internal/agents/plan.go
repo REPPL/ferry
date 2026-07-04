@@ -286,24 +286,6 @@ func loadSources(in PlanInput) (map[Source][]byte, []string, error) {
 	return sources, warnings, nil
 }
 
-// TargetPaths resolves the absolute $HOME destinations the agents domain
-// manages for cfg, WITHOUT reading any source content — a pure projection of
-// the shared enumeration (enumerateSpecs) onto resolved paths. A spec whose
-// target fails validation is skipped.
-func TargetPaths(repoRoot, home string, cfg config.AgentsConfig) ([]string, error) {
-	specs, _, err := enumerateSpecs(repoRoot, cfg, nil)
-	if err != nil {
-		return nil, err
-	}
-	var paths []string
-	for _, spec := range specs {
-		if t, terr := dotfile.NestedTarget(home, spec.Rel, spec.Key); terr == nil {
-			paths = append(paths, t.Home)
-		}
-	}
-	return paths, nil
-}
-
 // guardPath routes a repo-side candidate through the caller's guard (when
 // provided), so every repo read in this package honours the same
 // symlink-refusing policy as the rest of ferry.

@@ -3,13 +3,13 @@ package cmd
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
 	"github.com/REPPL/ferry/internal/agents"
 	"github.com/REPPL/ferry/internal/config"
 	"github.com/REPPL/ferry/internal/dotfile"
+	"github.com/REPPL/ferry/internal/paths"
 )
 
 // agentsKeyPrefix namespaces the agents domain's records inside the shared
@@ -108,22 +108,30 @@ func descopeAgentsWarnings(store *dotfile.Store, planned map[string]bool, manage
 	return out
 }
 
-// agentsRestorePaths resolves the absolute $HOME destinations the agents
-// domain manages under the CURRENT manifest, for the scoped-restore mapping
-// of the "agents" domain name onto the engine's per-file baselines. It needs
-// the config repo (to read [agents] and enumerate asset trees); without one
-// the caller falls back to advising a full restore.
-func agentsRestorePaths(ctx *cmdContext) ([]string, error) {
-	if ctx.RepoPath == "" {
-		return nil, errors.New("no config repo recorded on this machine")
-	}
-	cfg, err := config.LoadAgents(ctx.RepoPath)
+// agentsRestorePaths resolves the absolute $HOME destinations `ferry restore
+// agents` should revert: the PERSISTED record of every target the domain has
+// applied on this machine (agents-targets.json, unioned at each apply). The
+// record — not the live manifest — is authoritative, for two reasons:
+//   - a DE-SCOPED target (a harness removed from the manifest, a changed
+//     devtree) is exactly what the de-scope warning tells the user to revert,
+//     and the manifest no longer names it;
+//   - restore must keep working with the config repo deleted or its manifest
+//     unreadable (runRestore's repo-independence guarantee).
+//
+// The engine skips recorded paths without a baseline, so the cumulative
+// record can never revert more than ferry actually touched. An empty record
+// (domain never applied) is an error so the caller reports it clearly.
+func agentsRestorePaths() ([]string, error) {
+	stateDir, err := paths.StateDir()
 	if err != nil {
 		return nil, err
 	}
-	home, err := os.UserHomeDir()
+	recorded, err := agents.RecordedTargetPaths(stateDir)
 	if err != nil {
 		return nil, err
 	}
-	return agents.TargetPaths(ctx.RepoPath, home, cfg)
+	if len(recorded) == 0 {
+		return nil, errors.New("no agents targets recorded on this machine (the domain was never applied)")
+	}
+	return recorded, nil
 }

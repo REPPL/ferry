@@ -687,6 +687,9 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	var conflicts []string
 	// Collect deferred last-applied results: persisted ONLY after run.Commit().
 	var deferred []dotfile.Result
+	// Agents targets touched by this plan, for the cumulative restore record
+	// (key -> absolute home path), persisted post-commit.
+	agentsTargets := map[string]string{}
 	for i := range plan {
 		it := &plan[i]
 		switch it.kind {
@@ -781,6 +784,12 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			// same Backuper/journal as dotfiles (agents.ApplyItem), with the
 			// domain's repo-authoritative wording on refusals: a live edit is
 			// never captured back in v1, so the fix is the repo copy (or --force).
+			//
+			// Every planned agents target is also collected for the persisted
+			// target record (agents-targets.json, unioned post-commit): scoped
+			// restore reverts from that record, so a later de-scope — or a
+			// deleted repo — can never hide a previously applied target.
+			agentsTargets[it.target.Name] = it.target.Home
 			res, err := agents.ApplyItem(agents.Item{
 				Key:     it.target.Name,
 				Label:   it.domain,
@@ -851,6 +860,19 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	// ignores results with no PendingHash (noop/skipped), so passing all is safe.
 	if err := dotfile.CommitLastApplied(deferred, lastApplied); err != nil {
 		return fmt.Errorf("commit last-applied: %w", err)
+	}
+	// Union this plan's agents targets into the persisted record (cumulative —
+	// entries are never removed) so `ferry restore agents` can resolve the
+	// full applied set WITHOUT the config repo, including later-de-scoped
+	// targets. Post-commit like last-applied: a rolled-back run records nothing.
+	if len(agentsTargets) > 0 {
+		stateDir, err := paths.StateDir()
+		if err != nil {
+			return fmt.Errorf("record agents targets: %w", err)
+		}
+		if err := agents.RecordTargets(stateDir, agentsTargets); err != nil {
+			return fmt.Errorf("record agents targets: %w", err)
+		}
 	}
 	if len(conflicts) > 0 {
 		fmt.Fprintf(out, "%d conflict(s) left unchanged: %s\n", len(conflicts), strings.Join(conflicts, ", "))
