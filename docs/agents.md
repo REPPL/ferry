@@ -88,6 +88,14 @@ tools receive the pre-merged `combined` content.
 - **Symlink refusal**: a target that is currently a symlink (for example a
   bridge left behind by an older symlink-based setup) is skipped with a clear
   message — remove it, or migrate it with `ferry agents adopt <dir>`.
+- **Resolved containment**: a target whose parent directory is a symlink is
+  refused when the link resolves outside `$HOME` or under `~/.ssh` — a write
+  can never land outside `$HOME` through a symlinked intermediate directory.
+  A parent symlink that resolves within `$HOME` is allowed.
+- **Collision refusal**: a configuration in which two targets share a store
+  key (for example a harness named `devtree` alongside a configured devtree)
+  or a destination path (for example `devtree = ".claude"` colliding with the
+  `claude` harness) is refused with an error naming both parties.
 - **Repo-authoritative**: the deployed content is derived from the repo, so
   the repo copy is the place to edit. A live edit to a deployed target is
   reported by `status`/`diff` as drift and **skipped** by `apply` (ferry never
@@ -102,9 +110,15 @@ tools receive the pre-merged `combined` content.
   empty/near-empty source is refused without `--force`, exactly as for
   dotfiles.
 
-`ferry restore agents` resolves the domain's current targets from the manifest
-and reverts each one that has a baseline. A full `ferry restore` needs no repo
-at all and reverts everything ferry ever touched.
+`ferry restore agents` resolves its revert set from a persisted record of
+every destination the domain has ever applied on this machine
+(`agents-targets.json` under ferry's state directory, updated at each apply).
+The record — not the manifest — is authoritative, so a target that was later
+de-scoped is still reverted, and no config repo is needed at all: restore
+works with the repo deleted or its manifest unreadable. Recorded paths
+without a baseline are skipped, so nothing ferry never touched can be
+reverted. A full `ferry restore` likewise needs no repo and reverts
+everything ferry ever touched.
 
 ## `ferry agents scaffold [--private] <repo-dir> [name]`
 
@@ -126,10 +140,17 @@ Default (tracked) mode, for a repo you own:
 | Item | Role |
 |---|---|
 | `.work.local/NEXT.md`, `DECISIONS.md`, `ISSUES.md` | The same logs plus a private observation list |
-| `.git/info/exclude` entry | Hides `.work.local/` locally; never committed or pushed |
+| git `info/exclude` entry | Hides `.work.local/` locally; never committed or pushed |
 
-A real file already sitting where a symlink would go is skipped with a message
-(merge it into `AGENTS.md` first).
+Anything already sitting where a bridge symlink would go is left untouched: a
+real file is skipped with a message (merge it into `AGENTS.md` first), and a
+symlink pointing anywhere other than `AGENTS.md` is your own wiring — it is
+reported and skipped, never repointed.
+
+All three git layouts are recognised: a plain `.git` directory, and a `.git`
+file (a linked worktree or a submodule), whose `gitdir:` pointer is followed.
+In a linked worktree the exclude entry is written to the **shared** common git
+directory's `info/exclude`, which is where git reads it.
 
 ## `ferry agents adopt <dir>`
 
@@ -141,20 +162,26 @@ is only ever read.
    `skills/`, `agents/`, and `hooks/` into the config repo's `agents/` area.
    An identical repo file is a quiet no-op; a differing one is skipped with a
    message (reconcile manually) — a re-run cannot clobber repo edits. A
-   generated `combined.md` and the old `bin/` scripts are not imported.
-2. **Retire the bridges**: every symlink at a managed location (harness
-   targets, the devtree file, and `~/.claude/{skills,agents,hooks}` plus their
-   immediate entries) that resolves into `<dir>` is listed in a timestamped
-   record under ferry's state directory, then removed.
-3. **Materialise**: a normal `ferry apply` runs, deploying managed copies in
-   the bridges' place through the usual backup/journal machinery.
+   generated `combined.md` and the old `bin/` scripts are not imported. Every
+   destination passes the same symlink-refusing repo guard as any other repo
+   write.
+2. **Find the bridges**: every symlink at a managed location — harness
+   targets, the devtree file, `~/.claude/{skills,agents,hooks}` plus their
+   immediate entries, and any symlinked **ancestor** of those (so a setup
+   that symlinked `~/.claude` itself is found as one directory-level bridge)
+   — that resolves into `<dir>` is listed in a timestamped record under
+   ferry's state directory.
+3. **The swap, as one transaction**: within a single journalled backup-engine
+   run, each bridge symlink is removed through the backup machinery (its link
+   target is captured in the baseline and the journal) and the managed
+   regular-file copies are written in its place. If anything fails, the whole
+   run rolls back — the symlinks come back and every written copy is
+   reverted, so a half-migrated machine is not a reachable state. After
+   success, `ferry restore` (full or `ferry restore agents`) recreates the
+   original symlinks from the baseline.
 
-Afterwards, ferry prints what to delete by hand (the old sync script). Set
+Afterwards, ferry prints what to delete by hand (the old sync script) and
+reminds you that other domains reconcile as usual with `ferry apply`. Set
 `devtree` in `[agents]` **before** adopting if the old setup linked a
 workspace-level `CLAUDE.md`; otherwise that one bridge is left for you to
 remove.
-
-Note: because the bridge symlinks are removed before the first managed write,
-the backup baseline for those paths records the post-removal state. The
-timestamped record preserves the original link targets, and `<dir>` itself is
-untouched, so the pre-adopt wiring remains reconstructable by hand.
