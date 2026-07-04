@@ -123,6 +123,14 @@ func importFile(src, dest string, guard func(string) (string, error), out io.Wri
 type Bridge struct {
 	Path string // absolute symlink path under $HOME
 	Dest string // the link's lexically resolved absolute destination
+	// Dir marks a DIRECTORY-level bridge (the link resolves to a directory,
+	// e.g. a symlinked ~/.claude or a whole-dir ~/.claude/hooks link). The
+	// caller must refuse to migrate these transactionally: replacing the link
+	// leaves a real DIRECTORY where the baseline recorded a symlink, and a
+	// directory cannot be snapshotted/restored by the backup engine — so the
+	// swap would not be reversible. They are surfaced for a loud refusal with
+	// manual instructions, never written through.
+	Dir bool
 }
 
 // FindBridges scans the $HOME locations the agents domain manages — every
@@ -204,7 +212,13 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 		}
 		target = filepath.Clean(target)
 		if pathWithin(adopted, target) {
-			bridges = append(bridges, Bridge{Path: cand, Dest: target})
+			// os.Stat follows the link: a destination that is a directory marks
+			// a directory-level bridge (refused by the caller, never migrated).
+			isDir := false
+			if sfi, serr := os.Stat(cand); serr == nil && sfi.IsDir() {
+				isDir = true
+			}
+			bridges = append(bridges, Bridge{Path: cand, Dest: target, Dir: isDir})
 		}
 	}
 	return dropNestedBridges(bridges), nil

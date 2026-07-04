@@ -135,20 +135,13 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 		return fmt.Errorf("agents adopt: %s is not an existing directory", args[0])
 	}
 
-	// 1. Import the source set into the config repo's agents/ area. <dir> is
-	// only read; existing repo files that differ are skipped, never clobbered.
-	destDir, err := safeRepoPath(ctx.RepoPath, filepath.Join(ctx.RepoPath, agents.RepoSubdir))
-	if err != nil {
-		return err
-	}
-	if err := agents.ImportSST(dir, destDir, func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) }, out); err != nil {
-		return err
-	}
-
-	// 2. Find the $HOME bridge symlinks pointing into <dir> (harness targets,
+	// 1. Find the $HOME bridge symlinks pointing into <dir> (harness targets,
 	// the optional devtree file, the ~/.claude asset locations, and any
-	// symlinked ANCESTOR of those — a directory-level bridge like a symlinked
-	// ~/.claude itself), and record them to a timestamped list first.
+	// symlinked ANCESTOR of those). DIRECTORY-level bridges (a symlinked
+	// ~/.claude, a whole-dir hooks link) are REFUSED loudly BEFORE anything
+	// is touched: replacing one would leave a real directory where the
+	// baseline recorded a symlink, a transition the backup engine cannot
+	// snapshot — the swap would not be reversible. They are one `rm` each.
 	cfg, err := config.LoadAgents(ctx.RepoPath)
 	if err != nil {
 		return err
@@ -161,6 +154,22 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseDirectoryBridges(bridges); err != nil {
+		return err
+	}
+
+	// 2. Import the source set into the config repo's agents/ area. <dir> is
+	// only read; existing repo files that differ are skipped, never clobbered.
+	destDir, err := safeRepoPath(ctx.RepoPath, filepath.Join(ctx.RepoPath, agents.RepoSubdir))
+	if err != nil {
+		return err
+	}
+	if err := agents.ImportSST(dir, destDir, func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) }, out); err != nil {
+		return err
+	}
+
+	// Record the bridge list to a timestamped file first (human-readable
+	// provenance, independent of the engine's baselines).
 	if len(bridges) > 0 {
 		recordPath, rerr := recordAdoptedBridges(bridges)
 		if rerr != nil {
@@ -195,6 +204,28 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "adopt: done. %s was not modified; run `ferry status` to verify, then delete its old sync script (e.g. %s) — ferry now manages the bridges. Other domains reconcile as usual with `ferry apply`.\n",
 		dir, filepath.Join(dir, "bin", "sync.sh"))
 	return nil
+}
+
+// refuseDirectoryBridges returns a loud, actionable error when any found
+// bridge is DIRECTORY-level (the symlink resolves to a directory). ferry
+// never writes THROUGH such a link (that would mutate the adopted source
+// dir), and it cannot migrate it transactionally either: the swap leaves a
+// real directory where the baseline recorded a symlink, and a directory
+// cannot be snapshotted/restored by the backup engine — so the operation
+// would not be reversible. The fix is one `rm` per link (the adopted
+// directory keeps the real files), then re-run adopt.
+func refuseDirectoryBridges(bridges []agents.Bridge) error {
+	var lines []string
+	for _, br := range bridges {
+		if br.Dir {
+			lines = append(lines, fmt.Sprintf("  rm %s   (a symlink to %s)", br.Path, br.Dest))
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	return fmt.Errorf("agents adopt: %d directory-level bridge symlink(s) found; ferry cannot replace a directory bridge reversibly (a directory cannot be snapshotted for restore) and will not write through it. Remove the link(s) yourself — the adopted directory keeps the real files — then re-run adopt:\n%s",
+		len(lines), strings.Join(lines, "\n"))
 }
 
 // adoptTransaction performs the bridge swap as ONE journalled engine run:

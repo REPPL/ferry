@@ -158,18 +158,24 @@ Migrates an existing symlink-based instruction directory (the `sync.sh` era)
 into ferry. Requires the domain to be enabled. It is non-destructive: `<dir>`
 is only ever read.
 
-1. **Import**: copies `<dir>`'s `general.md`, `coding.md`, `templates/`,
+1. **Find the bridges**: every symlink at a managed location — harness
+   targets, the devtree file, `~/.claude/{skills,agents,hooks}` plus their
+   immediate entries, and any symlinked **ancestor** of those — that resolves
+   into `<dir>` is identified. A **directory-level** bridge (a symlinked
+   `~/.claude` itself, a whole-directory `hooks` or skill link) aborts the
+   adopt loudly before anything is touched: replacing it would leave a real
+   directory where the backup baseline recorded a symlink, a transition the
+   backup engine cannot snapshot, so the swap would not be reversible — and
+   ferry never writes *through* such a link either. The error lists the exact
+   `rm` for each (the adopted directory keeps the real files); remove them
+   and re-run. File-level bridges proceed.
+2. **Import**: copies `<dir>`'s `general.md`, `coding.md`, `templates/`,
    `skills/`, `agents/`, and `hooks/` into the config repo's `agents/` area.
    An identical repo file is a quiet no-op; a differing one is skipped with a
    message (reconcile manually) — a re-run cannot clobber repo edits. A
    generated `combined.md` and the old `bin/` scripts are not imported. Every
    destination passes the same symlink-refusing repo guard as any other repo
-   write.
-2. **Find the bridges**: every symlink at a managed location — harness
-   targets, the devtree file, `~/.claude/{skills,agents,hooks}` plus their
-   immediate entries, and any symlinked **ancestor** of those (so a setup
-   that symlinked `~/.claude` itself is found as one directory-level bridge)
-   — that resolves into `<dir>` is listed in a timestamped record under
+   write. The bridge list is also written to a timestamped record under
    ferry's state directory.
 3. **The swap, as one transaction**: within a single journalled backup-engine
    run, each bridge symlink is removed through the backup machinery (its link

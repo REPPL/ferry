@@ -234,22 +234,30 @@ func TestFindBridges(t *testing.T) {
 		t.Fatalf("FindBridges: %v", err)
 	}
 	got := map[string]bool{}
+	gotDir := map[string]bool{}
 	for _, b := range bridges {
 		got[b.Path] = true
+		gotDir[b.Path] = b.Dir
 	}
-	want := []string{
-		filepath.Join(home, ".claude", "CLAUDE.md"),
-		filepath.Join(home, ".codex", "AGENTS.md"),
-		filepath.Join(home, "Workspace", "CLAUDE.md"),
-		filepath.Join(home, ".claude", "skills", "demo"),
-		filepath.Join(home, ".claude", "hooks"),
+	// Dir marks the directory-level links (a whole skill dir, the hooks dir);
+	// file bridges stay migratable.
+	want := map[string]bool{
+		filepath.Join(home, ".claude", "CLAUDE.md"):      false,
+		filepath.Join(home, ".codex", "AGENTS.md"):       false,
+		filepath.Join(home, "Workspace", "CLAUDE.md"):    false,
+		filepath.Join(home, ".claude", "skills", "demo"): true,
+		filepath.Join(home, ".claude", "hooks"):          true,
 	}
 	if len(bridges) != len(want) {
 		t.Errorf("found %d bridges (%v), want %d", len(bridges), got, len(want))
 	}
-	for _, p := range want {
+	for p, wantDir := range want {
 		if !got[p] {
 			t.Errorf("bridge %s not found", p)
+			continue
+		}
+		if gotDir[p] != wantDir {
+			t.Errorf("bridge %s Dir = %v, want %v", p, gotDir[p], wantDir)
 		}
 	}
 	if got[filepath.Join(home, ".gemini", "GEMINI.md")] {
@@ -291,6 +299,9 @@ func TestFindBridgesDetectsDirectoryLevelBridges(t *testing.T) {
 	}
 	if bridges[0].Path != filepath.Join(home, ".claude") {
 		t.Errorf("bridge path = %s, want %s", bridges[0].Path, filepath.Join(home, ".claude"))
+	}
+	if !bridges[0].Dir {
+		t.Error("directory-level bridge not marked Dir — the caller could not refuse it")
 	}
 }
 

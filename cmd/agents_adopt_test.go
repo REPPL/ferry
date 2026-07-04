@@ -109,6 +109,28 @@ func TestAdoptTransactionJournalsBridgeRemoval(t *testing.T) {
 	}
 }
 
+// TestRefuseDirectoryBridges pins the loud refusal: a directory-level bridge
+// (a symlinked ~/.claude, a whole-dir hooks link) must abort adopt with the
+// exact manual fix — it is never migrated (irreversible: the engine cannot
+// snapshot a directory) and never written through.
+func TestRefuseDirectoryBridges(t *testing.T) {
+	fileBridge := agents.Bridge{Path: "/home/u/.codex/AGENTS.md", Dest: "/sst/combined.md"}
+	dirBridge := agents.Bridge{Path: "/home/u/.claude", Dest: "/sst", Dir: true}
+
+	if err := refuseDirectoryBridges([]agents.Bridge{fileBridge}); err != nil {
+		t.Errorf("file-level bridges alone must not refuse: %v", err)
+	}
+	err := refuseDirectoryBridges([]agents.Bridge{fileBridge, dirBridge})
+	if err == nil {
+		t.Fatal("directory-level bridge was not refused")
+	}
+	for _, want := range []string{"rm /home/u/.claude", "re-run adopt"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal %q missing %q", err.Error(), want)
+		}
+	}
+}
+
 // TestAdoptTransactionRollsBackOnFailure pins the write-then-swap ordering as
 // a TRANSACTION: when any copy fails to deploy (here: the data-loss guard
 // refusing a near-empty source over a substantial live file), the whole run
