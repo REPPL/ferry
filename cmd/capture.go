@@ -146,6 +146,15 @@ func runCapture(c *cobra.Command, _ []string) error {
 		}
 	}
 
+	// --- Agents pass (v1): the agents domain is REPO-AUTHORITATIVE — its
+	// targets carry content DERIVED from the config repo (general/coding/
+	// combined renders, asset copies), so the repo copy is the place to edit
+	// and capture deliberately never ingests a live agents target (and never
+	// modifies any user file here). One informative line, no offer.
+	if ctx.Scope.IsManaged("agents") {
+		fmt.Fprintln(out, "agents: skipped — agents targets are repo-authoritative in v1; edit agents/ in the config repo, then run `ferry apply`")
+	}
+
 	// Terminal/plist preference domains (A3): the dotfile loop above only handles
 	// declared DOTFILES, so a live iTerm2 / Apple Terminal preference change is
 	// NEVER captured by it — apply re-exports those as opaque plist DOMAINS, so they
