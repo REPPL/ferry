@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,7 +12,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/REPPL/ferry/internal/agents"
+	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/config"
+	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/paths"
 )
 
@@ -102,10 +105,13 @@ func runAgentsScaffold(c *cobra.Command, args []string) error {
 }
 
 // runAgentsAdopt migrates an existing symlink-based instruction directory:
-// import its sources into the config repo, record + remove the $HOME bridge
-// symlinks that point into it, then run a normal apply so the managed copies
-// materialise through the usual backup/journal machinery. <dir> is never
-// modified.
+// import its sources into the config repo, then — in ONE journalled
+// transaction — replace every $HOME bridge symlink pointing into it with the
+// managed regular-file copy (adoptTransaction). The bridge removals go
+// through the backup engine (BackupAndRemove), so each symlink's prior state
+// is in the baseline + journal: a failure rolls the whole run back inline
+// (the symlinks come back), and even after success `ferry restore` can
+// recreate them. <dir> is never modified.
 func runAgentsAdopt(c *cobra.Command, args []string) error {
 	ctx, err := loadContext()
 	if err != nil {
@@ -140,9 +146,9 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	}
 
 	// 2. Find the $HOME bridge symlinks pointing into <dir> (harness targets,
-	// the optional devtree file, and the ~/.claude asset locations), record
-	// them to a timestamped file, then remove them so apply can deploy
-	// regular-file copies in their place.
+	// the optional devtree file, the ~/.claude asset locations, and any
+	// symlinked ANCESTOR of those — a directory-level bridge like a symlinked
+	// ~/.claude itself), and record them to a timestamped list first.
 	cfg, err := config.LoadAgents(ctx.RepoPath)
 	if err != nil {
 		return err
@@ -161,12 +167,6 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 			return rerr
 		}
 		fmt.Fprintf(out, "adopt: recorded %d bridge symlink(s) in %s\n", len(bridges), recordPath)
-		for _, br := range bridges {
-			if err := os.Remove(br.Path); err != nil {
-				return fmt.Errorf("remove bridge symlink %s: %w", br.Path, err)
-			}
-			fmt.Fprintf(out, "removed:  %s -> %s (becomes a managed copy)\n", br.Path, br.Dest)
-		}
 	} else {
 		fmt.Fprintln(out, "adopt: no bridge symlinks into that directory found at the managed locations")
 	}
@@ -174,16 +174,153 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "note: no [agents] devtree is configured — if the old setup linked a workspace CLAUDE.md, set devtree in ferry.toml and re-run adopt (or remove that symlink yourself)")
 	}
 
-	// 3. Materialise the managed copies through the normal apply transaction
-	// (idempotent for every other in-scope domain).
-	fmt.Fprintln(out, "adopt: running apply to materialise the managed copies")
-	if err := applyPlan(ctx, nil, false, out); err != nil {
+	// 3. The swap: expand the (just-imported) repo sources into their deploy
+	// items and replace the bridges with managed copies in ONE journalled run.
+	items, warnings, err := agents.Plan(agents.PlanInput{
+		RepoRoot: ctx.RepoPath,
+		Home:     home,
+		Config:   cfg,
+		Guard:    func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) },
+	})
+	if err != nil {
+		return err
+	}
+	for _, w := range warnings {
+		fmt.Fprintln(out, w)
+	}
+	if err := adoptTransaction(ctx, items, bridges, out); err != nil {
 		return err
 	}
 
-	fmt.Fprintf(out, "adopt: done. %s was not modified; once you are satisfied, delete its old sync script (e.g. %s) — ferry now manages the bridges.\n",
+	fmt.Fprintf(out, "adopt: done. %s was not modified; run `ferry status` to verify, then delete its old sync script (e.g. %s) — ferry now manages the bridges. Other domains reconcile as usual with `ferry apply`.\n",
 		dir, filepath.Join(dir, "bin", "sync.sh"))
 	return nil
+}
+
+// adoptTransaction performs the bridge swap as ONE journalled engine run:
+// every bridge symlink is removed via BackupAndRemove (its symlink state —
+// link target, mtime — lands in the immutable baseline and this run's
+// journal), then every agents item is written through the same run's
+// Backuper. The ordering guarantee is transactional rather than per-file: a
+// symlink and its replacing copy occupy the SAME path, so the copy cannot be
+// written first — instead, ANY failure rolls the whole open run back inline,
+// which recreates the removed symlinks and reverts every written copy, so
+// there is no reachable state where a bridge is gone and unrecoverable.
+// After success, `ferry restore` (full or `agents`-scoped) still reverses
+// the swap from the recorded baselines.
+func adoptTransaction(ctx *cmdContext, items []agents.Item, bridges []agents.Bridge, out io.Writer) (retErr error) {
+	eng, err := ctx.Engine()
+	if err != nil {
+		return err
+	}
+
+	lock, err := eng.Lock()
+	if err != nil {
+		var held *backup.ErrLockHeld
+		if errors.As(err, &held) {
+			return fmt.Errorf("another ferry apply is in progress (pid %d); try again later", held.OwnerPID)
+		}
+		return fmt.Errorf("acquire apply lock: %w", err)
+	}
+	defer func() {
+		if uErr := lock.Unlock(); uErr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("release apply lock: %w (the lock may be stale; remove it before the next apply)", uErr)
+			} else {
+				fmt.Fprintf(out, "warning: failed to release apply lock: %v; the lock may be stale and block the next apply\n", uErr)
+			}
+		}
+	}()
+
+	// Mirror applyPlan: register the terminal resources so a PRIOR incomplete
+	// run holding a resource entry can roll back, then clear it.
+	if err := registerTerminalDomains(ctx); err != nil {
+		return err
+	}
+	if _, err := eng.RollbackIncomplete(); err != nil {
+		return fmt.Errorf("roll back incomplete run: %w", err)
+	}
+
+	run, err := eng.Begin()
+	if err != nil {
+		return fmt.Errorf("begin adopt run: %w", err)
+	}
+	b := backuperFunc(func(target string, content []byte, perm os.FileMode) error {
+		return eng.BackupAndWrite(run, target, content, perm)
+	})
+	removeBridge := func(path string) error { return eng.BackupAndRemove(run, path) }
+
+	lastApplied, err := dotfile.OpenStore()
+	if err != nil {
+		return fmt.Errorf("open last-applied store: %w", err)
+	}
+
+	deferred, agentsTargets, err := adoptMutate(removeBridge, b, lastApplied, items, bridges, out)
+	if err != nil {
+		// Roll THIS open run back inline: the removed bridge symlinks are
+		// recreated from the journal and every written copy reverts, so a
+		// failed adopt leaves the machine exactly as it was.
+		if _, rbErr := eng.RollbackIncomplete(); rbErr != nil {
+			return fmt.Errorf("adopt failed (%v); inline rollback also failed (machine may be partially migrated — run `ferry restore` to recover): %w", err, rbErr)
+		}
+		return err
+	}
+	if err := run.Commit(); err != nil {
+		return fmt.Errorf("commit adopt run: %w", err)
+	}
+
+	// Persist last-applied and the agents target record ONLY after the journal
+	// commit (mutate()'s ordering): a crash before the commit rolls the files
+	// back, and neither store can then be ahead of the rolled-back state.
+	if err := dotfile.CommitLastApplied(deferred, lastApplied); err != nil {
+		return fmt.Errorf("commit last-applied: %w", err)
+	}
+	if len(agentsTargets) > 0 {
+		stateDir, serr := paths.StateDir()
+		if serr != nil {
+			return fmt.Errorf("record agents targets: %w", serr)
+		}
+		if err := agents.RecordTargets(stateDir, agentsTargets); err != nil {
+			return fmt.Errorf("record agents targets: %w", err)
+		}
+	}
+	return nil
+}
+
+// adoptMutate is the per-target body of the adopt run: journalled bridge
+// removals first (freeing the destination paths), then every item written
+// through the run's Backuper. It returns the deferred last-applied results
+// and the target-record entries for the caller to persist AFTER the run
+// commits. Any error returns immediately — the caller rolls the open run back.
+func adoptMutate(removeBridge func(string) error, b dotfile.Backuper, lastApplied *dotfile.Store, items []agents.Item, bridges []agents.Bridge, out io.Writer) ([]dotfile.Result, map[string]string, error) {
+	for _, br := range bridges {
+		if err := removeBridge(br.Path); err != nil {
+			return nil, nil, fmt.Errorf("remove bridge symlink %s: %w", br.Path, err)
+		}
+		fmt.Fprintf(out, "removed:  %s -> %s (journalled; becomes a managed copy)\n", br.Path, br.Dest)
+	}
+
+	var deferred []dotfile.Result
+	agentsTargets := map[string]string{}
+	for _, it := range items {
+		agentsTargets[it.Key] = it.Target.Home
+		res, err := agents.ApplyItem(it, lastApplied, b, false)
+		if err != nil {
+			var conflict *dotfile.ConflictError
+			if errors.As(err, &conflict) {
+				fmt.Fprintf(out, "  %-22s CONFLICT: edited live AND in the repo; not overwritten (update the repo copy, or `ferry apply --force` later)\n", it.Label)
+				continue
+			}
+			return nil, nil, fmt.Errorf("deploy %s: %w", it.Label, err)
+		}
+		if res.Action == dotfile.ActionSkipped {
+			fmt.Fprintf(out, "  %-22s skipped (edited live; update the repo copy, or `ferry apply --force` later)\n", it.Label)
+			continue
+		}
+		deferred = append(deferred, res)
+		fmt.Fprintf(out, "  %-22s %s\n", it.Label, res.Action)
+	}
+	return deferred, agentsTargets, nil
 }
 
 // recordAdoptedBridges writes the "<link> -> <destination>" list of replaced
