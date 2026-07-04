@@ -31,9 +31,15 @@ var (
 // identical file is a quiet no-op, so ImportSST is idempotent. Executable
 // bits are preserved (hooks stay runnable); symlinks inside srcDir are
 // skipped with a note (managed content is copied, never symlinked).
-func ImportSST(srcDir, destDir string, out io.Writer) error {
+//
+// EVERY destination is routed through guard BEFORE it is read or written —
+// the caller passes its symlink-refusing repo guard (safeRepoPath), so a
+// symlink already sitting inside the config repo's agents/ tree (e.g.
+// agents/hooks -> ~/.ssh) is refused with a loud skip and never written
+// THROUGH. nil disables the extra validation (tests only).
+func ImportSST(srcDir, destDir string, guard func(string) (string, error), out io.Writer) error {
 	for _, name := range sstTopFiles {
-		if err := importFile(filepath.Join(srcDir, name), filepath.Join(destDir, name), out); err != nil {
+		if err := importFile(filepath.Join(srcDir, name), filepath.Join(destDir, name), guard, out); err != nil {
 			return err
 		}
 	}
@@ -61,7 +67,7 @@ func ImportSST(srcDir, destDir string, out io.Writer) error {
 			if d.IsDir() || !d.Type().IsRegular() {
 				return nil
 			}
-			return importFile(path, filepath.Join(destDir, tree, rel), out)
+			return importFile(path, filepath.Join(destDir, tree, rel), guard, out)
 		})
 		if err != nil {
 			return err
@@ -72,8 +78,17 @@ func ImportSST(srcDir, destDir string, out io.Writer) error {
 
 // importFile copies one regular file src -> dest (mode preserved), creating
 // parent directories. An identical existing dest is a quiet no-op; a
-// differing one is skipped with a message.
-func importFile(src, dest string, out io.Writer) error {
+// differing one is skipped with a message. dest is validated by guard FIRST:
+// a refused destination (a symlinked component in the repo tree) is skipped
+// loudly and never read or written through.
+func importFile(src, dest string, guard func(string) (string, error), out io.Writer) error {
+	safeDest, gerr := guardPath(guard, dest)
+	if gerr != nil {
+		fmt.Fprintf(out, "skip:     %s (refused destination: %v)\n", dest, gerr)
+		return nil
+	}
+	dest = safeDest
+
 	content, err := os.ReadFile(src)
 	if err != nil {
 		if os.IsNotExist(err) {

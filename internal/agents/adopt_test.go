@@ -35,7 +35,7 @@ func TestImportSST(t *testing.T) {
 	write("bin/sync.sh", "#!/bin/sh\n", 0o755)
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, &buf); err != nil {
+	if err := ImportSST(src, dest, nil, &buf); err != nil {
 		t.Fatalf("ImportSST: %v", err)
 	}
 
@@ -82,7 +82,7 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, &buf); err != nil {
+	if err := ImportSST(src, dest, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "general.md"))
@@ -101,11 +101,84 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "general.md"), []byte("from src\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ImportSST(src, dest, &buf); err != nil {
+	if err := ImportSST(src, dest, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "general.md") {
 		t.Errorf("identical file produced output: %q", buf.String())
+	}
+}
+
+// refuseSymlinkComponents mimics the cmd layer's safeRepoPath for tests: it
+// walks each component from root down to the candidate and refuses when any
+// existing component is a symlink.
+func refuseSymlinkComponents(t *testing.T, root string) func(string) (string, error) {
+	t.Helper()
+	return func(cand string) (string, error) {
+		rel, err := filepath.Rel(root, cand)
+		if err != nil || strings.HasPrefix(rel, "..") {
+			return "", os.ErrPermission
+		}
+		cur := root
+		for _, seg := range strings.Split(rel, string(os.PathSeparator)) {
+			cur = filepath.Join(cur, seg)
+			fi, lerr := os.Lstat(cur)
+			if lerr != nil {
+				break // not-yet-existing tail: nothing to traverse
+			}
+			if fi.Mode()&os.ModeSymlink != 0 {
+				return "", os.ErrPermission
+			}
+		}
+		return cand, nil
+	}
+}
+
+// TestImportSSTRefusesGuardedDestinations pins the destination guard: a
+// symlink already inside the config repo's agents/ area (e.g. hooks ->
+// somewhere outside) must be refused with a loud skip — never written
+// THROUGH — while the untainted pieces still import.
+func TestImportSSTRefusesGuardedDestinations(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	outside := t.TempDir()
+
+	for rel, content := range map[string]string{
+		"general.md":     "GENERAL\n",
+		"hooks/guard.sh": "#!/bin/sh\n",
+	} {
+		path := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The POISONED repo destination: agents/hooks is a symlink out of the repo.
+	if err := os.Symlink(outside, filepath.Join(dest, "hooks")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	if err := ImportSST(src, dest, refuseSymlinkComponents(t, dest), &buf); err != nil {
+		t.Fatalf("ImportSST: %v", err)
+	}
+
+	// Nothing may have been written through the symlink.
+	ents, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ents) != 0 {
+		t.Errorf("import wrote THROUGH the symlinked destination: %v", ents)
+	}
+	if !strings.Contains(buf.String(), "refused destination") {
+		t.Errorf("output missing the loud refusal: %q", buf.String())
+	}
+	// The clean piece still imports.
+	if got, err := os.ReadFile(filepath.Join(dest, "general.md")); err != nil || string(got) != "GENERAL\n" {
+		t.Errorf("general.md = %q, %v; want imported", got, err)
 	}
 }
 

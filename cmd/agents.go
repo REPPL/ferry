@@ -135,7 +135,7 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := agents.ImportSST(dir, destDir, out); err != nil {
+	if err := agents.ImportSST(dir, destDir, func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) }, out); err != nil {
 		return err
 	}
 
