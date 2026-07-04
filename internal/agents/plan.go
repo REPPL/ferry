@@ -55,7 +55,35 @@ func enumerateSpecs(repoRoot string, cfg config.AgentsConfig, guard func(string)
 	if err != nil {
 		return nil, nil, err
 	}
-	return append(specs, assets...), warnings, nil
+	specs = append(specs, assets...)
+	if err := validateSpecCollisions(specs); err != nil {
+		return nil, nil, err
+	}
+	return specs, warnings, nil
+}
+
+// validateSpecCollisions refuses a plan in which two enumerated targets share
+// a store key or a destination path. Both are silent-corruption hazards, not
+// warnings: a duplicated key (e.g. a user harness literally named "devtree"
+// next to a configured devtree) makes two targets fight over one last-applied
+// record, and a duplicated destination (e.g. devtree = ".claude" colliding
+// with the claude harness's ~/.claude/CLAUDE.md) makes the second write
+// clobber the first every apply. The error names both colliding parties.
+func validateSpecCollisions(specs []TargetSpec) error {
+	byKey := map[string]string{}
+	byRel := map[string]string{}
+	for _, s := range specs {
+		if prev, ok := byKey[s.Key]; ok {
+			return fmt.Errorf("agents: %s and %s collide on the store key %q — rename one of them", prev, s.Label, s.Key)
+		}
+		byKey[s.Key] = s.Label
+		rel := filepath.Clean(s.Rel)
+		if prev, ok := byRel[rel]; ok {
+			return fmt.Errorf("agents: %s and %s resolve to the same destination ~/%s — change one target (or the devtree)", prev, s.Label, rel)
+		}
+		byRel[rel] = s.Label
+	}
+	return nil
 }
 
 // instructionSpecs enumerates the rendered-instruction destinations: one spec

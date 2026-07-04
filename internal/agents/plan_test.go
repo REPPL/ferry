@@ -225,6 +225,54 @@ func TestPlanRefusesUnsafeTargets(t *testing.T) {
 	}
 }
 
+// TestPlanRefusesCollisions pins the duplicate detection: a plan in which two
+// targets share a store key or a destination path is refused with an error
+// naming both parties — never deployed with one record/file silently fighting
+// the other.
+func TestPlanRefusesCollisions(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.AgentsConfig
+		wantSub string
+	}{
+		{
+			name: "user harness named devtree collides on the store key",
+			cfg: config.AgentsConfig{
+				Devtree: "Workspace",
+				Harness: map[string]config.AgentsHarness{
+					"devtree": {Target: ".devtree/RULES.md", Source: "coding"},
+				},
+			},
+			wantSub: `store key "agents/devtree"`,
+		},
+		{
+			name: "devtree colliding with the claude harness destination",
+			cfg: config.AgentsConfig{
+				Devtree: ".claude",
+			},
+			wantSub: "same destination ~/.claude/CLAUDE.md",
+		},
+		{
+			name: "two harnesses sharing one destination",
+			cfg: config.AgentsConfig{
+				Harness: map[string]config.AgentsHarness{
+					"other": {Target: ".codex/AGENTS.md", Source: "general"},
+				},
+			},
+			wantSub: "same destination ~/.codex/AGENTS.md",
+		},
+	}
+	repo := writeSST(t, map[string]string{"general.md": "G\n", "coding.md": "C\n"})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := Plan(PlanInput{RepoRoot: repo, Home: t.TempDir(), Config: tt.cfg})
+			if err == nil || !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("Plan error = %v, want substring %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
 func TestPlanRefusesSymlinkedAssets(t *testing.T) {
 	repo := writeSST(t, map[string]string{"general.md": "G\n", "coding.md": "C\n"})
 	outside := filepath.Join(t.TempDir(), "outside.md")
