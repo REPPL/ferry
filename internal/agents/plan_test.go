@@ -281,6 +281,49 @@ func TestPlanHonoursGuard(t *testing.T) {
 	}
 }
 
+// TestEnumerationIsSingleSourced pins the one-enumerator contract: every
+// consumer of the domain's destination list (Plan's deployed targets and the
+// path projection TargetPaths) must observe the IDENTICAL set for the same
+// config — including a user-defined harness, a devtree, and asset files — so
+// no consumer can drift onto its own private enumeration again.
+func TestEnumerationIsSingleSourced(t *testing.T) {
+	repo := writeSST(t, map[string]string{
+		"general.md":           "G\n",
+		"coding.md":            "C\n",
+		"skills/demo/SKILL.md": "s\n",
+		"hooks/guard.sh":       "#!/bin/sh\n",
+	}, "hooks/guard.sh")
+	home := t.TempDir()
+	cfg := config.AgentsConfig{
+		Devtree: "Workspace",
+		Harness: map[string]config.AgentsHarness{
+			"myharness": {Target: ".config/myharness/RULES.md", Source: "coding"},
+		},
+	}
+
+	items, _, err := Plan(PlanInput{RepoRoot: repo, Home: home, Config: cfg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	planDests := map[string]bool{}
+	for _, it := range items {
+		planDests[it.Target.Home] = true
+	}
+
+	paths, err := TargetPaths(repo, home, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != len(planDests) {
+		t.Fatalf("TargetPaths has %d paths, Plan deploys %d targets", len(paths), len(planDests))
+	}
+	for _, p := range paths {
+		if !planDests[p] {
+			t.Errorf("TargetPaths includes %s, which Plan does not deploy", p)
+		}
+	}
+}
+
 func TestTargetPaths(t *testing.T) {
 	repo := writeSST(t, map[string]string{
 		"general.md":           "G\n",

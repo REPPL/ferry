@@ -23,6 +23,133 @@ var assetTrees = []string{"skills", "agents", "hooks"}
 // assetHomeRoot is the home-relative directory the asset trees deploy under.
 const assetHomeRoot = ".claude"
 
+// TargetSpec is one enumerated destination the agents domain manages: a
+// stable store key, a display label, the home-relative destination, and where
+// its content comes from (a rendered instruction Source, or a repo asset
+// file). It carries NO content and NO resolved $HOME path — it is the SINGLE
+// enumeration every consumer shares: Plan attaches content and builds
+// validated targets, and FindBridges derives its candidate paths from it, so
+// the consumers can never disagree about what the domain manages.
+type TargetSpec struct {
+	Key      string
+	Label    string
+	Rel      string // home-relative destination
+	Source   Source // instruction targets: which rendered source; "" for assets
+	RepoFile string // asset targets: absolute (guard-validated) repo source; "" otherwise
+	Exec     bool   // asset targets: the repo source carries an executable bit
+}
+
+// enumerateSpecs resolves cfg into the domain's full, ordered destination
+// list: one spec per resolved harness, the optional devtree workspace file,
+// then one per asset file under agents/{skills,agents,hooks} in lexical walk
+// order. Repo-side asset probing is routed through guard (nil = no extra
+// validation); a symlink inside an asset tree is refused with a warning.
+// Only a config error (bad harness declaration) or an unexpected filesystem
+// failure aborts.
+func enumerateSpecs(repoRoot string, cfg config.AgentsConfig, guard func(string) (string, error)) (specs []TargetSpec, warnings []string, err error) {
+	specs, err = instructionSpecs(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	assets, warnings, err := assetSpecs(repoRoot, guard)
+	if err != nil {
+		return nil, nil, err
+	}
+	return append(specs, assets...), warnings, nil
+}
+
+// instructionSpecs enumerates the rendered-instruction destinations: one spec
+// per resolved harness plus the optional devtree workspace file. It needs no
+// repo access, so consumers that only care about destinations (FindBridges)
+// can share it without walking the asset trees.
+func instructionSpecs(cfg config.AgentsConfig) ([]TargetSpec, error) {
+	harnesses, err := Resolve(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var specs []TargetSpec
+	for _, h := range harnesses {
+		specs = append(specs, TargetSpec{
+			Key:    "agents/" + h.Name,
+			Label:  "agents:" + h.Name,
+			Rel:    h.Target,
+			Source: h.Source,
+		})
+	}
+
+	// Optional devtree workspace layer: coding.md at the devtree ROOT (the
+	// ancestor walk-up reads <dir>/CLAUDE.md, not <dir>/.claude/CLAUDE.md).
+	if cfg.Devtree != "" {
+		specs = append(specs, TargetSpec{
+			Key:    "agents/devtree",
+			Label:  "agents:devtree",
+			Rel:    filepath.Join(cfg.Devtree, "CLAUDE.md"),
+			Source: SourceCoding,
+		})
+	}
+	return specs, nil
+}
+
+// assetSpecs enumerates the asset-file destinations by walking the repo's
+// agents/{skills,agents,hooks} trees in lexical order. Symlinks anywhere in a
+// tree are refused with a warning (managed content is copied, never
+// symlinked); executable bits are recorded so hooks deploy runnable.
+func assetSpecs(repoRoot string, guard func(string) (string, error)) (specs []TargetSpec, warnings []string, err error) {
+	for _, tree := range assetTrees {
+		root := filepath.Join(repoRoot, RepoSubdir, tree)
+		safeRoot, gerr := guardPath(guard, root)
+		if gerr != nil {
+			warnings = append(warnings, refusal("asset tree", filepath.Join(RepoSubdir, tree), gerr))
+			continue
+		}
+		if fi, serr := os.Lstat(safeRoot); serr != nil || !fi.IsDir() {
+			continue // an absent (or non-directory) tree deploys nothing
+		}
+		walkErr := filepath.WalkDir(safeRoot, func(path string, d fs.DirEntry, werr error) error {
+			if werr != nil {
+				return werr
+			}
+			rel, rerr := filepath.Rel(safeRoot, path)
+			if rerr != nil {
+				return rerr
+			}
+			if d.Type()&fs.ModeSymlink != 0 {
+				warnings = append(warnings, fmt.Sprintf(
+					"agents: refusing %s: symlink not allowed in the managed repo tree (copy the real file in)",
+					filepath.Join(RepoSubdir, tree, rel)))
+				if d.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if d.IsDir() || !d.Type().IsRegular() {
+				return nil
+			}
+			safe, gerr := guardPath(guard, path)
+			if gerr != nil {
+				warnings = append(warnings, refusal("asset", filepath.Join(RepoSubdir, tree, rel), gerr))
+				return nil
+			}
+			info, ierr := d.Info()
+			if ierr != nil {
+				return ierr
+			}
+			specs = append(specs, TargetSpec{
+				Key:      "agents/" + tree + "/" + filepath.ToSlash(rel),
+				Label:    "agents:" + tree + "/" + filepath.ToSlash(rel),
+				Rel:      filepath.Join(assetHomeRoot, tree, rel),
+				RepoFile: safe,
+				Exec:     info.Mode()&0o111 != 0,
+			})
+			return nil
+		})
+		if walkErr != nil {
+			return nil, nil, walkErr
+		}
+	}
+	return specs, warnings, nil
+}
+
 // Item is one (content, target) pair the agents domain deploys: the planner's
 // one-to-many expansion produces these, and the write path stays strictly 1:1.
 type Item struct {
@@ -54,10 +181,10 @@ type PlanInput struct {
 	Guard    func(candidate string) (string, error)
 }
 
-// Plan expands the agents domain into its 1:1 (content, target) items:
-// one per in-scope harness (source rendered per the registry), the optional
-// devtree workspace file, and one per asset file under agents/{skills,agents,
-// hooks}. It reads only the config repo — never $HOME — and is deterministic:
+// Plan expands the agents domain into its 1:1 (content, target) items: the
+// shared enumeration (enumerateSpecs) with content attached — instruction
+// targets receive their rendered source, asset targets their repo file's
+// bytes. It reads only the config repo — never $HOME — and is deterministic:
 // registry order, then devtree, then assets in lexical walk order.
 //
 // Recoverable per-target problems (a missing source file, a refused or
@@ -65,7 +192,7 @@ type PlanInput struct {
 // the item is skipped; only a config error (bad harness declaration) or an
 // unexpected read failure aborts.
 func Plan(in PlanInput) (items []Item, warnings []string, err error) {
-	harnesses, err := Resolve(in.Config)
+	specs, warnings, err := enumerateSpecs(in.RepoRoot, in.Config, in.Guard)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -76,49 +203,37 @@ func Plan(in PlanInput) (items []Item, warnings []string, err error) {
 	}
 	warnings = append(warnings, sourceWarnings...)
 
-	for _, h := range harnesses {
-		content, ok := sources[h.Source]
-		if !ok {
-			continue // the missing source file already produced one warning
+	for _, spec := range specs {
+		var content []byte
+		if spec.RepoFile != "" {
+			// An asset target: the spec's RepoFile is the guard-validated path
+			// the enumeration walked.
+			content, err = os.ReadFile(spec.RepoFile)
+			if err != nil {
+				return nil, nil, err
+			}
+		} else {
+			// An instruction target: the rendered source, when its inputs exist
+			// (a missing input already produced one warning).
+			var ok bool
+			content, ok = sources[spec.Source]
+			if !ok {
+				continue
+			}
 		}
-		t, terr := dotfile.NestedTarget(in.Home, h.Target, "agents/"+h.Name)
+		t, terr := dotfile.NestedTarget(in.Home, spec.Rel, spec.Key)
 		if terr != nil {
-			warnings = append(warnings, refusal("harness "+h.Name, h.Target, terr))
+			warnings = append(warnings, refusal("target", spec.Label, terr))
 			continue
 		}
 		items = append(items, Item{
-			Key:     t.Name,
-			Label:   "agents:" + h.Name,
+			Key:     spec.Key,
+			Label:   spec.Label,
 			Target:  t,
 			Content: content,
+			Exec:    spec.Exec,
 		})
 	}
-
-	// Optional devtree workspace layer: coding.md at the devtree ROOT (the
-	// ancestor walk-up reads <dir>/CLAUDE.md, not <dir>/.claude/CLAUDE.md).
-	if in.Config.Devtree != "" {
-		if content, ok := sources[SourceCoding]; ok {
-			rel := filepath.Join(in.Config.Devtree, "CLAUDE.md")
-			t, terr := dotfile.NestedTarget(in.Home, rel, "agents/devtree")
-			if terr != nil {
-				warnings = append(warnings, refusal("devtree", rel, terr))
-			} else {
-				items = append(items, Item{
-					Key:     t.Name,
-					Label:   "agents:devtree",
-					Target:  t,
-					Content: content,
-				})
-			}
-		}
-	}
-
-	assetItems, assetWarnings, err := planAssets(in)
-	if err != nil {
-		return nil, nil, err
-	}
-	items = append(items, assetItems...)
-	warnings = append(warnings, assetWarnings...)
 
 	return items, warnings, nil
 }
@@ -126,7 +241,7 @@ func Plan(in PlanInput) (items []Item, warnings []string, err error) {
 // loadSources reads general.md and coding.md from the config repo and derives
 // the combined content. Each rendered source appears in the returned map only
 // when its inputs exist; a missing input produces ONE warning here so the
-// per-harness loop can skip silently.
+// per-spec loop can skip silently.
 func loadSources(in PlanInput) (map[Source][]byte, []string, error) {
 	var warnings []string
 	read := func(name string) ([]byte, bool, error) {
@@ -171,130 +286,19 @@ func loadSources(in PlanInput) (map[Source][]byte, []string, error) {
 	return sources, warnings, nil
 }
 
-// planAssets expands the asset trees (agents/{skills,agents,hooks} →
-// ~/.claude/{skills,agents,hooks}) into per-file items, recursively, in
-// lexical walk order. Symlinks anywhere in a tree are refused with a warning
-// (managed content is copied, never symlinked); executable bits are recorded
-// so hooks deploy runnable.
-func planAssets(in PlanInput) (items []Item, warnings []string, err error) {
-	for _, tree := range assetTrees {
-		root := filepath.Join(in.RepoRoot, RepoSubdir, tree)
-		safeRoot, gerr := guardPath(in.Guard, root)
-		if gerr != nil {
-			warnings = append(warnings, refusal("asset tree", filepath.Join(RepoSubdir, tree), gerr))
-			continue
-		}
-		if fi, serr := os.Lstat(safeRoot); serr != nil || !fi.IsDir() {
-			continue // an absent (or non-directory) tree deploys nothing
-		}
-
-		walkErr := filepath.WalkDir(safeRoot, func(path string, d fs.DirEntry, werr error) error {
-			if werr != nil {
-				return werr
-			}
-			rel, rerr := filepath.Rel(safeRoot, path)
-			if rerr != nil {
-				return rerr
-			}
-			if d.Type()&fs.ModeSymlink != 0 {
-				warnings = append(warnings, fmt.Sprintf(
-					"agents: refusing %s: symlink not allowed in the managed repo tree (copy the real file in)",
-					filepath.Join(RepoSubdir, tree, rel)))
-				if d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if d.IsDir() || !d.Type().IsRegular() {
-				return nil
-			}
-			safe, gerr := guardPath(in.Guard, path)
-			if gerr != nil {
-				warnings = append(warnings, refusal("asset", filepath.Join(RepoSubdir, tree, rel), gerr))
-				return nil
-			}
-			content, cerr := os.ReadFile(safe)
-			if cerr != nil {
-				return cerr
-			}
-			info, ierr := d.Info()
-			if ierr != nil {
-				return ierr
-			}
-
-			key := "agents/" + tree + "/" + filepath.ToSlash(rel)
-			t, terr := dotfile.NestedTarget(in.Home, filepath.Join(assetHomeRoot, tree, rel), key)
-			if terr != nil {
-				warnings = append(warnings, refusal("asset", filepath.Join(RepoSubdir, tree, rel), terr))
-				return nil
-			}
-			items = append(items, Item{
-				Key:     key,
-				Label:   "agents:" + tree + "/" + filepath.ToSlash(rel),
-				Target:  t,
-				Content: content,
-				Exec:    info.Mode()&0o111 != 0,
-			})
-			return nil
-		})
-		if walkErr != nil {
-			return nil, nil, walkErr
-		}
-	}
-	return items, warnings, nil
-}
-
 // TargetPaths resolves the absolute $HOME destinations the agents domain
-// manages for cfg, WITHOUT reading any source content — the scoped-restore
-// path uses it to map the "agents" domain name onto the engine's per-file
-// baselines. Asset destinations are derived from the files currently in the
-// repo trees; a harness/devtree target that fails validation is skipped.
+// manages for cfg, WITHOUT reading any source content — a pure projection of
+// the shared enumeration (enumerateSpecs) onto resolved paths. A spec whose
+// target fails validation is skipped.
 func TargetPaths(repoRoot, home string, cfg config.AgentsConfig) ([]string, error) {
-	harnesses, err := Resolve(cfg)
+	specs, _, err := enumerateSpecs(repoRoot, cfg, nil)
 	if err != nil {
 		return nil, err
 	}
 	var paths []string
-	for _, h := range harnesses {
-		if t, terr := dotfile.NestedTarget(home, h.Target, "agents/"+h.Name); terr == nil {
+	for _, spec := range specs {
+		if t, terr := dotfile.NestedTarget(home, spec.Rel, spec.Key); terr == nil {
 			paths = append(paths, t.Home)
-		}
-	}
-	if cfg.Devtree != "" {
-		if t, terr := dotfile.NestedTarget(home, filepath.Join(cfg.Devtree, "CLAUDE.md"), "agents/devtree"); terr == nil {
-			paths = append(paths, t.Home)
-		}
-	}
-	for _, tree := range assetTrees {
-		root := filepath.Join(repoRoot, RepoSubdir, tree)
-		if fi, serr := os.Lstat(root); serr != nil || !fi.IsDir() {
-			continue
-		}
-		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, werr error) error {
-			if werr != nil {
-				return werr
-			}
-			if d.Type()&fs.ModeSymlink != 0 {
-				if d.IsDir() {
-					return fs.SkipDir
-				}
-				return nil
-			}
-			if d.IsDir() || !d.Type().IsRegular() {
-				return nil
-			}
-			rel, rerr := filepath.Rel(root, path)
-			if rerr != nil {
-				return rerr
-			}
-			key := "agents/" + tree + "/" + filepath.ToSlash(rel)
-			if t, terr := dotfile.NestedTarget(home, filepath.Join(assetHomeRoot, tree, rel), key); terr == nil {
-				paths = append(paths, t.Home)
-			}
-			return nil
-		})
-		if walkErr != nil {
-			return nil, walkErr
 		}
 	}
 	return paths, nil

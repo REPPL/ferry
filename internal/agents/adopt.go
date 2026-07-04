@@ -117,19 +117,17 @@ type Bridge struct {
 // walks $HOME at large and never goes near ~/.ssh (harness targets are built
 // through the same validation as the planner, which refuses ~/.ssh).
 func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, error) {
-	harnesses, err := Resolve(cfg)
+	// The instruction destinations come from the SAME enumeration the planner
+	// deploys (instructionSpecs), so adopt can never scan a different set of
+	// harness/devtree paths than apply manages.
+	specs, err := instructionSpecs(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	var candidates []string
-	for _, h := range harnesses {
-		if t, terr := dotfile.NestedTarget(home, h.Target, "agents/"+h.Name); terr == nil {
-			candidates = append(candidates, t.Home)
-		}
-	}
-	if cfg.Devtree != "" {
-		if t, terr := dotfile.NestedTarget(home, filepath.Join(cfg.Devtree, "CLAUDE.md"), "agents/devtree"); terr == nil {
+	for _, spec := range specs {
+		if t, terr := dotfile.NestedTarget(home, spec.Rel, spec.Key); terr == nil {
 			candidates = append(candidates, t.Home)
 		}
 	}
