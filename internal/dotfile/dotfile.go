@@ -139,6 +139,32 @@ func TargetFor(repoRoot, home, name string) (Target, error) {
 	}, nil
 }
 
+// NestedTarget builds a Target for a home-RELATIVE destination path that does
+// NOT follow the dotfile "."-prefix convention — a nested path such as
+// ".codex/AGENTS.md" or "<devtree>/CLAUDE.md". name is the caller's stable
+// last-applied store key (e.g. "agents/codex"); rel is the destination path
+// relative to home.
+//
+// It is the SAME security boundary as TargetFor: the resolved destination is
+// validated by validateHomeTarget, so an absolute rel, a `..` climb out of
+// $HOME, or anything at/under ~/.ssh is refused before a Target exists. The
+// returned Target has no repo source (callers supply effective content in
+// memory via ClassifyContent) and defaults Overlay to OverlayWholeFileReplace.
+func NestedTarget(home, rel, name string) (Target, error) {
+	if filepath.IsAbs(rel) {
+		return Target{}, ErrPathEscapesHome
+	}
+	dest := filepath.Join(home, rel)
+	if err := validateHomeTarget(home, dest); err != nil {
+		return Target{}, err
+	}
+	return Target{
+		Name:    name,
+		Home:    dest,
+		Overlay: OverlayWholeFileReplace,
+	}, nil
+}
+
 // IncludeSidecarTarget is TargetFor for an include-style domain (zsh): the same
 // ~/.ssh + traversal validation, but the Target's Overlay is
 // OverlayIncludeSidecar so the apply command materializes the overlay as a

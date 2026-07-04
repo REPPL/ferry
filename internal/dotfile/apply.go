@@ -131,6 +131,18 @@ func IsNearEmpty(content []byte) bool { return isNearEmpty(content) }
 // significant bytes — the "substantial live file" side of the guard.
 func isSubstantial(content []byte) bool { return significantBytes(content) >= substantialThreshold }
 
+// IsSubstantial is the exported form of the guard's "substantial live file"
+// test, so callers outside this package that deploy in-memory content (the
+// agents domain) enforce the empty-over-substantial data-loss guard by the
+// SAME threshold as the dotfile apply path.
+func IsSubstantial(content []byte) bool { return isSubstantial(content) }
+
+// SignificantBytes is the exported form of the guard's significance metric
+// (non-whitespace, non-comment bytes), so an external caller's refusal message
+// can name the live file's real content size the way EmptyOverSubstantialError
+// does.
+func SignificantBytes(content []byte) int { return significantBytes(content) }
+
 // Apply materializes one target from the repo onto the home destination,
 // honouring the three-way state. It writes ONLY through the Backuper, so any
 // overwrite is backed up first and the write is atomic. force discards local
