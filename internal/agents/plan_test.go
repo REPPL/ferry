@@ -261,8 +261,38 @@ func TestPlanRefusesCollisions(t *testing.T) {
 			},
 			wantSub: "same destination ~/.codex/AGENTS.md",
 		},
+		{
+			name: "asset file colliding with a harness destination",
+			cfg: config.AgentsConfig{
+				Harnesses:    []string{"clash"},
+				HarnessesSet: true,
+				Harness: map[string]config.AgentsHarness{
+					"clash": {Target: ".githooks/pre-commit", Source: "general"},
+				},
+				Asset: map[string]config.AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+			wantSub: "same destination ~/.githooks/pre-commit",
+		},
+		{
+			name: "two asset mappings sharing one destination file",
+			cfg: config.AgentsConfig{
+				Harnesses:    []string{},
+				HarnessesSet: true,
+				Asset: map[string]config.AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+					"twinhook": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+			wantSub: "same destination ~/.githooks/pre-commit",
+		},
 	}
-	repo := writeSST(t, map[string]string{"general.md": "G\n", "coding.md": "C\n"})
+	repo := writeSST(t, map[string]string{
+		"general.md":          "G\n",
+		"coding.md":           "C\n",
+		"githooks/pre-commit": "#!/bin/sh\n",
+	})
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, _, err := Plan(PlanInput{RepoRoot: repo, Home: t.TempDir(), Config: tt.cfg})
@@ -270,6 +300,98 @@ func TestPlanRefusesCollisions(t *testing.T) {
 				t.Errorf("Plan error = %v, want substring %q", err, tt.wantSub)
 			}
 		})
+	}
+}
+
+// TestPlanCustomAssetMapping pins the data-driven asset registry end to end
+// at the planner: a user-declared [agents.asset.githooks] mapping deploys the
+// repo's agents/githooks/ dispatchers to ~/.githooks/ with their executable
+// bits, keyed under the mapping's own namespace, alongside the built-ins.
+func TestPlanCustomAssetMapping(t *testing.T) {
+	repo := writeSST(t, map[string]string{
+		"general.md":            "G\n",
+		"coding.md":             "C\n",
+		"hooks/guard.sh":        "#!/bin/sh\n",
+		"githooks/pre-commit":   "#!/bin/sh\ndispatch pre-commit\n",
+		"githooks/commit-msg":   "#!/bin/sh\ndispatch commit-msg\n",
+		"githooks/lib/common.d": "shared dispatcher data\n",
+	}, "hooks/guard.sh", "githooks/pre-commit", "githooks/commit-msg")
+	home := t.TempDir()
+
+	items, warnings, err := Plan(PlanInput{
+		RepoRoot: repo, Home: home,
+		Config: config.AgentsConfig{
+			Harnesses:    []string{},
+			HarnessesSet: true,
+			Asset: map[string]config.AgentsAsset{
+				"githooks": {Source: "githooks", Target: ".githooks"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(warnings) != 0 {
+		t.Errorf("unexpected warnings: %v", warnings)
+	}
+
+	byKey := itemByKey(items)
+	tests := []struct {
+		key     string
+		relDest string
+		exec    bool
+	}{
+		{"agents/hooks/guard.sh", ".claude/hooks/guard.sh", true},
+		{"agents/githooks/pre-commit", ".githooks/pre-commit", true},
+		{"agents/githooks/commit-msg", ".githooks/commit-msg", true},
+		{"agents/githooks/lib/common.d", ".githooks/lib/common.d", false},
+	}
+	if len(items) != len(tests) {
+		t.Errorf("planned %d items (%v), want %d", len(items), keysOf(byKey), len(tests))
+	}
+	for _, tt := range tests {
+		it, ok := byKey[tt.key]
+		if !ok {
+			t.Errorf("item %q missing from plan", tt.key)
+			continue
+		}
+		if want := filepath.Join(home, tt.relDest); it.Target.Home != want {
+			t.Errorf("%s deploys to %q, want %q", tt.key, it.Target.Home, want)
+		}
+		if it.Exec != tt.exec {
+			t.Errorf("%s Exec = %v, want %v", tt.key, it.Exec, tt.exec)
+		}
+	}
+}
+
+// TestPlanAssetSelectionRemovesBuiltins: the `assets` list removes a built-in
+// mapping exactly as `harnesses` removes a harness — its tree stops deploying
+// without any code change.
+func TestPlanAssetSelectionRemovesBuiltins(t *testing.T) {
+	repo := writeSST(t, map[string]string{
+		"general.md":           "G\n",
+		"coding.md":            "C\n",
+		"skills/demo/SKILL.md": "s\n",
+		"hooks/guard.sh":       "#!/bin/sh\n",
+	}, "hooks/guard.sh")
+	items, _, err := Plan(PlanInput{
+		RepoRoot: repo, Home: t.TempDir(),
+		Config: config.AgentsConfig{
+			Harnesses:    []string{},
+			HarnessesSet: true,
+			Assets:       []string{"hooks"},
+			AssetsSet:    true,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := itemByKey(items)
+	if _, ok := byKey["agents/hooks/guard.sh"]; !ok {
+		t.Error("selected hooks mapping did not deploy")
+	}
+	if _, ok := byKey["agents/skills/demo/SKILL.md"]; ok {
+		t.Error("de-selected skills mapping still deployed")
 	}
 }
 

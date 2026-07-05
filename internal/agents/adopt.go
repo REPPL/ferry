@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/REPPL/ferry/internal/config"
-	"github.com/REPPL/ferry/internal/dotfile"
 )
 
 // sstTopFiles / sstTrees are the source-of-truth pieces adopt imports from an
@@ -134,35 +133,43 @@ type Bridge struct {
 }
 
 // FindBridges scans the $HOME locations the agents domain manages — every
-// resolved harness target, the optional devtree file, and the
-// ~/.claude/{skills,agents,hooks} asset locations (the location itself plus
-// its immediate entries) — and returns each one that is currently a symlink
-// resolving into adoptedDir. DIRECTORY-level bridges are detected too: every
-// ancestor directory of a managed location (strictly below $HOME) is checked,
-// so a setup that symlinked ~/.claude itself into the instruction directory
-// is migrated rather than written through. A bridge nested under another
-// bridge is dropped (removing the outermost link retires the whole subtree).
+// resolved harness target, the optional devtree file, and every resolved
+// asset mapping's target directory (the directory itself plus its immediate
+// entries) — and returns each one that is currently a symlink resolving into
+// adoptedDir. DIRECTORY-level bridges are detected too: every ancestor
+// directory of a managed location (strictly below $HOME) is checked, so a
+// setup that symlinked ~/.claude itself into the instruction directory is
+// surfaced rather than written through. A bridge nested under another bridge
+// is dropped (removing the outermost link retires the whole subtree).
 //
 // It looks ONLY at those known locations: it never walks $HOME at large and
-// never goes near ~/.ssh (harness targets are built through the same
-// validation as the planner, which refuses ~/.ssh).
+// never goes near ~/.ssh (harness and asset targets are built through the
+// same validation as the planner, which refuses ~/.ssh).
 func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, error) {
 	// The instruction destinations come from the SAME enumeration the planner
 	// deploys (instructionSpecs), so adopt can never scan a different set of
-	// harness/devtree paths than apply manages.
+	// harness/devtree paths than apply manages; the asset locations come from
+	// the SAME resolved mapping registry.
 	specs, err := instructionSpecs(cfg)
+	if err != nil {
+		return nil, err
+	}
+	mappings, err := ResolveAssets(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	var candidates []string
 	for _, spec := range specs {
-		if t, terr := dotfile.NestedTarget(home, spec.Rel, spec.Key); terr == nil {
-			candidates = append(candidates, t.Home)
+		if dest, ok := bridgeCandidate(home, spec.Rel); ok {
+			candidates = append(candidates, dest)
 		}
 	}
-	for _, tree := range assetTrees {
-		dir := filepath.Join(home, assetHomeRoot, tree)
+	for _, m := range mappings {
+		dir, ok := bridgeCandidate(home, m.Target)
+		if !ok {
+			continue
+		}
 		candidates = append(candidates, dir)
 		if ents, rerr := os.ReadDir(dir); rerr == nil {
 			for _, ent := range ents {
@@ -250,6 +257,33 @@ func dropNestedBridges(bridges []Bridge) []Bridge {
 // path arithmetic.
 func strictlyWithin(base, p string) bool {
 	return p != base && pathWithin(base, p)
+}
+
+// bridgeCandidate joins a home-relative destination LEXICALLY for bridge
+// scanning, applying only the lexical containment rules (strictly inside
+// $HOME, never at/under ~/.ssh). It deliberately does NOT run the planner's
+// symlink-RESOLVING validation (dotfile.NestedTarget): an out-pointing parent
+// symlink is exactly the bridge adopt exists to find, so a candidate must
+// stay enumerable when its parent is a symlink into the adopted directory.
+// Nothing at the candidate is read here — the caller only Lstats it.
+func bridgeCandidate(home, rel string) (string, bool) {
+	if filepath.IsAbs(rel) {
+		return "", false
+	}
+	cleanHome := filepath.Clean(home)
+	dest := filepath.Clean(filepath.Join(cleanHome, rel))
+	back, err := filepath.Rel(cleanHome, dest)
+	if err != nil || back == "." || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	first := back
+	if i := strings.IndexRune(back, filepath.Separator); i >= 0 {
+		first = back[:i]
+	}
+	if first == ".ssh" {
+		return "", false
+	}
+	return dest, true
 }
 
 // pathWithin reports whether p equals base or is a descendant of it, by pure

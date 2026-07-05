@@ -100,6 +100,114 @@ func TestResolve(t *testing.T) {
 	}
 }
 
+func TestResolveAssets(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     config.AgentsConfig
+		want    []AssetMapping
+		wantErr string
+	}{
+		{
+			name: "zero config yields every built-in in registry order",
+			cfg:  config.AgentsConfig{},
+			want: BuiltinAssets(),
+		},
+		{
+			name: "user-defined mapping appends after the built-ins",
+			cfg: config.AgentsConfig{
+				Asset: map[string]config.AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+			want: append(BuiltinAssets(), AssetMapping{
+				Name: "githooks", Source: "githooks", Target: ".githooks",
+			}),
+		},
+		{
+			name: "selection restricts and orders",
+			cfg: config.AgentsConfig{
+				Assets:    []string{"hooks", "githooks"},
+				AssetsSet: true,
+				Asset: map[string]config.AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+			want: []AssetMapping{
+				{Name: "hooks", Source: "hooks", Target: ".claude/hooks"},
+				{Name: "githooks", Source: "githooks", Target: ".githooks"},
+			},
+		},
+		{
+			name: "explicit empty selection deploys no assets",
+			cfg: config.AgentsConfig{
+				Assets:    []string{},
+				AssetsSet: true,
+			},
+			want: []AssetMapping{},
+		},
+		{
+			name: "override of a built-in changes only the set fields",
+			cfg: config.AgentsConfig{
+				Assets:    []string{"hooks"},
+				AssetsSet: true,
+				Asset: map[string]config.AgentsAsset{
+					"hooks": {Target: ".config/claude/hooks"},
+				},
+			},
+			want: []AssetMapping{
+				{Name: "hooks", Source: "hooks", Target: ".config/claude/hooks"},
+			},
+		},
+		{
+			name: "new mapping without source and target is a config error",
+			cfg: config.AgentsConfig{
+				Asset: map[string]config.AgentsAsset{
+					"broken": {Source: "broken"},
+				},
+			},
+			wantErr: "source and target are both required",
+		},
+		{
+			name: "selection naming an unknown mapping is a config error",
+			cfg: config.AgentsConfig{
+				Assets:    []string{"nonesuch"},
+				AssetsSet: true,
+			},
+			wantErr: `names "nonesuch"`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveAssets(tt.cfg)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("ResolveAssets error = %v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveAssets: %v", err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("ResolveAssets = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuiltinAssetsAreValid(t *testing.T) {
+	seen := map[string]bool{}
+	for _, b := range BuiltinAssets() {
+		if b.Name == "" || b.Source == "" || b.Target == "" {
+			t.Errorf("built-in asset %+v has an empty field", b)
+		}
+		if seen[b.Name] {
+			t.Errorf("built-in asset name %q is duplicated", b.Name)
+		}
+		seen[b.Name] = true
+	}
+}
+
 func TestBuiltinsAreValid(t *testing.T) {
 	seen := map[string]bool{}
 	for _, b := range Builtins() {
