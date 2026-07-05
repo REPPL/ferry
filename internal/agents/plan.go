@@ -12,16 +12,9 @@ import (
 )
 
 // RepoSubdir is the config-repo subdirectory that holds the agents domain's
-// sources: general.md, coding.md, templates/, skills/, agents/, hooks/.
+// sources: general.md, coding.md, templates/, and the asset-mapping source
+// directories (skills/, agents/, hooks/, and any user-declared ones).
 const RepoSubdir = "agents"
-
-// assetTrees are the repo-side asset directories the domain deploys
-// recursively into the matching ~/.claude/<tree>/ destination. Each tree is
-// optional; an absent one deploys nothing.
-var assetTrees = []string{"skills", "agents", "hooks"}
-
-// assetHomeRoot is the home-relative directory the asset trees deploy under.
-const assetHomeRoot = ".claude"
 
 // TargetSpec is one enumerated destination the agents domain manages: a
 // stable store key, a display label, the home-relative destination, and where
@@ -41,17 +34,17 @@ type TargetSpec struct {
 
 // enumerateSpecs resolves cfg into the domain's full, ordered destination
 // list: one spec per resolved harness, the optional devtree workspace file,
-// then one per asset file under agents/{skills,agents,hooks} in lexical walk
-// order. Repo-side asset probing is routed through guard (nil = no extra
-// validation); a symlink inside an asset tree is refused with a warning.
-// Only a config error (bad harness declaration) or an unexpected filesystem
-// failure aborts.
+// then one per asset file under each resolved asset mapping's source tree in
+// lexical walk order. Repo-side asset probing is routed through guard (nil =
+// no extra validation); a symlink inside an asset tree is refused with a
+// warning. Only a config error (bad harness/asset declaration) or an
+// unexpected filesystem failure aborts.
 func enumerateSpecs(repoRoot string, cfg config.AgentsConfig, guard func(string) (string, error)) (specs []TargetSpec, warnings []string, err error) {
 	specs, err = instructionSpecs(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
-	assets, warnings, err := assetSpecs(repoRoot, guard)
+	assets, warnings, err := assetSpecs(repoRoot, cfg, guard)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -118,16 +111,26 @@ func instructionSpecs(cfg config.AgentsConfig) ([]TargetSpec, error) {
 	return specs, nil
 }
 
-// assetSpecs enumerates the asset-file destinations by walking the repo's
-// agents/{skills,agents,hooks} trees in lexical order. Symlinks anywhere in a
-// tree are refused with a warning (managed content is copied, never
-// symlinked); executable bits are recorded so hooks deploy runnable.
-func assetSpecs(repoRoot string, guard func(string) (string, error)) (specs []TargetSpec, warnings []string, err error) {
-	for _, tree := range assetTrees {
-		root := filepath.Join(repoRoot, RepoSubdir, tree)
+// assetSpecs enumerates the asset-file destinations by walking each resolved
+// asset mapping's source tree (agents/<source>/ in the config repo) in
+// lexical order, one spec per regular file, destined for <target>/<relpath>
+// under $HOME. Symlinks anywhere in a tree are refused with a warning
+// (managed content is copied, never symlinked); executable bits are recorded
+// per file so hook scripts and dispatchers deploy runnable.
+//
+// Keys are "agents/<mapping-name>/<relpath>": for the built-in mappings the
+// name equals the source directory, so records written before a mapping was
+// data keep matching.
+func assetSpecs(repoRoot string, cfg config.AgentsConfig, guard func(string) (string, error)) (specs []TargetSpec, warnings []string, err error) {
+	mappings, err := ResolveAssets(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, m := range mappings {
+		root := filepath.Join(repoRoot, RepoSubdir, m.Source)
 		safeRoot, gerr := guardPath(guard, root)
 		if gerr != nil {
-			warnings = append(warnings, refusal("asset tree", filepath.Join(RepoSubdir, tree), gerr))
+			warnings = append(warnings, refusal("asset tree", filepath.Join(RepoSubdir, m.Source), gerr))
 			continue
 		}
 		if fi, serr := os.Lstat(safeRoot); serr != nil || !fi.IsDir() {
@@ -144,7 +147,7 @@ func assetSpecs(repoRoot string, guard func(string) (string, error)) (specs []Ta
 			if d.Type()&fs.ModeSymlink != 0 {
 				warnings = append(warnings, fmt.Sprintf(
 					"agents: refusing %s: symlink not allowed in the managed repo tree (copy the real file in)",
-					filepath.Join(RepoSubdir, tree, rel)))
+					filepath.Join(RepoSubdir, m.Source, rel)))
 				if d.IsDir() {
 					return fs.SkipDir
 				}
@@ -155,7 +158,7 @@ func assetSpecs(repoRoot string, guard func(string) (string, error)) (specs []Ta
 			}
 			safe, gerr := guardPath(guard, path)
 			if gerr != nil {
-				warnings = append(warnings, refusal("asset", filepath.Join(RepoSubdir, tree, rel), gerr))
+				warnings = append(warnings, refusal("asset", filepath.Join(RepoSubdir, m.Source, rel), gerr))
 				return nil
 			}
 			info, ierr := d.Info()
@@ -163,9 +166,9 @@ func assetSpecs(repoRoot string, guard func(string) (string, error)) (specs []Ta
 				return ierr
 			}
 			specs = append(specs, TargetSpec{
-				Key:      "agents/" + tree + "/" + filepath.ToSlash(rel),
-				Label:    "agents:" + tree + "/" + filepath.ToSlash(rel),
-				Rel:      filepath.Join(assetHomeRoot, tree, rel),
+				Key:      "agents/" + m.Name + "/" + filepath.ToSlash(rel),
+				Label:    "agents:" + m.Name + "/" + filepath.ToSlash(rel),
+				Rel:      filepath.Join(m.Target, rel),
 				RepoFile: safe,
 				Exec:     info.Mode()&0o111 != 0,
 			})

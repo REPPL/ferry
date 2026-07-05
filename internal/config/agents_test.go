@@ -34,7 +34,7 @@ func TestLoadAgents(t *testing.T) {
 		{
 			name:   "no agents table at all",
 			shared: "[manage]\nagents = true\n",
-			want:   AgentsConfig{Harness: map[string]AgentsHarness{}},
+			want:   AgentsConfig{Harness: map[string]AgentsHarness{}, Asset: map[string]AgentsAsset{}},
 		},
 		{
 			name:   "devtree and harness selection",
@@ -44,6 +44,7 @@ func TestLoadAgents(t *testing.T) {
 				Harnesses:    []string{"claude", "codex"},
 				HarnessesSet: true,
 				Harness:      map[string]AgentsHarness{},
+				Asset:        map[string]AgentsAsset{},
 			},
 		},
 		{
@@ -53,6 +54,7 @@ func TestLoadAgents(t *testing.T) {
 				Harness: map[string]AgentsHarness{
 					"myharness": {Target: ".config/myharness/RULES.md", Source: "combined"},
 				},
+				Asset: map[string]AgentsAsset{},
 			},
 		},
 		{
@@ -64,6 +66,31 @@ func TestLoadAgents(t *testing.T) {
 				Harness: map[string]AgentsHarness{
 					"a": {Target: ".a/A.md"},
 					"b": {Target: ".b/LOCAL.md", Source: "coding"},
+				},
+				Asset: map[string]AgentsAsset{},
+			},
+		},
+		{
+			name:   "asset mapping and selection",
+			shared: "[agents]\nassets = [\"hooks\", \"githooks\"]\n\n[agents.asset.githooks]\nsource = \"githooks\"\ntarget = \".githooks\"\n",
+			want: AgentsConfig{
+				Harness:   map[string]AgentsHarness{},
+				Assets:    []string{"hooks", "githooks"},
+				AssetsSet: true,
+				Asset: map[string]AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+		},
+		{
+			name:   "local asset declarations merge per name",
+			shared: "[agents.asset.githooks]\nsource = \"githooks\"\ntarget = \".githooks\"\n",
+			local:  "[agents.asset.githooks]\ntarget = \".hooks-local\"\n\n[agents.asset.extra]\nsource = \"extra\"\ntarget = \".extra\"\n",
+			want: AgentsConfig{
+				Harness: map[string]AgentsHarness{},
+				Asset: map[string]AgentsAsset{
+					"githooks": {Target: ".hooks-local"},
+					"extra":    {Source: "extra", Target: ".extra"},
 				},
 			},
 		},
@@ -77,6 +104,7 @@ func TestLoadAgents(t *testing.T) {
 				Harnesses:    nil,
 				HarnessesSet: true,
 				Harness:      map[string]AgentsHarness{},
+				Asset:        map[string]AgentsAsset{},
 			},
 		},
 	}
@@ -129,6 +157,26 @@ func TestLoadAgentsErrors(t *testing.T) {
 			name:    "invalid harness source",
 			shared:  "[agents.harness.x]\ntarget = \".x/X.md\"\nsource = \"everything\"\n",
 			wantSub: "must be one of general, coding, combined",
+		},
+		{
+			name:    "absolute asset target",
+			shared:  "[agents.asset.x]\nsource = \"x\"\ntarget = \"/etc/x\"\n",
+			wantSub: "must be relative to $HOME",
+		},
+		{
+			name:    "absolute asset source",
+			shared:  "[agents.asset.x]\nsource = \"/etc/x\"\ntarget = \".x\"\n",
+			wantSub: "must be a directory relative to the repo's agents/ area",
+		},
+		{
+			name:    "asset source climbing out of the agents area",
+			shared:  "[agents.asset.x]\nsource = \"../dotfiles\"\ntarget = \".x\"\n",
+			wantSub: "must stay within the repo's agents/ area",
+		},
+		{
+			name:    "wrong-typed assets list",
+			shared:  "[agents]\nassets = true\n",
+			wantSub: "assets must be a list of strings",
 		},
 	}
 	for _, tt := range tests {

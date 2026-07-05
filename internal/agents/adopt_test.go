@@ -321,6 +321,47 @@ func TestFindBridgesDropsNestedBridges(t *testing.T) {
 	}
 }
 
+// TestFindBridgesScansCustomAssetMappingTargets: a user-declared asset
+// mapping's target directory is scanned for bridges exactly like the
+// built-in ~/.claude locations — the scan set comes from the same resolved
+// registry the planner deploys.
+func TestFindBridgesScansCustomAssetMappingTargets(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(adopted, "githooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The old setup symlinked ~/.githooks at the adopted dir's githooks tree.
+	if err := os.Symlink(filepath.Join(adopted, "githooks"), filepath.Join(home, ".githooks")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.AgentsConfig{
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+	bridges, err := FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	if len(bridges) != 1 || bridges[0].Path != filepath.Join(home, ".githooks") {
+		t.Fatalf("bridges = %+v, want the ~/.githooks mapping bridge", bridges)
+	}
+	if !bridges[0].Dir {
+		t.Error("directory-level mapping bridge not marked Dir")
+	}
+
+	// Without the mapping declared, the location is not scanned at all.
+	none, err := FindBridges(home, adopted, config.AgentsConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Errorf("undeclared mapping target was scanned: %+v", none)
+	}
+}
+
 func TestFindBridgesResolvesRelativeLinks(t *testing.T) {
 	home := t.TempDir()
 	adopted := filepath.Join(home, "Workspace", ".agents")

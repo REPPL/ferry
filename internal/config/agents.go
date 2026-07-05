@@ -24,10 +24,25 @@ type AgentsHarness struct {
 	Source string
 }
 
+// AgentsAsset is one user-defined (or overridden) asset-tree mapping from an
+// `[agents.asset.<name>]` table: a directory of files in the config repo,
+// deployed recursively to a directory under $HOME. Both fields are optional
+// when overriding a built-in mapping (only the set fields override); a NEW
+// mapping must carry both. The zero value means "nothing declared".
+type AgentsAsset struct {
+	// Source is the repo-side directory under agents/ that holds the files
+	// (e.g. "githooks" for agents/githooks/).
+	Source string
+	// Target is the destination directory relative to $HOME
+	// (e.g. ".githooks").
+	Target string
+}
+
 // AgentsConfig is the parsed, merged `[agents]` table of ferry.toml overlaid
-// with ferry.local.toml (local wins per key; the harness map merges per name).
-// Everything is optional: the zero value means "all built-in harnesses, no
-// devtree" — the domain itself is still gated behind `[manage] agents = true`.
+// with ferry.local.toml (local wins per key; the harness and asset maps merge
+// per name). Everything is optional: the zero value means "all built-in
+// harnesses and asset mappings, no devtree" — the domain itself is still
+// gated behind `[manage] agents = true`.
 type AgentsConfig struct {
 	// Devtree is an OPTIONAL workspace directory relative to $HOME. When set,
 	// the coding instruction set additionally deploys to <devtree>/CLAUDE.md
@@ -42,6 +57,14 @@ type AgentsConfig struct {
 	HarnessesSet bool
 	// Harness holds the user-defined harness declarations by name.
 	Harness map[string]AgentsHarness
+	// Assets selects which asset mappings deploy, exactly as Harnesses does
+	// for harnesses: nil means every known mapping; a declared list restricts
+	// (and orders) the set.
+	Assets []string
+	// AssetsSet records whether an `assets` list appeared in either scope file.
+	AssetsSet bool
+	// Asset holds the user-defined asset-mapping declarations by name.
+	Asset map[string]AgentsAsset
 }
 
 // agentsSourceValues are the accepted `source` values for a harness.
@@ -91,6 +114,9 @@ type agentsFileConfig struct {
 	harnesses    []string
 	harnessesSet bool
 	harness      map[string]AgentsHarness
+	assets       []string
+	assetsSet    bool
+	asset        map[string]AgentsAsset
 }
 
 // loadAgentsFile reads and parses one scope file's `[agents]` table. A missing
@@ -122,7 +148,10 @@ func parseAgents(data []byte) (agentsFileConfig, error) {
 		return agentsFileConfig{}, fmt.Errorf("parse manifest: %w", err)
 	}
 
-	cfg := agentsFileConfig{harness: map[string]AgentsHarness{}}
+	cfg := agentsFileConfig{
+		harness: map[string]AgentsHarness{},
+		asset:   map[string]AgentsAsset{},
+	}
 	for key, prim := range raw.Agents {
 		switch key {
 		case "devtree":
@@ -153,8 +182,26 @@ func parseAgents(data []byte) (agentsFileConfig, error) {
 				}
 				cfg.harness[name] = h
 			}
+		case "assets":
+			var list []string
+			if err := md.PrimitiveDecode(prim, &list); err != nil {
+				return agentsFileConfig{}, fmt.Errorf("agents.assets must be a list of strings: %w", err)
+			}
+			cfg.assets = list
+			cfg.assetsSet = true
+		case "asset":
+			var m map[string]AgentsAsset
+			if err := md.PrimitiveDecode(prim, &m); err != nil {
+				return agentsFileConfig{}, fmt.Errorf("agents.asset.<name> must be a table with `source` and/or `target` strings: %w", err)
+			}
+			for name, a := range m {
+				if err := validateAssetSpec(name, a); err != nil {
+					return agentsFileConfig{}, err
+				}
+				cfg.asset[name] = a
+			}
 		default:
-			return agentsFileConfig{}, fmt.Errorf("agents.%s is not a recognised setting (expected devtree, harnesses, or harness.<name>)", key)
+			return agentsFileConfig{}, fmt.Errorf("agents.%s is not a recognised setting (expected devtree, harnesses, harness.<name>, assets, or asset.<name>)", key)
 		}
 	}
 	return cfg, nil
@@ -192,11 +239,35 @@ func validateHarnessSpec(name string, h AgentsHarness) error {
 	return nil
 }
 
-// mergeAgents overlays local on shared: devtree and harnesses replace per key
-// when the local file explicitly sets them; harness declarations merge per
-// name with local entries winning.
+// validateAssetSpec applies the per-declaration checks an asset table must
+// pass: a relative, repo-contained source directory and a relative target
+// directory (when set). Missing fields are allowed here because an override
+// of a built-in mapping may set only one; the registry resolution enforces
+// that a NEW mapping carries both.
+func validateAssetSpec(name string, a AgentsAsset) error {
+	if a.Source != "" {
+		if filepath.IsAbs(a.Source) {
+			return fmt.Errorf("agents.asset.%s.source must be a directory relative to the repo's agents/ area, got the absolute path %q", name, a.Source)
+		}
+		clean := filepath.Clean(a.Source)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.asset.%s.source must stay within the repo's agents/ area, got %q", name, a.Source)
+		}
+	}
+	if a.Target != "" && filepath.IsAbs(a.Target) {
+		return fmt.Errorf("agents.asset.%s.target must be relative to $HOME, got the absolute path %q", name, a.Target)
+	}
+	return nil
+}
+
+// mergeAgents overlays local on shared: devtree and the selection lists
+// replace per key when the local file explicitly sets them; harness and asset
+// declarations merge per name with local entries winning.
 func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
-	out := AgentsConfig{Harness: map[string]AgentsHarness{}}
+	out := AgentsConfig{
+		Harness: map[string]AgentsHarness{},
+		Asset:   map[string]AgentsAsset{},
+	}
 
 	out.Devtree = shared.devtree
 	if local.devtreeSet {
@@ -210,12 +281,25 @@ func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 		out.Harnesses = append([]string(nil), shared.harnesses...)
 		out.HarnessesSet = true
 	}
+	if local.assetsSet {
+		out.Assets = append([]string(nil), local.assets...)
+		out.AssetsSet = true
+	} else if shared.assetsSet {
+		out.Assets = append([]string(nil), shared.assets...)
+		out.AssetsSet = true
+	}
 
 	for name, h := range shared.harness {
 		out.Harness[name] = h
 	}
 	for name, h := range local.harness {
 		out.Harness[name] = h
+	}
+	for name, a := range shared.asset {
+		out.Asset[name] = a
+	}
+	for name, a := range local.asset {
+		out.Asset[name] = a
 	}
 	return out
 }
