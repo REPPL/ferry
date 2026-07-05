@@ -455,6 +455,54 @@ func TestFindBridgesRefusesEscapingParentChain(t *testing.T) {
 	}
 }
 
+// TestFindBridgesScansBuiltinDefaultsRegardlessOfSelection pins finding 4: an
+// `assets` selection (or a built-in target override) must NOT narrow the adopt
+// scan below the built-in DEFAULT locations. An old sync.sh bridge at a
+// built-in default (~/.claude/hooks/pre-commit) has to be found even when the
+// current config excludes that built-in mapping — otherwise the stale symlink
+// is silently stranded, forever skipped by apply.
+func TestFindBridgesScansBuiltinDefaultsRegardlessOfSelection(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(adopted, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Old setup: an individual FILE bridge under the built-in ~/.claude/hooks.
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(adopted, "hooks", "pre-commit"),
+		filepath.Join(home, ".claude", "hooks", "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The current config restricts assets to a custom mapping, EXCLUDING the
+	// built-in hooks/skills/agents mappings.
+	cfg := config.AgentsConfig{
+		Assets:    []string{"githooks"},
+		AssetsSet: true,
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+	bridges, err := FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	found := false
+	for _, b := range bridges {
+		if b.Path == filepath.Join(home, ".claude", "hooks", "pre-commit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("built-in default location ~/.claude/hooks/pre-commit was not scanned under an `assets` selection; stale bridge silently stranded (bridges = %+v)", bridges)
+	}
+}
+
 func TestFindBridgesResolvesRelativeLinks(t *testing.T) {
 	home := t.TempDir()
 	adopted := filepath.Join(home, "Workspace", ".agents")

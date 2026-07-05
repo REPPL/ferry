@@ -197,14 +197,34 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 		return nil, err
 	}
 
-	var candidates []string
+	// The scan set is the UNION of the resolved config's locations AND the
+	// built-in DEFAULTS: adopt migrates OLD (sync.sh-era) bridges, which live at
+	// the default locations, so a current `assets`/`harnesses` selection or a
+	// built-in target override must never narrow the scan below the defaults —
+	// that would silently strand stale symlinks the old setup left behind.
+	harnessRels := orderedSet()
 	for _, spec := range specs {
-		if dest, ok := bridgeCandidate(home, spec.Rel); ok {
+		harnessRels.add(spec.Rel)
+	}
+	for _, b := range Builtins() {
+		harnessRels.add(b.Target)
+	}
+	assetTargets := orderedSet()
+	for _, m := range mappings {
+		assetTargets.add(m.Target)
+	}
+	for _, b := range BuiltinAssets() {
+		assetTargets.add(b.Target)
+	}
+
+	var candidates []string
+	for _, rel := range harnessRels.items {
+		if dest, ok := bridgeCandidate(home, rel); ok {
 			candidates = append(candidates, dest)
 		}
 	}
-	for _, m := range mappings {
-		dir, ok := bridgeCandidate(home, m.Target)
+	for _, target := range assetTargets.items {
+		dir, ok := bridgeCandidate(home, target)
 		if !ok {
 			continue
 		}
@@ -282,6 +302,23 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 		}
 	}
 	return dropNestedBridges(bridges), nil
+}
+
+// orderedSet is a tiny insertion-ordered string set: add() keeps first-seen
+// order and drops duplicates, so the scan-set union stays deterministic.
+type stringSet struct {
+	seen  map[string]bool
+	items []string
+}
+
+func orderedSet() *stringSet { return &stringSet{seen: map[string]bool{}} }
+
+func (s *stringSet) add(v string) {
+	if s.seen[v] {
+		return
+	}
+	s.seen[v] = true
+	s.items = append(s.items, v)
 }
 
 // dropNestedBridges removes any bridge that sits UNDER another bridge's path:

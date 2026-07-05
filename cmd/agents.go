@@ -182,17 +182,6 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Record the bridge list to a timestamped file first (human-readable
-	// provenance, independent of the engine's baselines).
-	if len(bridges) > 0 {
-		recordPath, rerr := recordAdoptedBridges(bridges)
-		if rerr != nil {
-			return rerr
-		}
-		fmt.Fprintf(out, "adopt: recorded %d bridge symlink(s) in %s\n", len(bridges), recordPath)
-	} else {
-		fmt.Fprintln(out, "adopt: no bridge symlinks into that directory found at the managed locations")
-	}
 	if cfg.Devtree == "" {
 		fmt.Fprintln(out, "note: no [agents] devtree is configured — if the old setup linked a workspace CLAUDE.md, set devtree in ferry.toml and re-run adopt (or remove that symlink yourself)")
 	}
@@ -211,7 +200,39 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	for _, w := range warnings {
 		fmt.Fprintln(out, w)
 	}
-	if err := adoptTransaction(ctx, items, bridges, out); err != nil {
+
+	// The bridge scan includes the built-in DEFAULT locations regardless of the
+	// current selection (so stale sync.sh-era symlinks are never silently
+	// stranded). A file bridge the current config will NOT redeploy has no
+	// managed copy to take its place, so removing it would strip a working link
+	// with no replacement. Migrate only bridges the plan covers; warn loudly and
+	// leave the rest in place.
+	itemPaths := map[string]bool{}
+	for _, it := range items {
+		itemPaths[it.Target.Home] = true
+	}
+	var toMigrate []agents.Bridge
+	for _, br := range bridges {
+		if itemPaths[br.Path] {
+			toMigrate = append(toMigrate, br)
+			continue
+		}
+		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location the current [agents] config does not manage; left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
+	}
+
+	// Record the migrated bridge list to a timestamped file first
+	// (human-readable provenance, independent of the engine's baselines).
+	if len(toMigrate) > 0 {
+		recordPath, rerr := recordAdoptedBridges(toMigrate)
+		if rerr != nil {
+			return rerr
+		}
+		fmt.Fprintf(out, "adopt: recorded %d bridge symlink(s) in %s\n", len(toMigrate), recordPath)
+	} else {
+		fmt.Fprintln(out, "adopt: no migratable bridge symlinks into that directory found at the managed locations")
+	}
+
+	if err := adoptTransaction(ctx, items, toMigrate, out); err != nil {
 		return err
 	}
 
