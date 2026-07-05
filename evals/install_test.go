@@ -579,8 +579,8 @@ func TestInstallVerifiesChecksums_absentRefused(t *testing.T) {
 	if _, err := os.Stat(installed); err == nil {
 		t.Errorf("absent checksums.txt: %s installed with no checksums.txt (must install NOTHING)", installed)
 	}
-	if !strings.Contains(out, "checksums.txt") {
-		t.Errorf("absent checksums.txt: expected a message naming the missing checksums.txt\n%s", out)
+	if !strings.Contains(out, "could not fetch checksums.txt") {
+		t.Errorf("absent checksums.txt: expected the fetch-refusal message naming checksums.txt\n%s", out)
 	}
 }
 
