@@ -4,7 +4,7 @@
 
   <h1>ferry</h1>
 
-  <p>Carries your terminal, dotfiles, and dependencies across user accounts and machines.</p>
+  <p>Ferries your dotfiles, agent setup, and dependencies across user accounts and machines.</p>
 
   <a href="https://github.com/REPPL/ferry/releases"><img src="https://img.shields.io/github/v/release/REPPL/ferry?cacheSeconds=300" alt="Release"></a>
   <a href="https://github.com/REPPL/ferry/blob/main/LICENSE"><img src="https://img.shields.io/github/license/REPPL/ferry?cacheSeconds=300" alt="License"></a>
