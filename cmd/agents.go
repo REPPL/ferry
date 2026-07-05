@@ -178,21 +178,10 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := agents.ImportSST(dir, destDir, func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) }, out); err != nil {
+	if err := agents.ImportSST(dir, destDir, cfg, func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) }, out); err != nil {
 		return err
 	}
 
-	// Record the bridge list to a timestamped file first (human-readable
-	// provenance, independent of the engine's baselines).
-	if len(bridges) > 0 {
-		recordPath, rerr := recordAdoptedBridges(bridges)
-		if rerr != nil {
-			return rerr
-		}
-		fmt.Fprintf(out, "adopt: recorded %d bridge symlink(s) in %s\n", len(bridges), recordPath)
-	} else {
-		fmt.Fprintln(out, "adopt: no bridge symlinks into that directory found at the managed locations")
-	}
 	if cfg.Devtree == "" {
 		fmt.Fprintln(out, "note: no [agents] devtree is configured — if the old setup linked a workspace CLAUDE.md, set devtree in ferry.toml and re-run adopt (or remove that symlink yourself)")
 	}
@@ -211,13 +200,51 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	for _, w := range warnings {
 		fmt.Fprintln(out, w)
 	}
-	if err := adoptTransaction(ctx, items, bridges, out); err != nil {
+
+	toMigrate := partitionAdoptBridges(items, bridges, out)
+
+	// Record the migrated bridge list to a timestamped file first
+	// (human-readable provenance, independent of the engine's baselines).
+	if len(toMigrate) > 0 {
+		recordPath, rerr := recordAdoptedBridges(toMigrate)
+		if rerr != nil {
+			return rerr
+		}
+		fmt.Fprintf(out, "adopt: recorded %d bridge symlink(s) in %s\n", len(toMigrate), recordPath)
+	} else {
+		fmt.Fprintln(out, "adopt: no migratable bridge symlinks into that directory found at the managed locations")
+	}
+
+	if err := adoptTransaction(ctx, items, toMigrate, out); err != nil {
 		return err
 	}
 
 	fmt.Fprintf(out, "adopt: done. %s was not modified; run `ferry status` to verify, then delete its old sync script (e.g. %s) — ferry now manages the bridges. Other domains reconcile as usual with `ferry apply`.\n",
 		dir, filepath.Join(dir, "bin", "sync.sh"))
 	return nil
+}
+
+// partitionAdoptBridges returns the bridges the swap may migrate: those whose
+// path the plan redeploys. The bridge scan includes the built-in DEFAULT
+// locations regardless of the current selection (so stale sync.sh-era
+// symlinks are never silently stranded), but a file bridge the current config
+// will NOT redeploy has no managed copy to take its place — removing it would
+// strip a working link with no replacement. Such a bridge is warned about
+// loudly and left in place, never journal-removed.
+func partitionAdoptBridges(items []agents.Item, bridges []agents.Bridge, out io.Writer) []agents.Bridge {
+	itemPaths := map[string]bool{}
+	for _, it := range items {
+		itemPaths[it.Target.Home] = true
+	}
+	var toMigrate []agents.Bridge
+	for _, br := range bridges {
+		if itemPaths[br.Path] {
+			toMigrate = append(toMigrate, br)
+			continue
+		}
+		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location the current [agents] config does not manage; left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
+	}
+	return toMigrate
 }
 
 // refuseDirectoryBridges returns a loud, actionable error when any found

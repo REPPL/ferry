@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/REPPL/ferry/internal/agents"
+	"github.com/REPPL/ferry/internal/config"
 	"github.com/REPPL/ferry/internal/dotfile"
 )
 
@@ -127,6 +128,132 @@ func TestRefuseDirectoryBridges(t *testing.T) {
 	for _, want := range []string{"rm /home/u/.claude", "re-run adopt"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal %q missing %q", err.Error(), want)
+		}
+	}
+}
+
+// TestAdoptLeavesUnselectedBridgesInPlace pins the load-bearing half of the
+// widened bridge scan: FindBridges reports bridges at built-in DEFAULT
+// locations even when the current `assets` selection excludes that built-in,
+// and the ONLY thing preventing the swap from journal-removing such a bridge
+// with nothing to replace it is the partition in the adopt path. It drives
+// the real production sequence (FindBridges -> Plan -> partitionAdoptBridges
+// -> adoptTransaction) and asserts the three observables: the symlink stays
+// on disk untouched, a warning names it, and it is absent from the migrated
+// set and the persisted agents target record.
+func TestAdoptLeavesUnselectedBridgesInPlace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// The adopted instruction dir: a hooks tree (bridged at the EXCLUDED
+	// built-in ~/.claude/hooks) and a githooks tree (the selected mapping).
+	adopted := filepath.Join(home, "Workspace", ".agents")
+	for _, rel := range []string{"hooks", "githooks"} {
+		if err := os.MkdirAll(filepath.Join(adopted, rel), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "hooks", "guard.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "githooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old-setup bridges: one at the excluded built-in location, one at the
+	// selected custom mapping's target.
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	strandedPath := filepath.Join(home, ".claude", "hooks", "guard.sh")
+	strandedDest := filepath.Join(adopted, "hooks", "guard.sh")
+	if err := os.Symlink(strandedDest, strandedPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(home, ".githooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	migratedPath := filepath.Join(home, ".githooks", "pre-commit")
+	if err := os.Symlink(filepath.Join(adopted, "githooks", "pre-commit"), migratedPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// The config repo carries only the selected mapping's tree; the selection
+	// EXCLUDES every built-in mapping and harness.
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, "agents", "githooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "agents", "githooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.AgentsConfig{
+		Harnesses:    []string{},
+		HarnessesSet: true,
+		Assets:       []string{"githooks"},
+		AssetsSet:    true,
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+
+	bridges, err := agents.FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	foundStranded := false
+	for _, b := range bridges {
+		if b.Path == strandedPath {
+			foundStranded = true
+		}
+	}
+	if !foundStranded {
+		t.Fatalf("precondition: the excluded built-in location was not scanned; bridges = %+v", bridges)
+	}
+
+	items, _, err := agents.Plan(agents.PlanInput{RepoRoot: repo, Home: home, Config: cfg})
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	var warnBuf strings.Builder
+	toMigrate := partitionAdoptBridges(items, bridges, &warnBuf)
+
+	// (b) A warning names the stranded bridge.
+	if !strings.Contains(warnBuf.String(), strandedPath) {
+		t.Errorf("no warning names the stranded bridge %s; output: %q", strandedPath, warnBuf.String())
+	}
+	// (c) It is not in the migrated set.
+	for _, b := range toMigrate {
+		if b.Path == strandedPath {
+			t.Fatalf("stranded bridge %s is in the migrated set — the swap would remove it with nothing to replace it", strandedPath)
+		}
+	}
+
+	if err := adoptTransaction(&cmdContext{}, items, toMigrate, io.Discard); err != nil {
+		t.Fatalf("adoptTransaction: %v", err)
+	}
+
+	// (a) The stranded symlink is still on disk, untouched.
+	got, lerr := os.Readlink(strandedPath)
+	if lerr != nil {
+		t.Fatalf("stranded bridge no longer a symlink (removed or replaced): %v", lerr)
+	}
+	if got != strandedDest {
+		t.Errorf("stranded bridge repointed: %q, want %q", got, strandedDest)
+	}
+	// The selected mapping's bridge WAS migrated to a managed copy.
+	if fi, serr := os.Lstat(migratedPath); serr != nil || !fi.Mode().IsRegular() {
+		t.Errorf("selected mapping's bridge not replaced by a managed copy: %v %v", fi, serr)
+	}
+	// (c) And the stranded path is absent from the persisted target record.
+	recorded, rerr := agentsRestorePaths()
+	if rerr != nil {
+		t.Fatalf("agentsRestorePaths: %v", rerr)
+	}
+	for _, p := range recorded {
+		if p == strandedPath {
+			t.Errorf("stranded bridge %s is in the agents target record — restore would treat it as ferry-managed", p)
 		}
 	}
 }

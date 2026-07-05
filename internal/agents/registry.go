@@ -59,55 +59,91 @@ func Builtins() []Harness {
 // Config errors — a new harness without a target, or a selection naming an
 // unknown harness — are returned as clear errors, never silently dropped.
 func Resolve(cfg config.AgentsConfig) ([]Harness, error) {
-	byName := map[string]Harness{}
+	return resolveRegistry(
+		Builtins(),
+		func(h Harness) string { return h.Name },
+		cfg.Harness,
+		func(cur Harness, exists bool, name string, spec config.AgentsHarness) (Harness, error) {
+			if !exists {
+				cur = Harness{Name: name, Source: SourceCombined}
+			}
+			if spec.Target != "" {
+				cur.Target = spec.Target
+			}
+			if spec.Source != "" {
+				cur.Source = Source(spec.Source)
+			}
+			if cur.Target == "" {
+				return Harness{}, fmt.Errorf("agents.harness.%s: target is required for a harness that is not a built-in", name)
+			}
+			return cur, nil
+		},
+		cfg.Harnesses, cfg.HarnessesSet,
+		func(name string) error {
+			return fmt.Errorf("agents.harnesses names %q, which is neither a built-in harness nor declared as [agents.harness.%s]", name, name)
+		},
+	)
+}
+
+// resolveRegistry is the shared registry resolver for both the harness and the
+// asset-mapping registries (which are structurally identical): the built-in
+// entries, overlaid with the user's per-name declarations in sorted-name order
+// (an existing name is overridden field by field via overlay; a new name is
+// appended), then filtered by the selection list when one is declared. Order is
+// deterministic: built-ins, then user additions sorted by name — or exactly the
+// declared selection order. overlay applies one user spec (and enforces the
+// registry's required-field rule); unknown formats the selection-not-found error.
+func resolveRegistry[T any, S any](
+	builtins []T,
+	nameOf func(T) string,
+	decls map[string]S,
+	overlay func(cur T, exists bool, name string, spec S) (T, error),
+	selection []string,
+	selectionSet bool,
+	unknown func(name string) error,
+) ([]T, error) {
+	byName := map[string]T{}
 	var order []string
-	for _, b := range Builtins() {
-		byName[b.Name] = b
-		order = append(order, b.Name)
+	for _, b := range builtins {
+		n := nameOf(b)
+		byName[n] = b
+		order = append(order, n)
 	}
 
-	// Overlay user declarations in sorted-name order for determinism.
-	names := make([]string, 0, len(cfg.Harness))
-	for name := range cfg.Harness {
-		names = append(names, name)
+	names := make([]string, 0, len(decls))
+	for n := range decls {
+		names = append(names, n)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		spec := cfg.Harness[name]
-		h, exists := byName[name]
+	for _, n := range names {
+		cur, exists := byName[n]
 		if !exists {
-			h = Harness{Name: name, Source: SourceCombined}
-			order = append(order, name)
+			order = append(order, n)
 		}
-		if spec.Target != "" {
-			h.Target = spec.Target
+		merged, err := overlay(cur, exists, n, decls[n])
+		if err != nil {
+			return nil, err
 		}
-		if spec.Source != "" {
-			h.Source = Source(spec.Source)
-		}
-		if h.Target == "" {
-			return nil, fmt.Errorf("agents.harness.%s: target is required for a harness that is not a built-in", name)
-		}
-		byName[name] = h
+		byName[n] = merged
 	}
 
-	if !cfg.HarnessesSet {
-		out := make([]Harness, 0, len(order))
-		for _, name := range order {
-			out = append(out, byName[name])
+	if !selectionSet {
+		out := make([]T, 0, len(order))
+		for _, n := range order {
+			out = append(out, byName[n])
 		}
 		return out, nil
 	}
 
 	// An explicit selection restricts (and orders) the set; naming an unknown
-	// harness is a config error, not a silent no-op.
-	out := make([]Harness, 0, len(cfg.Harnesses))
-	for _, name := range cfg.Harnesses {
-		h, ok := byName[name]
+	// entry is a config error, not a silent no-op.
+	out := make([]T, 0, len(selection))
+	for _, n := range selection {
+		e, ok := byName[n]
 		if !ok {
-			return nil, fmt.Errorf("agents.harnesses names %q, which is neither a built-in harness nor declared as [agents.harness.%s]", name, name)
+			return nil, unknown(n)
 		}
-		out = append(out, h)
+		out = append(out, e)
 	}
 	return out, nil
 }
@@ -149,52 +185,28 @@ func BuiltinAssets() []AssetMapping {
 // naming an unknown mapping — are returned as clear errors, never silently
 // dropped.
 func ResolveAssets(cfg config.AgentsConfig) ([]AssetMapping, error) {
-	byName := map[string]AssetMapping{}
-	var order []string
-	for _, b := range BuiltinAssets() {
-		byName[b.Name] = b
-		order = append(order, b.Name)
-	}
-
-	names := make([]string, 0, len(cfg.Asset))
-	for name := range cfg.Asset {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		spec := cfg.Asset[name]
-		m, exists := byName[name]
-		if !exists {
-			m = AssetMapping{Name: name}
-			order = append(order, name)
-		}
-		if spec.Source != "" {
-			m.Source = spec.Source
-		}
-		if spec.Target != "" {
-			m.Target = spec.Target
-		}
-		if m.Source == "" || m.Target == "" {
-			return nil, fmt.Errorf("agents.asset.%s: source and target are both required for a mapping that is not a built-in", name)
-		}
-		byName[name] = m
-	}
-
-	if !cfg.AssetsSet {
-		out := make([]AssetMapping, 0, len(order))
-		for _, name := range order {
-			out = append(out, byName[name])
-		}
-		return out, nil
-	}
-
-	out := make([]AssetMapping, 0, len(cfg.Assets))
-	for _, name := range cfg.Assets {
-		m, ok := byName[name]
-		if !ok {
-			return nil, fmt.Errorf("agents.assets names %q, which is neither a built-in mapping nor declared as [agents.asset.%s]", name, name)
-		}
-		out = append(out, m)
-	}
-	return out, nil
+	return resolveRegistry(
+		BuiltinAssets(),
+		func(m AssetMapping) string { return m.Name },
+		cfg.Asset,
+		func(cur AssetMapping, exists bool, name string, spec config.AgentsAsset) (AssetMapping, error) {
+			if !exists {
+				cur = AssetMapping{Name: name}
+			}
+			if spec.Source != "" {
+				cur.Source = spec.Source
+			}
+			if spec.Target != "" {
+				cur.Target = spec.Target
+			}
+			if cur.Source == "" || cur.Target == "" {
+				return AssetMapping{}, fmt.Errorf("agents.asset.%s: source and target are both required for a mapping that is not a built-in", name)
+			}
+			return cur, nil
+		},
+		cfg.Assets, cfg.AssetsSet,
+		func(name string) error {
+			return fmt.Errorf("agents.assets names %q, which is neither a built-in mapping nor declared as [agents.asset.%s]", name, name)
+		},
+	)
 }

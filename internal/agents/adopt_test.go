@@ -35,7 +35,7 @@ func TestImportSST(t *testing.T) {
 	write("bin/sync.sh", "#!/bin/sh\n", 0o755)
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatalf("ImportSST: %v", err)
 	}
 
@@ -70,6 +70,42 @@ func TestImportSST(t *testing.T) {
 	}
 }
 
+// TestImportSSTImportsCustomMappingTrees pins finding 2: the import set must
+// derive from the resolved asset registry, not a hard-coded tree list. A
+// custom [agents.asset.<name>] mapping (githooks) whose live tree the old
+// setup bridged must be imported into the repo, so the swap that removes its
+// bridge deploys the migrated files in their place — never a silent loss.
+func TestImportSSTImportsCustomMappingTrees(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("general.md", "G\n")
+	write("githooks/pre-commit", "#!/bin/sh\necho hi\n")
+
+	cfg := config.AgentsConfig{
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := ImportSST(src, dest, cfg, nil, &buf); err != nil {
+		t.Fatalf("ImportSST: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "githooks", "pre-commit"))
+	if err != nil || string(got) != "#!/bin/sh\necho hi\n" {
+		t.Errorf("custom mapping tree not imported: %q, %v", got, err)
+	}
+}
+
 func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()
@@ -82,7 +118,7 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "general.md"))
@@ -101,7 +137,7 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "general.md"), []byte("from src\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "general.md") {
@@ -161,7 +197,7 @@ func TestImportSSTRefusesGuardedDestinations(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, refuseSymlinkComponents(t, dest), &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, refuseSymlinkComponents(t, dest), &buf); err != nil {
 		t.Fatalf("ImportSST: %v", err)
 	}
 
@@ -359,6 +395,111 @@ func TestFindBridgesScansCustomAssetMappingTargets(t *testing.T) {
 	}
 	if len(none) != 0 {
 		t.Errorf("undeclared mapping target was scanned: %+v", none)
+	}
+}
+
+// TestFindBridgesRefusesEscapingParentChain pins finding 1: a "bridge" whose
+// PARENT directory resolves OUTSIDE $HOME (or under ~/.ssh) must never be
+// enumerated as removable — journal-removing it would delete a file that
+// physically lives outside $HOME. bridgeCandidate is lexical only, so without
+// the resolved-containment gate the escaping leaf slips through and the swap
+// removes it.
+func TestFindBridgesRefusesEscapingParentChain(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adopted, "general.md"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case A: parent resolves OUTSIDE $HOME. ~/w -> <external>, and
+	// <external>/RULES.md is itself a bridge symlink into the adopted dir.
+	external := t.TempDir()
+	if err := os.Symlink(filepath.Join(adopted, "general.md"), filepath.Join(external, "RULES.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(home, "w")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case B: parent resolves under ~/.ssh. ~/s -> ~/.ssh, and
+	// ~/.ssh/RULES.md is a bridge symlink into the adopted dir.
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(adopted, "general.md"), filepath.Join(home, ".ssh", "RULES.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(home, "s")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.AgentsConfig{
+		Harnesses:    []string{"outer", "sshward"},
+		HarnessesSet: true,
+		Harness: map[string]config.AgentsHarness{
+			"outer":   {Target: "w/RULES.md", Source: "combined"},
+			"sshward": {Target: "s/RULES.md", Source: "combined"},
+		},
+	}
+	bridges, err := FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	for _, b := range bridges {
+		if b.Path == filepath.Join(home, "w", "RULES.md") {
+			t.Errorf("enumerated a bridge whose parent escapes $HOME: %s -> %s (removing it would delete a file outside $HOME)", b.Path, b.Dest)
+		}
+		if b.Path == filepath.Join(home, "s", "RULES.md") {
+			t.Errorf("enumerated a bridge whose parent resolves under ~/.ssh: %s -> %s", b.Path, b.Dest)
+		}
+	}
+}
+
+// TestFindBridgesScansBuiltinDefaultsRegardlessOfSelection pins finding 4: an
+// `assets` selection (or a built-in target override) must NOT narrow the adopt
+// scan below the built-in DEFAULT locations. An old sync.sh bridge at a
+// built-in default (~/.claude/hooks/pre-commit) has to be found even when the
+// current config excludes that built-in mapping — otherwise the stale symlink
+// is silently stranded, forever skipped by apply.
+func TestFindBridgesScansBuiltinDefaultsRegardlessOfSelection(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(adopted, "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(adopted, "hooks", "pre-commit"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Old setup: an individual FILE bridge under the built-in ~/.claude/hooks.
+	if err := os.MkdirAll(filepath.Join(home, ".claude", "hooks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(adopted, "hooks", "pre-commit"),
+		filepath.Join(home, ".claude", "hooks", "pre-commit")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The current config restricts assets to a custom mapping, EXCLUDING the
+	// built-in hooks/skills/agents mappings.
+	cfg := config.AgentsConfig{
+		Assets:    []string{"githooks"},
+		AssetsSet: true,
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+	bridges, err := FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	found := false
+	for _, b := range bridges {
+		if b.Path == filepath.Join(home, ".claude", "hooks", "pre-commit") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("built-in default location ~/.claude/hooks/pre-commit was not scanned under an `assets` selection; stale bridge silently stranded (bridges = %+v)", bridges)
 	}
 }
 

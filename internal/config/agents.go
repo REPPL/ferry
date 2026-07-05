@@ -40,7 +40,7 @@ type AgentsAsset struct {
 
 // AgentsConfig is the parsed, merged `[agents]` table of ferry.toml overlaid
 // with ferry.local.toml (local wins per key; the harness and asset maps merge
-// per name). Everything is optional: the zero value means "all built-in
+// per field, local wins). Everything is optional: the zero value means "all built-in
 // harnesses and asset mappings, no devtree" — the domain itself is still
 // gated behind `[manage] agents = true`.
 type AgentsConfig struct {
@@ -72,8 +72,8 @@ var agentsSourceValues = map[string]bool{"general": true, "coding": true, "combi
 
 // LoadAgents loads and merges the `[agents]` tables of ferry.toml and
 // ferry.local.toml under repoPath (local wins: devtree and harnesses replace
-// per key when the local file sets them; harness declarations merge per name
-// with local entries overriding shared ones). Both files are read through the
+// per key when the local file sets them; harness and asset declarations merge
+// per field with local values overriding shared ones). Both files are read through the
 // same symlink-refusing guard as the manifest. A repo with no `[agents]` table
 // at all yields the zero AgentsConfig, not an error.
 func LoadAgents(repoPath string) (AgentsConfig, error) {
@@ -204,6 +204,18 @@ func parseAgents(data []byte) (agentsFileConfig, error) {
 			return agentsFileConfig{}, fmt.Errorf("agents.%s is not a recognised setting (expected devtree, harnesses, harness.<name>, assets, or asset.<name>)", key)
 		}
 	}
+
+	// Catch typo'd fields inside the harness/asset sub-tables: the top-level
+	// switch only sees the direct children of [agents], so an unknown key such
+	// as `agents.asset.x.tpyo` would otherwise be silently discarded. md tracks
+	// every key not consumed by a PrimitiveDecode above; filter to the agents
+	// tree so the other domains' tables (which this parser does not decode) are
+	// not mistaken for unknown keys.
+	for _, k := range md.Undecoded() {
+		if len(k) > 0 && k[0] == "agents" {
+			return agentsFileConfig{}, fmt.Errorf("%s is not a recognised setting", k.String())
+		}
+	}
 	return cfg, nil
 }
 
@@ -253,16 +265,32 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("agents.asset.%s.source must stay within the repo's agents/ area, got %q", name, a.Source)
 		}
+		// The source must be a distinct subdirectory: the agents/ root itself
+		// (".") would spray general.md, coding.md and every other tree into
+		// $HOME, and "templates" holds the scaffold templates ferry carries but
+		// never deploys to $HOME. Both overlap the non-asset content.
+		if clean == "." {
+			return fmt.Errorf("agents.asset.%s.source must be a subdirectory under the repo's agents/ area, not the agents/ root %q", name, a.Source)
+		}
+		if clean == "templates" || strings.HasPrefix(clean, "templates"+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.asset.%s.source %q is reserved: templates/ holds scaffold templates, which are never deployed to $HOME", name, a.Source)
+		}
 	}
-	if a.Target != "" && filepath.IsAbs(a.Target) {
-		return fmt.Errorf("agents.asset.%s.target must be relative to $HOME, got the absolute path %q", name, a.Target)
+	if a.Target != "" {
+		if filepath.IsAbs(a.Target) {
+			return fmt.Errorf("agents.asset.%s.target must be relative to $HOME, got the absolute path %q", name, a.Target)
+		}
+		clean := filepath.Clean(a.Target)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.asset.%s.target must stay within $HOME, got %q", name, a.Target)
+		}
 	}
 	return nil
 }
 
 // mergeAgents overlays local on shared: devtree and the selection lists
 // replace per key when the local file explicitly sets them; harness and asset
-// declarations merge per name with local entries winning.
+// declarations merge per FIELD, with a local entry's set fields winning.
 func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 	out := AgentsConfig{
 		Harness: map[string]AgentsHarness{},
@@ -289,17 +317,37 @@ func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 		out.AssetsSet = true
 	}
 
+	// Local harness and asset declarations merge per FIELD (local wins), not
+	// wholesale: a documented partial override (local sets only one field) must
+	// keep the shared entry's other field rather than blank it — a blanked
+	// required field makes Resolve/ResolveAssets hard-error the whole domain
+	// for an entry that is not a built-in, and silently discards a shared
+	// override of a built-in.
 	for name, h := range shared.harness {
 		out.Harness[name] = h
 	}
 	for name, h := range local.harness {
-		out.Harness[name] = h
+		merged := out.Harness[name]
+		if h.Target != "" {
+			merged.Target = h.Target
+		}
+		if h.Source != "" {
+			merged.Source = h.Source
+		}
+		out.Harness[name] = merged
 	}
 	for name, a := range shared.asset {
 		out.Asset[name] = a
 	}
 	for name, a := range local.asset {
-		out.Asset[name] = a
+		merged := out.Asset[name]
+		if a.Source != "" {
+			merged.Source = a.Source
+		}
+		if a.Target != "" {
+			merged.Target = a.Target
+		}
+		out.Asset[name] = merged
 	}
 	return out
 }

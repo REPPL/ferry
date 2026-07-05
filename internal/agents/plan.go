@@ -76,6 +76,21 @@ func validateSpecCollisions(specs []TargetSpec) error {
 		}
 		byRel[rel] = s.Label
 	}
+
+	// File-vs-directory prefix collision: one target is a file at a path that is
+	// an ANCESTOR directory of another target (e.g. ".githooks" vs
+	// ".githooks/pre-commit"). Both cannot exist — the write that needs the
+	// directory hits ENOTDIR against the file mid-apply — so refuse at plan
+	// time. Every target here is a regular-file destination; a shared ancestor
+	// that is NOT itself a target (two files under ".claude/skills/") is fine.
+	for _, s := range specs {
+		rel := filepath.Clean(s.Rel)
+		for anc := filepath.Dir(rel); anc != "." && anc != string(filepath.Separator); anc = filepath.Dir(anc) {
+			if prev, ok := byRel[anc]; ok {
+				return fmt.Errorf("agents: %s (a file at ~/%s) and %s (~/%s) collide — one needs a directory where the other places a file; change one target (or the devtree)", prev, anc, s.Label, rel)
+			}
+		}
+	}
 	return nil
 }
 

@@ -287,6 +287,24 @@ func TestPlanRefusesCollisions(t *testing.T) {
 			},
 			wantSub: "same destination ~/.githooks/pre-commit",
 		},
+		{
+			// A harness file target ".githooks" and an asset that deploys a file
+			// UNDER ".githooks/" cannot both exist: one wants a file where the
+			// other needs a directory. Refuse at plan time, not as a mid-apply
+			// ENOTDIR.
+			name: "harness file target collides with an asset directory prefix",
+			cfg: config.AgentsConfig{
+				Harnesses:    []string{"clash"},
+				HarnessesSet: true,
+				Harness: map[string]config.AgentsHarness{
+					"clash": {Target: ".githooks", Source: "general"},
+				},
+				Asset: map[string]config.AgentsAsset{
+					"githooks": {Source: "githooks", Target: ".githooks"},
+				},
+			},
+			wantSub: "~/.githooks",
+		},
 	}
 	repo := writeSST(t, map[string]string{
 		"general.md":          "G\n",
