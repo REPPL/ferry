@@ -1,9 +1,9 @@
 # Cutting a release
 
 Cutting a release is what enables the public `curl … | bash` install path. Until a
-release exists and its checksums are pinned, that path deliberately refuses to install
-(fail-closed). Build-from-source works today without any of this: see
-[Getting started](getting-started.md).
+release exists, that path deliberately refuses to install (fail-closed): the installer
+has no `checksums.txt` to fetch and verify against. Build-from-source works today
+without any of this: see [Getting started](getting-started.md).
 
 ## Versioning
 
@@ -16,7 +16,10 @@ workflow triggers on `v*`, and the tag is stamped into the binary via `-ldflags`
 current development line (`v0.4.0-dev`).
 
 Checksums are **automated**, not hand-pasted. A script computes the SHA256 of each
-binary and writes it into `install.sh`; CI runs that script on a tag push.
+binary into a `checksums.txt` manifest that ships as a release asset; CI runs that
+script on a tag push. `install.sh` fetches `checksums.txt` from the release it is
+installing and verifies each download against it — no checksum is ever committed back
+to a branch.
 
 ## Automated flow (primary)
 
@@ -30,26 +33,31 @@ git push origin vX.Y.Z          # or: git push --follow-tags
 The [`release` workflow](../.github/workflows/release.yml) then, for the tag:
 
 1. Cross-compiles the four `bin/ferry-<goos>-<arch>` binaries (`make build`).
-2. Runs [`scripts/pin-checksums.sh`](../scripts/pin-checksums.sh), which pins the real
-   SHA256 of each binary into `install.sh`'s `sha_*` variables.
-3. Commits the pinned `install.sh` back to the default branch (only if it changed),
-   as the `github-actions[bot]` identity.
+2. Runs [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh), which writes the real
+   SHA256 of each binary into a `bin/checksums.txt` manifest (`sha256sum` format).
+3. Attests build provenance for the four binaries **and** `checksums.txt` — a signed
+   [SLSA build-provenance](https://slsa.dev/) attestation per artefact.
 4. Creates the GitHub Release for the tag and uploads the four `bin/ferry-*` binaries
-   as release assets.
-5. Attests build provenance for the four binaries — a signed
-   [SLSA build-provenance](https://slsa.dev/) attestation per binary — then proves it
-   by downloading a binary fresh from the new Release and running
+   plus `checksums.txt` as release assets.
+5. Proves the attestation by downloading a binary fresh from the new Release and running
    `gh attestation verify` against it. A failed attestation or verification fails the
    release.
 
-The result is a verified release whose pinned checksums match the published assets and
+The workflow pushes nothing to any branch. It records the remote default-branch tip at
+the start of the release job and asserts it is unchanged at the end, so a step that ever
+reintroduced a branch push would fail the run.
+
+The result is a verified release whose `checksums.txt` matches the published assets and
 whose binaries carry a verifiable provenance attestation: no manual checksum paste
 anywhere.
 
 ## Provenance attestations
 
-Each released binary has a signed build-provenance attestation linking it to the commit
-and workflow run that built it. Users verify a download with the GitHub CLI:
+Each released binary — and `checksums.txt` itself — has a signed build-provenance
+attestation linking it to the commit and workflow run that built it. `install.sh` does
+not consume these attestations (it verifies the binary against `checksums.txt`);
+attesting the manifest makes it a first-class artefact anyone can verify. Users verify a
+download with the GitHub CLI:
 
 ```bash
 gh attestation verify ferry-<goos>-<arch> -R REPPL/ferry
@@ -78,43 +86,49 @@ the current one already exists.
 
 ## Local / fallback flow
 
-To prepare a release-ready tree locally (e.g. to inspect the pins before tagging, or
+To prepare a release-ready tree locally (e.g. to inspect the manifest before tagging, or
 if you publish by hand):
 
 ```bash
 make release
 ```
 
-`make release` builds the binaries and runs `pin-checksums` (`scripts/pin-checksums.sh`),
-which edits `install.sh` in place: idempotent and re-runnable. It then prints how to
-publish (push a tag for CI, or create the Release and upload `bin/ferry-*` yourself).
+`make release` builds the binaries and runs `gen-checksums` (`scripts/gen-checksums.sh`),
+which writes `bin/checksums.txt` over the built binaries: idempotent and re-runnable. It
+then prints how to publish (push a tag for CI, or create the Release and upload the
+`bin/ferry-*` binaries and `bin/checksums.txt` yourself).
 
 You can also run the pieces directly:
 
 ```bash
 make build            # cross-compile the four binaries
-make pin-checksums    # write real checksums into install.sh
-scripts/pin-checksums.sh --check   # verify pins match fresh binaries (no edit); CI-friendly
+make checksums        # write bin/checksums.txt over them
 ```
 
-`make checksums` still exists as a print-only helper (it lists the `sha_*` lines
-without touching `install.sh`).
+To publish by hand, verify a download against the manifest the same way `install.sh`
+does — from a directory holding the asset and `checksums.txt`:
 
-## Why the pins matter
+```bash
+shasum -a 256 -c checksums.txt   # or: sha256sum -c checksums.txt
+```
 
-`install.sh` is **fail-closed**: an empty pin for the selected target means "no
-checksum → refuse to install", so the network path never installs an unverified
-binary. Once pinned, the installer hashes the download and compares it to the pin,
-catching corruption or tampering **in transit**.
+## Why the manifest matters
 
-Be honest about the scope: this is **not** a full supply-chain guarantee. The checksum
+`install.sh` is **fail-closed**: with no fetchable `checksums.txt`, no entry for the
+selected target, or a hash mismatch, it refuses to install, so the network path never
+installs an unverified binary. When the manifest is present, the installer hashes the
+download and compares it to the manifest entry, catching corruption or tampering **in
+transit**.
+
+Be honest about the scope: this is **not** a full supply-chain guarantee. `checksums.txt`
 ships from the same unauthenticated source as the binary, so a compromised source could
-serve a matching pair. Treat it as a personal-trust convenience, not a signature.
+serve a matching pair. Treat it as a personal-trust convenience, not a signature — the
+build-provenance attestation above is the real signature.
 
 ## Related Documentation
 
-- [`scripts/pin-checksums.sh`](../scripts/pin-checksums.sh): writes/verifies the pins.
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml): tag-triggered build → pin → publish.
-- [`install.sh`](../install.sh): the installer whose `sha_*` pins are filled automatically.
+- [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
+- [`.github/workflows/release.yml`](../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
+- [`install.sh`](../install.sh): the installer that fetches and verifies `checksums.txt`.
 - [README—Install](../README.md#install): the user-facing install command.
 - [Getting started](getting-started.md): build-from-source, which needs no release.
