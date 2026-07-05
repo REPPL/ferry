@@ -125,6 +125,13 @@ func TestCompatV032StateMigratesAndRestores(t *testing.T) {
 	if !bytes.Contains(after, versionField) {
 		t.Fatalf("apply did not migrate the last-applied store to the versioned form:\n%s", after)
 	}
+	// The migration is LOSSLESS: the v0.3.2-recorded hash (the sha256 of the
+	// applied content, recomputed here rather than hard-coded) survives into the
+	// migrated store.
+	zshrcHash := sha256.Sum256([]byte(compatAppliedZshrc))
+	if !bytes.Contains(after, []byte(hex.EncodeToString(zshrcHash[:]))) {
+		t.Fatalf("migrated last-applied store lost the v0.3.x zshrc hash:\n%s", after)
+	}
 	// The pre-migration file is preserved in a sibling backup, byte-for-byte.
 	bak, err := os.ReadFile(lastApplied + ".pre-v1.bak")
 	if err != nil {
