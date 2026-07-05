@@ -12,8 +12,9 @@ import (
 
 // version is the build version. Defaults to the current development line and is
 // overridden at release with the git tag via -ldflags "-X .../cmd.version=vX.Y.Z".
-// ferry uses SemVer with a leading v; the first release is v0.1.0.
-var version = "v0.1.0-dev"
+// ferry uses SemVer with a leading v; an untagged build reports the line in
+// progress (the -dev suffix marks it as not a tagged release).
+var version = "v0.4.0-dev"
 
 var rootCmd = &cobra.Command{
 	Use:   "ferry",
