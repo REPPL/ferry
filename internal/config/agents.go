@@ -272,8 +272,8 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 		if clean == "." {
 			return fmt.Errorf("agents.asset.%s.source must be a subdirectory under the repo's agents/ area, not the agents/ root %q", name, a.Source)
 		}
-		if clean == "templates" {
-			return fmt.Errorf("agents.asset.%s.source %q is reserved: templates holds scaffold templates, which are never deployed to $HOME", name, a.Source)
+		if clean == "templates" || strings.HasPrefix(clean, "templates"+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.asset.%s.source %q is reserved: templates/ holds scaffold templates, which are never deployed to $HOME", name, a.Source)
 		}
 	}
 	if a.Target != "" {

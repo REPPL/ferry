@@ -112,6 +112,18 @@ func TestLoadAgents(t *testing.T) {
 			},
 		},
 		{
+			// A directory whose name merely STARTS with "templates" is an
+			// ordinary asset source — only templates/ itself is reserved.
+			name:   "asset source named templatesx is valid",
+			shared: "[agents.asset.x]\nsource = \"templatesx\"\ntarget = \".x\"\n",
+			want: AgentsConfig{
+				Harness: map[string]AgentsHarness{},
+				Asset: map[string]AgentsAsset{
+					"x": {Source: "templatesx", Target: ".x"},
+				},
+			},
+		},
+		{
 			name:   "local explicit empty harness list wins over shared",
 			shared: "[agents]\nharnesses = [\"claude\"]\n",
 			local:  "[agents]\nharnesses = []\n",
@@ -203,6 +215,11 @@ func TestLoadAgentsErrors(t *testing.T) {
 		{
 			name:    "asset source is the reserved templates directory",
 			shared:  "[agents.asset.x]\nsource = \"templates\"\ntarget = \".x\"\n",
+			wantSub: "reserved",
+		},
+		{
+			name:    "asset source under the reserved templates directory",
+			shared:  "[agents.asset.x]\nsource = \"templates/hooks\"\ntarget = \".x\"\n",
 			wantSub: "reserved",
 		},
 		{
