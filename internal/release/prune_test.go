@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -36,9 +37,13 @@ func writeStub(t *testing.T, dir, name, body string) {
 // TestPruneNeverDeletesTags is a regression guard for W2: pruning a superseded
 // release must remove the GitHub Release only and NEVER the git tag. It runs the
 // real prune script with gh and git replaced by stubs that record their argv,
-// then asserts no tag-deletion path was taken. Against the previous script
-// (which called `gh release delete --cleanup-tag`) the --cleanup-tag assertion
-// fails; against the current script it passes.
+// then asserts by ALLOWLIST: git is never invoked at all, and every gh
+// invocation matches one of the exactly two commands the script legitimately
+// runs (the release list, and a plain `release delete <tag> --yes`). Any other
+// route to a tag deletion — `--cleanup-tag`, `git tag -d`, `git push --delete`,
+// a colon-refspec push, `gh api -X DELETE .../git/refs/tags/...` — is an
+// unrecognised invocation and fails. Against the previous script (which called
+// `gh release delete --cleanup-tag`) this fails; against the current it passes.
 func TestPruneNeverDeletesTags(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("prune-releases.sh is a POSIX shell script")
@@ -60,21 +65,21 @@ func TestPruneNeverDeletesTags(t *testing.T) {
 	ghLog := filepath.Join(tmp, "gh.log")
 	gitLog := filepath.Join(tmp, "git.log")
 
-	// gh stub: `release list` prints the three tags already filtered (mimicking
-	// the script's --jq), `release delete` records its argv, anything else is
-	// recorded too. Three releases in one line (v0.1.x) mean v0.1.0 and v0.1.1
-	// get pruned while the current v0.1.2 (the line keeper) is kept.
+	// gh stub: records EVERY invocation (including `release list`, so the
+	// allowlist below covers the script's complete gh surface), then answers
+	// `release list` with three tags already filtered (mimicking the script's
+	// --jq). Three releases in one line (v0.1.x) mean v0.1.0 and v0.1.1 get
+	// pruned while the current v0.1.2 (the line keeper) is kept.
 	writeStub(t, stubDir, "gh", `#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
 if [ "$1" = "release" ] && [ "$2" = "list" ]; then
   printf 'v0.1.0\nv0.1.1\nv0.1.2\n'
-  exit 0
 fi
-echo "gh $*" >> "$GH_LOG"
 exit 0
 `)
 
-	// git stub: record every invocation so a `git tag -d` / `git push --delete`
-	// would show up. The current script never calls git at all.
+	// git stub: record every invocation. The script legitimately never invokes
+	// git at all, so ANY recorded call fails the test below.
 	writeStub(t, stubDir, "git", `#!/usr/bin/env bash
 echo "git $*" >> "$GIT_LOG"
 exit 0
@@ -97,19 +102,36 @@ exit 0
 	git := readOrEmpty(t, gitLog)
 
 	// It must actually have done pruning work — otherwise the test proves nothing.
-	if !strings.Contains(gh, "release delete v0.1.0") ||
-		!strings.Contains(gh, "release delete v0.1.1") {
+	if !strings.Contains(gh, "gh release delete v0.1.0 --yes") ||
+		!strings.Contains(gh, "gh release delete v0.1.1 --yes") {
 		t.Fatalf("expected v0.1.0 and v0.1.1 to be deleted; gh invocations:\n%s", gh)
 	}
 
-	// The core regression assertions: no tag-deletion path, by any route.
-	if strings.Contains(gh, "--cleanup-tag") {
-		t.Errorf("gh was invoked with --cleanup-tag (deletes the git tag):\n%s", gh)
+	// ALLOWLIST, not blacklist: the script's complete legitimate command surface
+	// is (1) the read-only release list and (2) a bare `release delete <tag>
+	// --yes` — anchored, so any extra flag (e.g. --cleanup-tag) or any other gh
+	// subcommand (e.g. `gh api -X DELETE .../git/refs/tags/...`) is rejected.
+	allowedGH := []*regexp.Regexp{
+		regexp.MustCompile(`^gh release list --limit 200 --json tagName,isDraft,isPrerelease --jq .*$`),
+		regexp.MustCompile(`^gh release delete v[0-9]+\.[0-9]+\.[0-9]+ --yes$`),
 	}
-	for _, forbidden := range []string{"tag -d", "push --delete", "--delete"} {
-		if strings.Contains(git, forbidden) {
-			t.Errorf("git was invoked with %q (deletes the git tag):\n%s", forbidden, git)
+	for _, line := range strings.Split(strings.TrimRight(gh, "\n"), "\n") {
+		ok := false
+		for _, re := range allowedGH {
+			if re.MatchString(line) {
+				ok = true
+				break
+			}
 		}
+		if !ok {
+			t.Errorf("gh invoked outside the allowlist (possible tag-deletion route): %q\nall gh invocations:\n%s", line, gh)
+		}
+	}
+
+	// The script legitimately never invokes git at all — any git call (tag -d,
+	// push --delete, a colon-refspec push, anything) fails.
+	if strings.TrimSpace(git) != "" {
+		t.Errorf("git was invoked; the prune script must never call git (possible tag-deletion route):\n%s", git)
 	}
 }
 
