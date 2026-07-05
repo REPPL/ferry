@@ -77,6 +77,33 @@ func TestCompatMigratesAgentsTargets(t *testing.T) {
 	}
 }
 
+// TestCompatAgentsEnvelopeUnknownFieldRefused proves a malformed envelope — the
+// right version but the payload under the wrong key (e.g. a hand-edit) — is a
+// clean refusal on both the write and read paths, not an empty record whose next
+// union silently discards every previously recorded destination.
+func TestCompatAgentsEnvelopeUnknownFieldRefused(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, targetsFileName)
+	malformed := `{"version":1,"__HOME__/.claude/CLAUDE.md":"agents/claude"}`
+	if err := os.WriteFile(path, []byte(malformed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(path)
+
+	err := RecordTargets(dir, map[string]string{"agents/gemini": "__HOME__/.gemini/GEMINI.md"})
+	if err == nil {
+		t.Fatal("RecordTargets on a malformed envelope must refuse")
+	}
+	after, _ := os.ReadFile(path)
+	if string(after) != string(before) {
+		t.Fatalf("malformed envelope was modified: got %q want %q", after, before)
+	}
+
+	if _, err := RecordedTargetPaths(dir); err == nil {
+		t.Fatal("RecordedTargetPaths on a malformed envelope must refuse")
+	}
+}
+
 // TestCompatFutureAgentsRefused proves a record written by a newer ferry is
 // refused on both the write and read paths and is left untouched.
 func TestCompatFutureAgentsRefused(t *testing.T) {

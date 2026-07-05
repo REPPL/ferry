@@ -98,6 +98,62 @@ func TestCompatFutureVersionRefused(t *testing.T) {
 	}
 }
 
+// seedStateBytes seeds a state dir with literal state-file bytes.
+func seedStateBytes(t *testing.T, data string) (dir, statePath string) {
+	t.Helper()
+	dir = t.TempDir()
+	statePath = filepath.Join(dir, stateFileName)
+	if err := os.WriteFile(statePath, []byte(data), 0o600); err != nil {
+		t.Fatalf("seed state bytes: %v", err)
+	}
+	return dir, statePath
+}
+
+// TestCompatInvalidVersionRefused proves a corrupt version (below 1) is a clean
+// refusal that touches nothing — NOT an empty store whose next save would
+// permanently overwrite the record with no backup.
+func TestCompatInvalidVersionRefused(t *testing.T) {
+	dir, statePath := seedStateBytes(t, `{"version":0,"applied":{"zshrc":"h"}}`)
+	before, _ := os.ReadFile(statePath)
+
+	_, err := OpenStoreAt(dir)
+	if err == nil {
+		t.Fatal("OpenStoreAt on a version-0 file must refuse")
+	}
+	if !strings.Contains(err.Error(), statePath) {
+		t.Fatalf("refusal must name the file: %v", err)
+	}
+
+	after, _ := os.ReadFile(statePath)
+	if string(after) != string(before) {
+		t.Fatalf("version-0 file was modified: got %q want %q", after, before)
+	}
+	if _, err := os.Stat(statePath + ".pre-v0.bak"); !os.IsNotExist(err) {
+		t.Fatal("a refused corrupt file must not be backed up")
+	}
+}
+
+// TestCompatEnvelopeUnknownFieldRefused proves a malformed envelope — the right
+// version but the payload under the wrong key (e.g. a hand-edit) — is a clean
+// refusal, not an empty store that the next save silently overwrites.
+func TestCompatEnvelopeUnknownFieldRefused(t *testing.T) {
+	dir, statePath := seedStateBytes(t, `{"version":1,"zshrc":"h"}`)
+	before, _ := os.ReadFile(statePath)
+
+	_, err := OpenStoreAt(dir)
+	if err == nil {
+		t.Fatal("OpenStoreAt on a malformed envelope must refuse")
+	}
+	if !strings.Contains(err.Error(), statePath) {
+		t.Fatalf("refusal must name the file: %v", err)
+	}
+
+	after, _ := os.ReadFile(statePath)
+	if string(after) != string(before) {
+		t.Fatalf("malformed envelope was modified: got %q want %q", after, before)
+	}
+}
+
 // TestCompatReadOnlyDoesNotMigrate proves the write-free status/diff path reads a
 // v0.3.x file correctly WITHOUT rewriting it or creating any ferry state, and
 // still refuses a future-version file.

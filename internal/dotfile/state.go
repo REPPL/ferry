@@ -1,8 +1,10 @@
 package dotfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -155,9 +157,16 @@ func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 			}
 		}
 	} else {
+		// Strict envelope decode: an unknown top-level key means the payload is
+		// not where the schema says (e.g. a hand-edit put hashes beside "version"
+		// instead of under "applied"). Silently reading that as an EMPTY store
+		// would let the next save permanently overwrite the record with no
+		// backup, so it is a clean refusal instead.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
 		var env lastAppliedFile
-		if err := json.Unmarshal(data, &env); err != nil {
-			return nil, err
+		if err := dec.Decode(&env); err != nil {
+			return nil, fmt.Errorf("dotfile: state file %s is not a valid version %d last-applied record (%v) — the file has been left untouched; repair or remove it", s.path, version, err)
 		}
 		s.applied = env.Applied
 	}

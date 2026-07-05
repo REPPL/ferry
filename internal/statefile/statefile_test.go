@@ -52,6 +52,28 @@ func TestResolveCurrentNoMigrate(t *testing.T) {
 	}
 }
 
+func TestResolveInvalidVersionRefused(t *testing.T) {
+	// A declared version below 1 is corrupt, never a legacy form: accepting it
+	// as current would decode an empty envelope and the next save would
+	// permanently overwrite the store with no backup. It must be a clean error
+	// naming the file and the invalid version, with no migration flagged.
+	for _, v := range []string{"0", "-3"} {
+		data := []byte(`{"version":` + v + `,"applied":{}}`)
+		_, migrate, err := Resolve("/x/state.json", data, 1)
+		if err == nil {
+			t.Fatalf("Resolve(version=%s) = nil error; want a corrupt-version refusal", v)
+		}
+		if migrate {
+			t.Fatalf("Resolve(version=%s) flagged migrate; a corrupt file must never be rewritten", v)
+		}
+		for _, want := range []string{"/x/state.json", v} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error %q missing %q", err, want)
+			}
+		}
+	}
+}
+
 func TestResolveFutureRefused(t *testing.T) {
 	_, _, err := Resolve("/x/state.json", []byte(`{"version":99,"applied":{}}`), 1)
 	var fv *FutureVersionError

@@ -1,8 +1,10 @@
 package agents
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -158,9 +160,16 @@ func loadTargetRecord(stateDir string) (record map[string]string, version int, m
 		}
 		return m, version, true, nil
 	}
+	// Strict envelope decode: an unknown top-level key means the payload is not
+	// where the schema says (e.g. a hand-edit put destinations beside "version"
+	// instead of under "targets"). Silently reading that as an EMPTY record would
+	// let the next union discard every previously recorded destination — and with
+	// it what `ferry restore agents` can revert — so refuse cleanly instead.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
 	var env targetsFile
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, 0, false, err
+	if err := dec.Decode(&env); err != nil {
+		return nil, 0, false, fmt.Errorf("agents: target record %s is not a valid version %d record (%v) — the file has been left untouched; repair or remove it", path, version, err)
 	}
 	if env.Targets == nil {
 		env.Targets = map[string]string{}

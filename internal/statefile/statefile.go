@@ -76,6 +76,15 @@ func Resolve(path string, data []byte, supported int) (version int, migrate bool
 		// forward migration so a mutating read reshapes it into the envelope.
 		return 1, true, nil
 	}
+	if v < 1 {
+		// Schema versions start at 1, so a declared 0 or negative is corruption,
+		// never a legacy form. Refuse it cleanly: treating it as current would
+		// decode an empty envelope, and the next save would permanently overwrite
+		// the store with no backup.
+		return v, false, fmt.Errorf(
+			"state file %s declares invalid schema version %d (versions start at 1) — the file looks corrupt and has been left untouched; repair or remove it",
+			path, v)
+	}
 	if v > supported {
 		return v, false, &FutureVersionError{Path: path, Found: v, Supported: supported}
 	}
@@ -115,9 +124,9 @@ func (e *FutureVersionError) Error() string {
 // bookkeeping), so their pre-migration copy is a plain owner-only sibling.
 //
 // Precondition: the caller MUST have symlink-hardened filepath.Dir(path) (via
-// paths.HardenStoreDir) before calling. statefile cannot import paths, so it
-// does not re-harden; every current caller opens its store through a hardened
-// state dir before it reaches a migration.
+// paths.HardenStoreDir) before calling. Hardening is the store-opening layer's
+// responsibility — every store reaches a migration only through a state dir it
+// has already hardened — so statefile deliberately does not re-harden here.
 func BackupForMigration(path string, found int) (string, error) {
 	bakPath := fmt.Sprintf("%s.pre-v%d.bak", path, found)
 	data, err := os.ReadFile(path)
