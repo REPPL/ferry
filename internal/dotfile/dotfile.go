@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/REPPL/ferry/internal/sshguard"
 )
 
 // Backuper is the small slice of the backup engine the dotfile domain depends
@@ -69,12 +71,6 @@ const defaultPerm os.FileMode = 0o644
 
 // RepoSubdir is the repo subdirectory that holds dotfile sources.
 const RepoSubdir = "dotfiles"
-
-// sshDirName is the one directory ferry must NEVER manage: the absolute,
-// most-important security contract is that ferry never reads, copies, captures,
-// or modifies anything under ~/.ssh/. TargetFor is the single enforcement point
-// for that hands-off contract — see ErrForbiddenSSHPath.
-const sshDirName = ".ssh"
 
 // ErrForbiddenSSHPath is returned by TargetFor when a declared dotfile name
 // resolves to a home target that IS, or is under, ~/.ssh/. ferry's top security
@@ -212,21 +208,10 @@ func ValidateHomeTarget(home, dest string) error {
 	// the kernel into ~/.ssh. Folding also refuses ".SSH/..." on a
 	// case-sensitive filesystem — acceptable fail-closed behaviour, since a
 	// dotfile genuinely named ".SSH" is pathological.
-	if firstSegmentEqualsSSH(rel) {
+	if sshguard.FirstSegmentIsSSH(rel) {
 		return ErrForbiddenSSHPath
 	}
 	return nil
-}
-
-// firstSegmentEqualsSSH reports whether the first path segment of a
-// HOME-relative path is ~/.ssh, folding case so ".SSH", ".Ssh", etc. all
-// match. rel must be a clean HOME-relative path (no leading "..").
-func firstSegmentEqualsSSH(rel string) bool {
-	first := rel
-	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
-		first = rel[:i]
-	}
-	return strings.EqualFold(first, sshDirName)
 }
 
 // maxTargetSymlinkHops bounds symlink resolution in the nested-target walk so
@@ -272,7 +257,7 @@ func validateHomeTargetResolved(home, dest string) error {
 	// guard: on a case-insensitive filesystem a component resolving to ~/.SSH
 	// is the same directory as ~/.ssh, so it must be refused too.
 	underSSH := func(p string) bool {
-		return underSSHOf(cleanHome, p) || underSSHOf(resolvedHome, p)
+		return sshguard.UnderHomeSSH(cleanHome, p) || sshguard.UnderHomeSSH(resolvedHome, p)
 	}
 
 	// Walk the PARENT chain only (see the leaf note above). A parent equal to
@@ -349,19 +334,6 @@ func strictlyUnder(base, p string) bool {
 		return false
 	}
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-// underSSHOf reports whether p is ~/.ssh (or under it) relative to base,
-// folding case on the ".ssh" segment. base and p must be clean absolute
-// paths. It is the case-insensitive counterpart of the lexical guard's
-// ~/.ssh check, used by the symlink-resolving walk so a component that lands
-// on ~/.SSH is refused on a case-insensitive filesystem.
-func underSSHOf(base, p string) bool {
-	rel, err := filepath.Rel(base, p)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return false
-	}
-	return firstSegmentEqualsSSH(rel)
 }
 
 // hashBytes returns the lowercase hex sha256 of content. This is the canonical
