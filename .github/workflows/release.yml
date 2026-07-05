@@ -215,7 +215,14 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             --pattern 'ferry-linux-amd64' \
             --dir "$DL"
-          gh attestation verify "$DL/ferry-linux-amd64" --repo "${GITHUB_REPOSITORY}"
+          # --signer-workflow binds acceptance to an attestation SIGNED BY this
+          # release workflow, not merely one from somewhere in this repo (--repo
+          # alone accepts any workflow's attestation). Format is
+          # [host/]<owner>/<repo>/<path>/<to>/<workflow>; GITHUB_REPOSITORY is
+          # <owner>/<repo>.
+          gh attestation verify "$DL/ferry-linux-amd64" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
