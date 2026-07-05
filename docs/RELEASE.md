@@ -36,18 +36,38 @@ The [`release` workflow](../.github/workflows/release.yml) then, for the tag:
    as the `github-actions[bot]` identity.
 4. Creates the GitHub Release for the tag and uploads the four `bin/ferry-*` binaries
    as release assets.
+5. Attests build provenance for the four binaries — a signed
+   [SLSA build-provenance](https://slsa.dev/) attestation per binary — then proves it
+   by downloading a binary fresh from the new Release and running
+   `gh attestation verify` against it. A failed attestation or verification fails the
+   release.
 
-The result is a verified release whose pinned checksums match the published assets:
-no manual checksum paste anywhere.
+The result is a verified release whose pinned checksums match the published assets and
+whose binaries carry a verifiable provenance attestation: no manual checksum paste
+anywhere.
+
+## Provenance attestations
+
+Each released binary has a signed build-provenance attestation linking it to the commit
+and workflow run that built it. Users verify a download with the GitHub CLI:
+
+```bash
+gh attestation verify ferry-<goos>-<arch> -R REPPL/ferry
+```
+
+This is a genuine signature over the artefact (unlike the in-transit checksum below),
+so it detects a binary that was not produced by this repository's release workflow.
 
 ## Release retention
 
 Each release line keeps only its newest release. When a new `vX.Y.Z` publishes, the
 workflow runs [`scripts/prune-releases.sh`](../scripts/prune-releases.sh), which keeps
 the latest release of the current line (`X.Y`) plus the last release of every other
-line, and deletes the superseded releases: the GitHub Release, its binary assets, and
-the git tag. So shipping `v0.1.2` removes `v0.1.1`, while shipping `v0.2.0` keeps the
-last `v0.1.x` alongside it. Run it by hand with `--dry-run` to preview:
+line, and deletes the superseded releases: the GitHub Release and its binary assets.
+Git tags are immutable once pushed and are never deleted, so a pruned version's tag —
+and the commit it points at — stays reachable. So shipping `v0.1.2` removes the
+`v0.1.1` release, while shipping `v0.2.0` keeps the last `v0.1.x` alongside it. Run it
+by hand with `--dry-run` to preview:
 
 ```bash
 scripts/prune-releases.sh --current vX.Y.Z --dry-run
