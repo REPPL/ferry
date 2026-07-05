@@ -79,22 +79,39 @@ func pathUnderSSH(p string) (bool, error) {
 	if stopped {
 		return true, nil
 	}
-	return underOrEqual(homeSSH, resolved), nil
+	return underOrEqualSSH(homeSSH, resolved), nil
 }
 
-// underOrEqual reports whether path equals base or is a descendant of it, using
-// pure path arithmetic (filepath.Rel). Both arguments must be clean+absolute.
-func underOrEqual(base, path string) bool {
-	if path == base {
-		return true
-	}
-	rel, err := filepath.Rel(base, path)
+// underOrEqualSSH reports whether path is homeSSH (~/.ssh) itself or a
+// descendant of it, using pure path arithmetic. The comparison folds case ONLY
+// on the ".ssh" segment: on a case-insensitive filesystem (the macOS default) a
+// candidate such as ~/.SSH/repo is mapped by the kernel into the real ~/.ssh, so
+// it must be caught here too — otherwise a configured repo or clone source could
+// land ferry inside ~/.ssh. The parent components (home and everything above it)
+// still match EXACTLY; only the ~/.ssh segment's case is ignored. Folding also
+// refuses ~/.SSH/... on a case-SENSITIVE filesystem, which is acceptable
+// fail-closed behaviour — a directory genuinely named ~/.SSH distinct from
+// ~/.ssh is pathological. Both arguments must be clean+absolute, and homeSSH's
+// leaf segment is ".ssh" (it is built by joining ".ssh" onto home), so its
+// parent is home.
+func underOrEqualSSH(homeSSH, path string) bool {
+	home := filepath.Dir(homeSSH)
+	rel, err := filepath.Rel(home, path)
 	if err != nil {
 		return false
 	}
-	// rel == "." means equal (handled above); a rel that starts with ".." (or is
-	// exactly "..") escapes base, so path is NOT under base.
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator))
+	// A rel of "." (path IS home) or one that escapes home ("..", "../…") is not
+	// under ~/.ssh.
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return false
+	}
+	// path is strictly under home: it is at/under ~/.ssh iff its first segment
+	// case-folds to ".ssh".
+	first := rel
+	if i := strings.IndexRune(rel, os.PathSeparator); i >= 0 {
+		first = rel[:i]
+	}
+	return strings.EqualFold(first, ".ssh")
 }
 
 // resolveForSSHCheck turns p into a cleaned, absolute path with symlinks resolved
@@ -133,7 +150,7 @@ func resolveForSSHCheck(p, home, homeSSH string) (string, bool, error) {
 	// Pure-path short-circuit: if the cleaned candidate is already at/under
 	// homeSSH, conclude "under ssh" WITHOUT any stat (this covers a direct
 	// ~/.ssh/x candidate, caught before we would ever touch under ssh).
-	if underOrEqual(homeSSH, abs) {
+	if underOrEqualSSH(homeSSH, abs) {
 		return "", true, nil
 	}
 
@@ -155,7 +172,7 @@ func resolveForSSHCheck(p, home, homeSSH string) (string, bool, error) {
 		// Never Lstat/Readlink homeSSH or anything under it. If the next component
 		// is already at/under homeSSH (by pure string math), the candidate is under
 		// ssh — decide WITHOUT touching the filesystem there.
-		if underOrEqual(homeSSH, cur) {
+		if underOrEqualSSH(homeSSH, cur) {
 			return "", true, nil
 		}
 		fi, lerr := os.Lstat(cur)
@@ -163,7 +180,7 @@ func resolveForSSHCheck(p, home, homeSSH string) (string, bool, error) {
 			// A not-yet-existing tail (e.g. a fresh clone destination): no symlink to
 			// resolve. Append the remaining components lexically and stop.
 			full := filepath.Clean(filepath.Join(append([]string{cur}, rest...)...))
-			if underOrEqual(homeSSH, full) {
+			if underOrEqualSSH(homeSSH, full) {
 				return "", true, nil
 			}
 			return full, false, nil
@@ -186,7 +203,7 @@ func resolveForSSHCheck(p, home, homeSSH string) (string, bool, error) {
 			target = filepath.Join(resolved, target)
 		}
 		target = filepath.Clean(target)
-		if underOrEqual(homeSSH, target) {
+		if underOrEqualSSH(homeSSH, target) {
 			return "", true, nil
 		}
 		// Restart the walk from the lexically-resolved target, prepending it to the

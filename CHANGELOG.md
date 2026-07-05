@@ -21,6 +21,21 @@ called out in a **Breaking** section. See
   first, so `ferry restore` can undo it", dropping the "reconcile" jargon and
   the nested `--apply --yes` parenthetical (the flags stay in `--help`).
 
+### Fixed
+
+- Harness targets that climb out of `$HOME` via `..` are now rejected when
+  the manifest is parsed (matching asset targets), instead of surfacing only
+  as a skipped item at apply time.
+- Asset targets of `.` or `./` (the `$HOME` root) are rejected at parse.
+- The `~/.ssh` hands-off guard now compares case-insensitively across every
+  containment check — dotfile and agents deploy targets, the configured repo
+  and clone source/destination paths, and the zsh `source` probe — so a path
+  such as `.SSH/config`, which the default case-insensitive macOS filesystem
+  maps into `~/.ssh`, is refused everywhere rather than only for deploy
+  targets.
+- Clearer `agents adopt` diagnostics for directory-level bridges and for
+  stale bridges left in place at locations this adopt run does not cover.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added

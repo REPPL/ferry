@@ -242,8 +242,14 @@ func validateDevtree(s string) error {
 // set only the source; the registry resolution enforces that a NEW harness
 // carries a target.
 func validateHarnessSpec(name string, h AgentsHarness) error {
-	if h.Target != "" && filepath.IsAbs(h.Target) {
-		return fmt.Errorf("agents.harness.%s.target must be relative to $HOME, got the absolute path %q", name, h.Target)
+	if h.Target != "" {
+		if filepath.IsAbs(h.Target) {
+			return fmt.Errorf("agents.harness.%s.target must be relative to $HOME, got the absolute path %q", name, h.Target)
+		}
+		clean := filepath.Clean(h.Target)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.harness.%s.target must stay within $HOME, got %q", name, h.Target)
+		}
 	}
 	if h.Source != "" && !agentsSourceValues[h.Source] {
 		return fmt.Errorf("agents.harness.%s.source must be one of general, coding, combined; got %q", name, h.Source)
@@ -283,6 +289,13 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 		clean := filepath.Clean(a.Target)
 		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("agents.asset.%s.target must stay within $HOME, got %q", name, a.Target)
+		}
+		// The target must be a distinct subdirectory: the $HOME root itself
+		// (".", "./") would spray the whole source tree onto $HOME's top level,
+		// which is nonsense config even though the per-file write guards still
+		// apply.
+		if clean == "." {
+			return fmt.Errorf("agents.asset.%s.target must be a subdirectory under $HOME, not the $HOME root %q", name, a.Target)
 		}
 	}
 	return nil

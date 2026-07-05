@@ -183,6 +183,11 @@ func TestLoadAgentsErrors(t *testing.T) {
 			wantSub: "must be relative to $HOME",
 		},
 		{
+			name:    "harness target climbing out of home",
+			shared:  "[agents.harness.x]\ntarget = \"../evil/RULES.md\"\n",
+			wantSub: "agents.harness.x.target must stay within $HOME",
+		},
+		{
 			name:    "invalid harness source",
 			shared:  "[agents.harness.x]\ntarget = \".x/X.md\"\nsource = \"everything\"\n",
 			wantSub: "must be one of general, coding, combined",
@@ -211,6 +216,16 @@ func TestLoadAgentsErrors(t *testing.T) {
 			name:    "asset source is the agents root",
 			shared:  "[agents.asset.x]\nsource = \".\"\ntarget = \".x\"\n",
 			wantSub: "must be a subdirectory",
+		},
+		{
+			name:    "asset target is the home root (dot)",
+			shared:  "[agents.asset.x]\nsource = \"x\"\ntarget = \".\"\n",
+			wantSub: "agents.asset.x.target must be a subdirectory under $HOME",
+		},
+		{
+			name:    "asset target is the home root (dot-slash)",
+			shared:  "[agents.asset.x]\nsource = \"x\"\ntarget = \"./\"\n",
+			wantSub: "agents.asset.x.target must be a subdirectory under $HOME",
 		},
 		{
 			name:    "asset source is the reserved templates directory",

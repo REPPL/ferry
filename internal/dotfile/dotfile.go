@@ -206,15 +206,27 @@ func ValidateHomeTarget(home, dest string) error {
 	}
 
 	// Must not be ~/.ssh nor under it. Compare the first path segment of the
-	// HOME-relative path: ".ssh" itself, or ".ssh/<anything>".
+	// HOME-relative path: ".ssh" itself, or ".ssh/<anything>". The compare is
+	// case-INSENSITIVE because the macOS default filesystem is: a target like
+	// ".SSH/config" would otherwise pass this lexical guard yet be mapped by
+	// the kernel into ~/.ssh. Folding also refuses ".SSH/..." on a
+	// case-sensitive filesystem — acceptable fail-closed behaviour, since a
+	// dotfile genuinely named ".SSH" is pathological.
+	if firstSegmentEqualsSSH(rel) {
+		return ErrForbiddenSSHPath
+	}
+	return nil
+}
+
+// firstSegmentEqualsSSH reports whether the first path segment of a
+// HOME-relative path is ~/.ssh, folding case so ".SSH", ".Ssh", etc. all
+// match. rel must be a clean HOME-relative path (no leading "..").
+func firstSegmentEqualsSSH(rel string) bool {
 	first := rel
 	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
 		first = rel[:i]
 	}
-	if first == sshDirName {
-		return ErrForbiddenSSHPath
-	}
-	return nil
+	return strings.EqualFold(first, sshDirName)
 }
 
 // maxTargetSymlinkHops bounds symlink resolution in the nested-target walk so
@@ -256,9 +268,11 @@ func validateHomeTargetResolved(home, dest string) error {
 	inHome := func(p string) bool {
 		return strictlyUnder(cleanHome, p) || strictlyUnder(resolvedHome, p)
 	}
+	// underSSH folds case on the ~/.ssh segment, consistent with the lexical
+	// guard: on a case-insensitive filesystem a component resolving to ~/.SSH
+	// is the same directory as ~/.ssh, so it must be refused too.
 	underSSH := func(p string) bool {
-		return underOrEqualPath(filepath.Join(cleanHome, sshDirName), p) ||
-			underOrEqualPath(filepath.Join(resolvedHome, sshDirName), p)
+		return underSSHOf(cleanHome, p) || underSSHOf(resolvedHome, p)
 	}
 
 	// Walk the PARENT chain only (see the leaf note above). A parent equal to
@@ -337,10 +351,17 @@ func strictlyUnder(base, p string) bool {
 	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// underOrEqualPath reports whether p equals base or is a descendant of it, by
-// pure path arithmetic. Both must be clean absolute paths.
-func underOrEqualPath(base, p string) bool {
-	return p == base || strictlyUnder(base, p)
+// underSSHOf reports whether p is ~/.ssh (or under it) relative to base,
+// folding case on the ".ssh" segment. base and p must be clean absolute
+// paths. It is the case-insensitive counterpart of the lexical guard's
+// ~/.ssh check, used by the symlink-resolving walk so a component that lands
+// on ~/.SSH is refused on a case-insensitive filesystem.
+func underSSHOf(base, p string) bool {
+	rel, err := filepath.Rel(base, p)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return firstSegmentEqualsSSH(rel)
 }
 
 // hashBytes returns the lowercase hex sha256 of content. This is the canonical
