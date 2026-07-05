@@ -7,7 +7,9 @@
 # Net effect: exactly one release per line survives (its newest patch), so shipping
 # v0.1.2 prunes v0.1.1, while shipping v0.2.0 keeps the last v0.1.x alongside it.
 #
-# Pruning is DESTRUCTIVE: it deletes the GitHub Release, its assets, AND the git tag.
+# Pruning is DESTRUCTIVE: it deletes the GitHub Release and its binary assets. It
+# NEVER deletes the git tag — tags are immutable once pushed, so a pruned version's
+# tag (and the commit it points at) stays reachable for provenance and rebuilds.
 #
 #   scripts/prune-releases.sh --current vX.Y.Z          prune superseded releases
 #   scripts/prune-releases.sh --current vX.Y.Z --dry-run  show what WOULD be pruned
@@ -116,16 +118,17 @@ echo "prune-releases: pruning $prune_count superseded release(s):"
 printf '%s\n' "$PRUNE" | sed 's/^/  /'
 
 if [ "$DRY_RUN" -eq 1 ]; then
-  echo "prune-releases: --dry-run — no releases or tags deleted."
+  echo "prune-releases: --dry-run — no releases deleted (tags are never touched)."
   exit 0
 fi
 
-# Delete the Release + its assets AND the git tag for each pruned version. PRUNE is a
-# newline-delimited string (not an array), so iterate it line by line; --cleanup-tag
-# removes the remote tag along with the Release.
+# Delete the Release + its binary assets for each pruned version, and ONLY the
+# Release: the git tag is left in place. PRUNE is a newline-delimited string (not an
+# array), so iterate it line by line. There is deliberately no --cleanup-tag and no
+# `git tag -d` / `git push --delete` anywhere here — tags are immutable once pushed.
 while IFS= read -r tag; do
   [ -z "$tag" ] && continue
-  echo "prune-releases: deleting release + tag $tag"
-  gh release delete "$tag" --yes --cleanup-tag
+  echo "prune-releases: deleting release $tag (its tag is kept)"
+  gh release delete "$tag" --yes
 done <<< "$PRUNE"
-echo "prune-releases: done — pruned $prune_count release(s)."
+echo "prune-releases: done — pruned $prune_count release(s); all tags retained."
