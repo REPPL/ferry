@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -51,5 +52,35 @@ func TestPathUnderSSHCaseInsensitive(t *testing.T) {
 		if under {
 			t.Errorf("pathUnderSSH(%q) = true, want false (allowed)", p)
 		}
+	}
+}
+
+// TestPathUnderSSHFoldsWrongCaseHomeParent pins the containment guard as
+// case-insensitive on the HOME PARENT components too, not just the ".ssh" leaf.
+// On the default case-insensitive macOS filesystem a wrong-case HOME parent
+// (e.g. .../ALICE vs .../alice) names the SAME directory, so a candidate such as
+// .../ALICE/.ssh/repo still resolves inside the real ~/.ssh and must be refused
+// exactly as .../alice/.ssh/repo is. A FAKE $HOME is used; the real ~/.ssh is
+// never touched.
+func TestPathUnderSSHFoldsWrongCaseHomeParent(t *testing.T) {
+	base := t.TempDir()
+	home := filepath.Join(base, "alice")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	t.Setenv("HOME", home)
+
+	// The candidate differs from HOME only in the case of the leaf HOME component
+	// ("ALICE" vs "alice"); its ".ssh" segment is exact-case.
+	wrongCase := filepath.Join(base, "ALICE", ".ssh", "repo")
+	under, err := pathUnderSSH(wrongCase)
+	if err != nil {
+		t.Fatalf("pathUnderSSH(%q): unexpected error %v", wrongCase, err)
+	}
+	if !under {
+		t.Errorf("pathUnderSSH(%q) = false, want true (a wrong-case HOME parent still lands inside ~/.ssh)", wrongCase)
+	}
+	if err := rejectIfUnderSSH("repo", wrongCase); err == nil {
+		t.Errorf("rejectIfUnderSSH(%q) = nil, want refusal", wrongCase)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/REPPL/ferry/internal/sshguard"
 )
 
 // safeRepoManifest validates a REPO-SIDE manifest path BEFORE it is stat'd, read,
@@ -71,34 +73,11 @@ func safeRepoManifest(repoRoot, abs string) (string, error) {
 			if !filepath.IsAbs(linkTarget) {
 				linkTarget = filepath.Join(filepath.Dir(cur), linkTarget)
 			}
-			if under, uerr := pathUnderHomeSSH(filepath.Clean(linkTarget)); uerr == nil && under {
+			if under, uerr := sshguard.UnderHomeSSHExact(filepath.Clean(linkTarget)); uerr == nil && under {
 				return "", fmt.Errorf("deps: refusing repo path %s: symlink resolves under ~/.ssh", target)
 			}
 		}
 		return "", fmt.Errorf("deps: refusing repo path %s: symlink not allowed", target)
 	}
 	return target, nil
-}
-
-// pathUnderHomeSSH reports whether the cleaned absolute path p is $HOME/.ssh or a
-// descendant, by PURE STRING arithmetic. $HOME/.ssh is computed by STRING join
-// (os.UserHomeDir + ".ssh") and is NEVER stat'd, read, or EvalSymlink'd, so the
-// guard never touches ~/.ssh.
-func pathUnderHomeSSH(p string) (bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false, err
-	}
-	if resolvedHome, herr := filepath.EvalSymlinks(home); herr == nil {
-		home = resolvedHome
-	}
-	homeSSH := filepath.Clean(filepath.Join(home, ".ssh"))
-	if p == homeSSH {
-		return true, nil
-	}
-	rel, err := filepath.Rel(homeSSH, p)
-	if err != nil {
-		return false, nil
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)), nil
 }

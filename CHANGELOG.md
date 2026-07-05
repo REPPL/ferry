@@ -32,7 +32,10 @@ called out in a **Breaking** section. See
   and clone source/destination paths, and the zsh `source` probe — so a path
   such as `.SSH/config`, which the default case-insensitive macOS filesystem
   maps into `~/.ssh`, is refused everywhere rather than only for deploy
-  targets.
+  targets. The fold now also covers the `$HOME` parent components, so a
+  wrong-case home prefix (e.g. `/Users/ALICE/.ssh/...` for a home of
+  `/Users/alice`), which the same case-insensitive filesystem maps into the
+  real `~/.ssh`, is recognised and refused too.
 - Clearer `agents adopt` diagnostics for directory-level bridges and for
   stale bridges left in place at locations this adopt run does not cover.
 

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/REPPL/ferry/internal/sshguard"
 )
 
 // safeRepoRead validates a REPO-SIDE path BEFORE it is opened for reading and
@@ -69,37 +71,11 @@ func safeRepoRead(repoRoot, relPath string) (string, error) {
 			if !filepath.IsAbs(target) {
 				target = filepath.Join(filepath.Dir(cur), target)
 			}
-			if under, uerr := pathUnderHomeSSH(filepath.Clean(target)); uerr == nil && under {
+			if under, uerr := sshguard.UnderHomeSSHExact(filepath.Clean(target)); uerr == nil && under {
 				return "", fmt.Errorf("refusing repo path %s: symlink resolves under ~/.ssh", abs)
 			}
 		}
 		return "", fmt.Errorf("refusing repo path %s: symlink not allowed", abs)
 	}
 	return abs, nil
-}
-
-// pathUnderHomeSSH reports whether the cleaned absolute path p is $HOME/.ssh or a
-// descendant of it, by PURE STRING arithmetic. $HOME/.ssh is computed by STRING
-// join (os.UserHomeDir + ".ssh") — it is NEVER stat'd, lstat'd, read, or
-// EvalSymlink'd, so the guard never touches ~/.ssh.
-func pathUnderHomeSSH(p string) (bool, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false, err
-	}
-	// Resolve HOME (an ancestor strictly ABOVE ~/.ssh, e.g. macOS /var -> /private/var)
-	// so the string compare is on the same real filesystem as an EvalSymlinks'd
-	// candidate. ~/.ssh itself is only ever STRING-joined onto HOME.
-	if resolvedHome, herr := filepath.EvalSymlinks(home); herr == nil {
-		home = resolvedHome
-	}
-	homeSSH := filepath.Clean(filepath.Join(home, ".ssh"))
-	if p == homeSSH {
-		return true, nil
-	}
-	rel, err := filepath.Rel(homeSSH, p)
-	if err != nil {
-		return false, nil
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)), nil
 }

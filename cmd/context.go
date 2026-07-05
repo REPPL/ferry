@@ -13,6 +13,7 @@ import (
 	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/config"
 	"github.com/REPPL/ferry/internal/paths"
+	"github.com/REPPL/ferry/internal/sshguard"
 )
 
 // maxSymlinkHops bounds symlink resolution in the lexical walk so a cyclic or
@@ -83,35 +84,14 @@ func pathUnderSSH(p string) (bool, error) {
 }
 
 // underOrEqualSSH reports whether path is homeSSH (~/.ssh) itself or a
-// descendant of it, using pure path arithmetic. The comparison folds case ONLY
-// on the ".ssh" segment: on a case-insensitive filesystem (the macOS default) a
-// candidate such as ~/.SSH/repo is mapped by the kernel into the real ~/.ssh, so
-// it must be caught here too — otherwise a configured repo or clone source could
-// land ferry inside ~/.ssh. The parent components (home and everything above it)
-// still match EXACTLY; only the ~/.ssh segment's case is ignored. Folding also
-// refuses ~/.SSH/... on a case-SENSITIVE filesystem, which is acceptable
-// fail-closed behaviour — a directory genuinely named ~/.SSH distinct from
-// ~/.ssh is pathological. Both arguments must be clean+absolute, and homeSSH's
-// leaf segment is ".ssh" (it is built by joining ".ssh" onto home), so its
-// parent is home.
+// descendant of it. homeSSH's leaf segment is ".ssh" (it is built by joining
+// ".ssh" onto home), so its parent is home; the shared sshguard primitive does
+// the pure-path-arithmetic decision (folding case on the ".ssh" segment so a
+// case-variant such as ~/.SSH/repo, which the kernel maps into the real ~/.ssh
+// on a case-insensitive filesystem, is caught too). Both arguments must be
+// clean+absolute.
 func underOrEqualSSH(homeSSH, path string) bool {
-	home := filepath.Dir(homeSSH)
-	rel, err := filepath.Rel(home, path)
-	if err != nil {
-		return false
-	}
-	// A rel of "." (path IS home) or one that escapes home ("..", "../…") is not
-	// under ~/.ssh.
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
-		return false
-	}
-	// path is strictly under home: it is at/under ~/.ssh iff its first segment
-	// case-folds to ".ssh".
-	first := rel
-	if i := strings.IndexRune(rel, os.PathSeparator); i >= 0 {
-		first = rel[:i]
-	}
-	return strings.EqualFold(first, ".ssh")
+	return sshguard.UnderHomeSSH(filepath.Dir(homeSSH), path)
 }
 
 // resolveForSSHCheck turns p into a cleaned, absolute path with symlinks resolved
