@@ -3,6 +3,7 @@ package agents
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -19,6 +20,7 @@ func scaffoldFixture(t *testing.T, git bool) (templates, repo string) {
 		"DECISIONS.md":           "# Decisions — {{PROJECT}} ({{DATE}})\n",
 		"ISSUES.md":              "# Issues — {{PROJECT}}\n",
 		"docs-README.md":         "# docs — map for {{PROJECT}}\n",
+		"prepare-commit-msg":     "#!/bin/sh\n# hook for {{PROJECT}}\n",
 		"pre-commit-config.yaml": "repos: []\n",
 	} {
 		if err := os.WriteFile(filepath.Join(templates, name), []byte(content), 0o644); err != nil {
@@ -111,6 +113,130 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	if !strings.Contains(out, "done: "+name) {
 		t.Errorf("output missing done line: %q", out)
 	}
+}
+
+// TestScaffoldAttribution pins the --attribution behaviour end to end in a
+// REAL git repo: the prepare-commit-msg hook is stamped (substituted,
+// executable), core.hooksPath points at .githooks (per clone), and AGENTS.md
+// gains the AI-attribution section exactly once — a re-run appends nothing
+// and changes nothing.
+func TestScaffoldAttribution(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	templates := scaffoldTemplatesOnly(t)
+	repo := t.TempDir()
+	if out, err := exec.Command("git", "-C", repo, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+
+	run := func(date string) string {
+		return runScaffold(t, ScaffoldOptions{
+			RepoDir: repo, Name: "attrproj", Attribution: true,
+			TemplatesDir: templates, Date: date,
+		})
+	}
+	out := run("2026-07-05")
+
+	// Hook stamped, substituted, executable.
+	hook := filepath.Join(repo, ".githooks", "prepare-commit-msg")
+	content, err := os.ReadFile(hook)
+	if err != nil {
+		t.Fatalf("hook missing: %v", err)
+	}
+	if want := "#!/bin/sh\n# hook for attrproj\n"; string(content) != want {
+		t.Errorf("hook = %q, want %q", content, want)
+	}
+	fi, err := os.Stat(hook)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm()&0o111 == 0 {
+		t.Errorf("hook is not executable: %v", fi.Mode())
+	}
+
+	// core.hooksPath set on this clone.
+	hooksPath, err := exec.Command("git", "-C", repo, "config", "core.hooksPath").Output()
+	if err != nil {
+		t.Fatalf("read core.hooksPath: %v", err)
+	}
+	if got := strings.TrimSpace(string(hooksPath)); got != ".githooks" {
+		t.Errorf("core.hooksPath = %q, want .githooks", got)
+	}
+	if !strings.Contains(out, "re-run this config per clone") {
+		t.Errorf("output missing the per-clone note: %q", out)
+	}
+
+	// AGENTS.md carries the policy section exactly once.
+	agentsMD, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(agentsMD), "## AI attribution"); n != 1 {
+		t.Fatalf("AGENTS.md has %d attribution sections, want 1:\n%s", n, agentsMD)
+	}
+	if !strings.Contains(string(agentsMD), "Never use `Co-Authored-By` for AI") {
+		t.Errorf("AGENTS.md missing the policy body:\n%s", agentsMD)
+	}
+
+	// Idempotent re-run: section still appears once, AGENTS.md byte-identical.
+	run("2026-07-06")
+	again, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(agentsMD, again) {
+		t.Errorf("re-run changed AGENTS.md:\n%q\nvs\n%q", agentsMD, again)
+	}
+}
+
+// TestScaffoldAttributionRefusedWithPrivate: policy cannot be set in a repo
+// we do not own — the combination is refused before anything is touched.
+func TestScaffoldAttributionRefusedWithPrivate(t *testing.T) {
+	templates := scaffoldTemplatesOnly(t)
+	repo := t.TempDir()
+	var buf bytes.Buffer
+	err := Scaffold(ScaffoldOptions{
+		RepoDir: repo, Private: true, Attribution: true,
+		TemplatesDir: templates, Date: "2026-07-05",
+	}, &buf)
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v, want the mutually-exclusive refusal", err)
+	}
+	// Refused BEFORE anything was touched.
+	ents, rerr := os.ReadDir(repo)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if len(ents) != 0 {
+		t.Errorf("refused scaffold still created entries: %v", ents)
+	}
+}
+
+// TestScaffoldWithoutAttributionCreatesNoPolicy: the default run must not
+// install any part of the attribution machinery.
+func TestScaffoldWithoutAttributionCreatesNoPolicy(t *testing.T) {
+	templates, repo := scaffoldFixture(t, true)
+	runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-05"})
+
+	if _, err := os.Lstat(filepath.Join(repo, ".githooks")); err == nil {
+		t.Error(".githooks created without --attribution")
+	}
+	agentsMD, err := os.ReadFile(filepath.Join(repo, "AGENTS.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(agentsMD), "## AI attribution") {
+		t.Error("attribution section appended without --attribution")
+	}
+}
+
+// scaffoldTemplatesOnly returns a templates dir with the standard set (no
+// project repo), for tests that build their own repo.
+func scaffoldTemplatesOnly(t *testing.T) string {
+	t.Helper()
+	templates, _ := scaffoldFixture(t, false)
+	return templates
 }
 
 // TestScaffoldNeverOverwritesDocsReadme pins the docs map's never-overwrite

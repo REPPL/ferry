@@ -6,6 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -24,6 +25,15 @@ type ScaffoldOptions struct {
 	TemplatesDir string
 	Date         string
 	Guard        func(candidate string) (string, error)
+
+	// Attribution marks a repo that REQUIRES AI disclosure (e.g. a research
+	// project), overriding the workspace no-attribution default: tracked mode
+	// additionally installs the prepare-commit-msg hook (a kernel-style
+	// `Assisted-by:` trailer on agent-authored commits), points
+	// core.hooksPath at it, and appends the AI-attribution section to
+	// AGENTS.md. Mutually exclusive with Private — a repo you do not own is
+	// not yours to set policy in.
+	Attribution bool
 }
 
 // Scaffold sets a project repo up for the multi-tool agent pipeline. It is
@@ -49,6 +59,9 @@ type ScaffoldOptions struct {
 //   - .work.local/ only (NEXT.md, DECISIONS.md, ISSUES.md alongside the
 //     scratch/logs dirs). No AGENTS.md, no symlinks, no tracked file touched.
 func Scaffold(opts ScaffoldOptions, out io.Writer) error {
+	if opts.Private && opts.Attribution {
+		return errors.New("agents scaffold: --attribution and --private are mutually exclusive (a repo you do not own is not yours to set attribution policy in)")
+	}
 	repo, err := filepath.Abs(opts.RepoDir)
 	if err != nil {
 		return err
@@ -227,8 +240,101 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		fmt.Fprintln(out, "created:  .pre-commit-config.yaml (activate with: pre-commit install)")
 	}
 
+	// --attribution: this repo REQUIRES AI disclosure (e.g. a research
+	// project), overriding the workspace no-attribution default: a
+	// kernel-style `Assisted-by:` trailer, added only to agent-authored
+	// commits, for every harness.
+	if opts.Attribution {
+		if err := scaffoldAttribution(opts, repo, put, out); err != nil {
+			return err
+		}
+	}
+
 	fmt.Fprintf(out, "done: %s — now fill in the placeholder sections of AGENTS.md\n", name)
 	return nil
+}
+
+// attributionSection is the exact AGENTS.md section --attribution appends
+// (guarded by the "## AI attribution" heading, so a re-run appends nothing).
+const attributionSection = `
+## AI attribution
+
+This repo REQUIRES AI disclosure, overriding the workspace no-attribution
+default: agent-authored commits carry an ` + "`Assisted-by:`" + ` trailer (enforced by
+` + "`.githooks/prepare-commit-msg`" + `; activate per clone with
+` + "`git config core.hooksPath .githooks`" + `). Never use ` + "`Co-Authored-By`" + ` for AI —
+the human is always the author; the tool is disclosed.
+`
+
+// scaffoldAttribution installs the AI-disclosure policy in a tracked repo:
+// the prepare-commit-msg hook (stamped from the template, never overwriting,
+// made executable), core.hooksPath pointed at .githooks/ when the target is a
+// git repo (a PER-CLONE setting — the output says so), and the AI-attribution
+// section appended to AGENTS.md when its heading is absent.
+func scaffoldAttribution(opts ScaffoldOptions, repo string, put func(templateName, dest string) error, out io.Writer) error {
+	hooksDir := filepath.Join(repo, ".githooks")
+	if err := os.MkdirAll(hooksDir, 0o755); err != nil {
+		return err
+	}
+	hook := filepath.Join(hooksDir, "prepare-commit-msg")
+	if err := put("prepare-commit-msg", hook); err != nil {
+		return err
+	}
+	// git only runs an executable hook. Add the executable bits whether the
+	// hook was just stamped or already there (preserving the rest of the
+	// mode) — exactly what the reference's unconditional chmod +x does.
+	if fi, err := os.Lstat(hook); err == nil && fi.Mode().IsRegular() {
+		if err := os.Chmod(hook, fi.Mode().Perm()|0o111); err != nil {
+			return err
+		}
+	}
+
+	// Point git at the tracked hooks dir. core.hooksPath is per-clone config,
+	// so every fresh clone must re-run it — the message says so. A non-git
+	// directory simply skips (nothing to configure); a failing git call warns
+	// with the manual command rather than aborting the scaffold.
+	if _, ok := resolveGitDir(repo); ok {
+		if err := exec.Command("git", "-C", repo, "config", "core.hooksPath", ".githooks").Run(); err != nil {
+			fmt.Fprintf(out, "WARN: could not set core.hooksPath (%v) — run `git config core.hooksPath .githooks` yourself\n", err)
+		} else {
+			fmt.Fprintln(out, "enabled:  core.hooksPath .githooks (re-run this config per clone)")
+		}
+	}
+
+	// Append the policy section to AGENTS.md unless its heading is already
+	// there (idempotent; the router was stamped earlier in tracked mode).
+	agentsMD := filepath.Join(repo, "AGENTS.md")
+	existing, err := os.ReadFile(agentsMD)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if !hasAttributionSection(existing) {
+		f, oerr := os.OpenFile(agentsMD, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if oerr != nil {
+			return oerr
+		}
+		if _, werr := f.WriteString(attributionSection); werr != nil {
+			f.Close()
+			return werr
+		}
+		if cerr := f.Close(); cerr != nil {
+			return cerr
+		}
+		fmt.Fprintln(out, "updated:  AGENTS.md (AI attribution section)")
+	}
+	return nil
+}
+
+// hasAttributionSection reports whether content already carries the
+// "## AI attribution" heading at the start of a line (the reference's
+// grep -q '^## AI attribution' guard).
+func hasAttributionSection(content []byte) bool {
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "## AI attribution") {
+			return true
+		}
+	}
+	return false
 }
 
 // readTemplate reads one scaffold template from the config repo's templates

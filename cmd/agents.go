@@ -36,15 +36,25 @@ var agentsScaffoldCmd = &cobra.Command{
 	Short: "Set a project repo up for the multi-tool agent pipeline",
 	Long: `Set a project repo up for the multi-tool agent pipeline.
 
+Both modes create the local-only runtime layout: .work.local/{scratch,logs},
+hidden via the git info/exclude mechanism (never committed; .gitignore is
+never touched).
+
 Default mode (your own repo — tracked files): an AGENTS.md router stamped from
 the config repo's template ({{PROJECT}}/{{DATE}} substituted), CLAUDE.md and
 GEMINI.md as relative symlinks to AGENTS.md inside the repo, a committed
-.work/ skeleton (NEXT.md, DECISIONS.md), .gitignore entries for the scratch
-parts, and a pre-commit config when the repo has none.
+.work/ (NEXT.md, DECISIONS.md), the docs/ hierarchy with its map
+(docs/README.md), and a pre-commit config when the repo has none.
+
+--attribution (tracked mode only) marks a repo that REQUIRES AI disclosure,
+overriding the workspace no-attribution default: it installs the
+prepare-commit-msg hook (a kernel-style Assisted-by trailer on agent-authored
+commits — never Co-Authored-By), sets core.hooksPath to .githooks (per clone),
+and appends the AI-attribution section to AGENTS.md.
 
 --private mode (a repo you don't own — zero tracked trace): .work.local/ only
-(NEXT.md, DECISIONS.md, ISSUES.md), hidden via .git/info/exclude, which is
-never committed or pushed. No AGENTS.md, no symlinks, no .gitignore edits.
+(NEXT.md, DECISIONS.md, ISSUES.md). No AGENTS.md, no symlinks, no docs, no
+tracked file touched. Not combinable with --attribution.
 
 Idempotent; never overwrites an existing file.`,
 	Args: cobra.RangeArgs(1, 2),
@@ -69,7 +79,9 @@ Requires the agents domain to be enabled ("agents = true" under [manage]).`,
 }
 
 func init() {
-	agentsScaffoldCmd.Flags().Bool("private", false, "leave no tracked trace: .work.local/ only, excluded via .git/info/exclude")
+	agentsScaffoldCmd.Flags().Bool("private", false, "leave no tracked trace: .work.local/ only, excluded via git info/exclude")
+	agentsScaffoldCmd.Flags().Bool("attribution", false, "this repo requires AI disclosure: install the Assisted-by commit hook and AGENTS.md policy section")
+	agentsScaffoldCmd.MarkFlagsMutuallyExclusive("private", "attribution")
 	agentsCmd.AddCommand(agentsScaffoldCmd, agentsAdoptCmd)
 	rootCmd.AddCommand(agentsCmd)
 }
@@ -81,6 +93,7 @@ func init() {
 // it resolves under ~/.ssh.
 func runAgentsScaffold(c *cobra.Command, args []string) error {
 	private, _ := c.Flags().GetBool("private")
+	attribution, _ := c.Flags().GetBool("attribution")
 
 	ctx, err := loadContext()
 	if err != nil {
@@ -99,6 +112,7 @@ func runAgentsScaffold(c *cobra.Command, args []string) error {
 		RepoDir:      repoDir,
 		Name:         name,
 		Private:      private,
+		Attribution:  attribution,
 		TemplatesDir: filepath.Join(ctx.RepoPath, agents.RepoSubdir, "templates"),
 		Guard:        func(cand string) (string, error) { return safeRepoPath(ctx.RepoPath, cand) },
 	}, c.OutOrStdout())

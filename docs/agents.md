@@ -30,7 +30,7 @@ The domain reads from the `agents/` directory of the config repo:
 |---|---|
 | `agents/general.md` | Rules for all tasks, everywhere (edit this) |
 | `agents/coding.md` | Rules for coding work (edit this) |
-| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `pre-commit-config.yaml` |
+| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `prepare-commit-msg`, `pre-commit-config.yaml` |
 | `agents/skills/` | Claude Code skills, deployed recursively to `~/.claude/skills/` |
 | `agents/agents/` | Claude Code sub-agents, deployed recursively to `~/.claude/agents/` |
 | `agents/hooks/` | Hook scripts, deployed recursively to `~/.claude/hooks/` (executable bits preserved) |
@@ -120,7 +120,7 @@ without a baseline are skipped, so nothing ferry never touched can be
 reverted. A full `ferry restore` likewise needs no repo and reverts
 everything ferry ever touched.
 
-## `ferry agents scaffold [--private] <repo-dir> [name]`
+## `ferry agents scaffold [--private|--attribution] <repo-dir> [name]`
 
 Sets a **project** repo up for the multi-tool pipeline. `name` defaults to the
 directory's base name. Idempotent; never overwrites an existing file.
@@ -143,6 +143,19 @@ Default (tracked) mode, for a repo you own:
 | `.work/NEXT.md`, `.work/DECISIONS.md` | Committed session handoff and decision log (nothing else lives in `.work/`) |
 | `.work.local/scratch/`, `.work.local/logs/` | Local-only runtime artefacts, hidden via git `info/exclude` |
 | `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |
+
+`--attribution` (tracked mode only) marks a repo that **requires AI
+disclosure** — a research project, say — overriding the workspace
+no-attribution default:
+
+| Item | Role |
+|---|---|
+| `.githooks/prepare-commit-msg` | Stamped from `agents/templates/prepare-commit-msg` and made executable: appends a kernel-style `Assisted-by:` trailer to agent-authored commits only; human commits are untouched. Never `Co-Authored-By` — the human is always the author, the tool is disclosed |
+| `core.hooksPath = .githooks` | Set on the current clone when the target is a git repo; it is per-clone configuration, so every fresh clone re-runs `git config core.hooksPath .githooks` (the output says so) |
+| `## AI attribution` section | Appended to `AGENTS.md` when the heading is absent, stating the policy |
+
+`--attribution` and `--private` are mutually exclusive and the combination is
+refused: a repo you do not own is not yours to set attribution policy in.
 
 `--private` mode, for a repo you do not own — zero tracked trace:
 
