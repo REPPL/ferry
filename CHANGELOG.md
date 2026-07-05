@@ -11,6 +11,13 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Fixed
+
+- Harness targets that climb out of `$HOME` via `..` are now rejected when
+  the manifest is parsed (matching asset targets), instead of surfacing only
+  as a skipped item at apply time.
+- Asset targets of `.` or `./` (the `$HOME` root) are rejected at parse.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added
