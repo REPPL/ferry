@@ -905,7 +905,7 @@ func finishWithApply(c *cobra.Command, in *bufio.Reader, out io.Writer) error {
 	printPlan(out, plan)
 
 	if !applyFlag {
-		fmt.Fprintln(out, "init complete. Run `ferry apply` to reconcile this machine (or `ferry init --apply --yes` to answer every prompt, wizard included, with yes).")
+		fmt.Fprintln(out, "init complete. Next: run `ferry apply` to set up this machine — it backs up anything it changes first, so `ferry restore` can undo it.")
 		return nil
 	}
 

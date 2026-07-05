@@ -169,5 +169,12 @@ if [ "$DO_INIT" = "1" ]; then
   "$BIN_DIR/ferry" init
 else
   echo ""
-  echo "Next: run 'ferry init' to get started."
+  # Show ferry's banner (product identity + next-step hints) by running the
+  # just-installed binary with no args. Bare `ferry` only prints the banner
+  # (cmd/root.go) — it reads no config and never prompts — so this is the single
+  # source of truth for the ASCII art rather than duplicating it here. A cosmetic
+  # banner must never fail-close a successful install, so any non-zero exit is
+  # ignored. The banner prints no `export PATH` line, so the exactly-one-PATH-line
+  # contract (evals: AC-install-prints-path-line) is preserved.
+  "$BIN_DIR/ferry" || true
 fi
