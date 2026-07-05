@@ -26,6 +26,11 @@ dotfiles = [".zshrc", ".gitconfig"]
 brew     = true
 iterm2   = true
 fonts    = false        # never sync fonts
+agents   = true         # AI-agent instruction files; see agents.md
+
+[agents]
+devtree = "Development"           # optional workspace layer, relative to $HOME
+# harnesses = ["claude", "codex"] # optional; default is every built-in harness
 ```
 
 ```toml

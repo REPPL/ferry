@@ -28,6 +28,7 @@ pulls local changes back when you want to harmonise them everywhere.
 
 - [Getting started](docs/getting-started.md): zero to a working setup
 - [Configuration](docs/configuration.md): the manifest, scope, and the `.local` layer
+- [Agents](docs/agents.md): the agents domain — one set of AI-agent instructions (CLAUDE.md, AGENTS.md, skills, hooks) carried across machines and coding CLIs
 - [SSH](docs/ssh.md): how ferry treats SSH (hands-off) and how to move keys yourself
 
 ## Install
@@ -80,7 +81,15 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 | `restore` | Reverse ferry's changes, returning the machine to its pre-ferry state from an automatic backup. |
 | `export` | Write a portable, secret-scanned `.zip` bundle of the repo's tracked shared files for an offline move. Prints the bundle SHA256. Never includes secrets, `~/.ssh`, or the local layer (unless `--include-local`). |
 | `import` | Ingest a bundle into a fresh config repo (`~/.config/ferry/repo` by default), validate it fully, then write ferry's config. Refuses a non-empty target. `--expect-sha256 <hash>` verifies integrity. |
+| `agents scaffold` | Set up a project repo for AI-agent work from the templates in the config repo's `agents/` area: an `AGENTS.md` router, `CLAUDE.md`/`GEMINI.md` bridges, and committed `.work/` handoff files. `--private` instead creates a `.work.local/` layer hidden via `.git/info/exclude` — for repos you don't own, it leaves zero tracked trace. Idempotent; never overwrites or repoints anything it didn't create. Works in linked worktrees and submodules. |
+| `agents adopt` | One-time migration of an existing symlink-based instruction setup into the config repo: imports the source files (never modifying the source directory), then swaps each `$HOME` bridge symlink for a ferry-managed copy in a single journalled transaction — any failure rolls back and the symlinks return. Refuses directory-level bridges with exact instructions rather than writing through them. |
 | `version` | Print the version; `--verbose` adds the Go version and platform. |
+
+The agents *domain* itself (which instruction files deploy where, for which coding
+CLIs) is enabled with `agents = true` in the manifest and rides the normal
+lifecycle: `apply` deploys, `status`/`diff` report drift, `capture` treats the repo
+as authoritative, and `restore agents` reverts the domain even when the config
+repo is gone. See [Agents](docs/agents.md).
 
 ## Principles
 
