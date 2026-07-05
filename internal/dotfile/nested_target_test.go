@@ -65,6 +65,17 @@ func TestNestedTargetResolvedContainment(t *testing.T) {
 			wantErr: ErrForbiddenSSHPath,
 		},
 		{
+			name: "symlinked parent resolving under ~/.SSH (case-folded) is refused",
+			setup: func(t *testing.T, home, _ string) {
+				// A parent link resolving to ~/.SSH: on a case-insensitive
+				// filesystem that IS ~/.ssh. The link is pure path arithmetic;
+				// neither ~/.ssh nor ~/.SSH is created or touched.
+				symlink(t, filepath.Join(home, ".SSH"), filepath.Join(home, "w"))
+			},
+			rel:     "w/RULES.md",
+			wantErr: ErrForbiddenSSHPath,
+		},
+		{
 			name: "deep chain: in-home link to a dir whose child links out is refused",
 			setup: func(t *testing.T, home, outside string) {
 				mkdirAll(t, filepath.Join(home, "hop"))

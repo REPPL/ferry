@@ -539,6 +539,27 @@ func TestTargetForRefusesSSH(t *testing.T) {
 	}
 }
 
+// TestValidateHomeTargetSSHCaseInsensitive pins the lexical ~/.ssh guard as
+// case-INSENSITIVE: on a case-insensitive filesystem (the macOS default) a
+// target like ".SSH/config" is mapped by the kernel into ~/.ssh, so the
+// lexical guard must refuse it exactly as it refuses ".ssh/config". Refusing
+// ".SSH/..." on a case-sensitive filesystem too is acceptable fail-closed
+// behaviour (a dotfile genuinely named ".SSH" is pathological).
+func TestValidateHomeTargetSSHCaseInsensitive(t *testing.T) {
+	home := t.TempDir()
+	for _, name := range []string{".SSH/config", ".Ssh/x", ".SSH", ".sSh/id_ed25519"} {
+		dest := filepath.Join(home, name)
+		if err := ValidateHomeTarget(home, dest); !errors.Is(err, ErrForbiddenSSHPath) {
+			t.Errorf("ValidateHomeTarget(%q): err = %v, want ErrForbiddenSSHPath", name, err)
+		}
+	}
+	// A non-.ssh dotfile with mixed case is still allowed: the guard folds only
+	// against ".ssh", not every segment.
+	if err := ValidateHomeTarget(home, filepath.Join(home, ".Config/x")); err != nil {
+		t.Errorf("ValidateHomeTarget(.Config/x): unexpected error %v", err)
+	}
+}
+
 // TestTargetForRefusesTraversal: a declared name must resolve strictly within
 // $HOME. `..` climbs and absolute paths are path-traversal and are refused.
 func TestTargetForRefusesTraversal(t *testing.T) {

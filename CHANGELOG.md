@@ -17,6 +17,9 @@ called out in a **Breaking** section. See
   the manifest is parsed (matching asset targets), instead of surfacing only
   as a skipped item at apply time.
 - Asset targets of `.` or `./` (the `$HOME` root) are rejected at parse.
+- The lexical `~/.ssh` write guard now compares case-insensitively, so a
+  target such as `.SSH/config` is refused on the default case-insensitive
+  macOS filesystem.
 
 ## [0.4.0] - 2026-07-05
 
