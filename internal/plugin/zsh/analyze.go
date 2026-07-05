@@ -559,11 +559,29 @@ func (p *Plugin) expandPath(target string) (string, bool) {
 	default:
 		return "", false
 	}
-	if p.Home != "" {
-		sshDir := filepath.Join(p.Home, ".ssh")
-		if resolved == sshDir || strings.HasPrefix(resolved, sshDir+string(filepath.Separator)) {
-			return "", false
-		}
+	// Never hand back a path at/under ~/.ssh (the caller Lstats the result, and
+	// the hands-off contract forbids even that). The ".ssh" segment is compared
+	// case-INSENSITIVELY: on the default case-insensitive macOS filesystem a
+	// target like ~/.SSH/x maps to the real ~/.ssh, so it must be refused too.
+	if p.Home != "" && underHomeSSH(p.Home, resolved) {
+		return "", false
 	}
 	return resolved, true
+}
+
+// underHomeSSH reports whether path is home's ".ssh" directory itself or a
+// descendant, folding case ONLY on the ".ssh" segment so a case-variant such as
+// ".SSH" (which the kernel maps into ~/.ssh on a case-insensitive filesystem) is
+// caught too. The parent components match exactly. It is pure path arithmetic —
+// it never stats path or ~/.ssh.
+func underHomeSSH(home, path string) bool {
+	rel, err := filepath.Rel(home, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	first := rel
+	if i := strings.IndexRune(rel, filepath.Separator); i >= 0 {
+		first = rel[:i]
+	}
+	return strings.EqualFold(first, ".ssh")
 }

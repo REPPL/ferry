@@ -664,3 +664,26 @@ func TestApplyRepairsOriginalLineIdentity(t *testing.T) {
 		}
 	})
 }
+
+// TestExpandPathSSHCaseInsensitive pins the ~/.ssh hands-off contract in
+// expandPath as case-INSENSITIVE: on the default case-insensitive macOS
+// filesystem a `source ~/.SSH/x` directive maps to the real ~/.ssh, so
+// expandPath must refuse to hand back a probeable path (ok=false) exactly as it
+// does for ~/.ssh — otherwise the caller would os.Lstat under the real ~/.ssh,
+// breaking the "not even an Lstat" contract. Non-ssh paths still expand.
+func TestExpandPathSSHCaseInsensitive(t *testing.T) {
+	home := t.TempDir()
+	p := &Plugin{Home: home}
+
+	for _, target := range []string{"~/.SSH/id_ed25519", "~/.Ssh/config", "~/.SSH", "~/.ssh/config"} {
+		if _, ok := p.expandPath(target); ok {
+			t.Errorf("expandPath(%q) returned ok=true; want refusal (ssh hands-off)", target)
+		}
+	}
+	// A non-ssh path (and one merely prefixed like .sshx) still expands.
+	for _, target := range []string{"~/gone.zsh", "~/.sshx/file"} {
+		if _, ok := p.expandPath(target); !ok {
+			t.Errorf("expandPath(%q) returned ok=false; want it to expand", target)
+		}
+	}
+}
