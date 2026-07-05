@@ -11,6 +11,7 @@ directory holds. Every page is exactly one Diátaxis type — tutorial
 |---|---|
 | [Getting started](getting-started.md) | Zero to a working setup: install, first capture, another machine |
 | [Configuration](configuration.md) | The manifest, scope, and the `.local` layer |
+| [Commands](commands.md) | Every `ferry <command>` and what it does |
 | [Agents](agents.md) | The agents domain: instruction files, harnesses, asset mappings, `scaffold` and `adopt` |
 | [SSH](ssh.md) | Why ferry is hands-off with `~/.ssh/`, and how to move keys yourself |
 | [Cutting a release](RELEASE.md) | How releases are built, checksummed, attested, published, and pruned |
