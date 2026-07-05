@@ -11,6 +11,21 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- **Release provenance attestations.** Every released binary now carries a
+  signed SLSA build-provenance attestation, generated in the release
+  workflow and proven by a post-release `gh attestation verify` step.
+  Verify a download yourself with
+  `gh attestation verify ferry-<goos>-<arch> -R REPPL/ferry`.
+
+### Changed
+
+- **Release pruning keeps git tags.** Retention still removes superseded
+  GitHub Releases and their assets, but never deletes the git tag: tags are
+  immutable once pushed, so a pruned version's tag and commit stay
+  reachable.
+
 ## [0.4.0] - 2026-07-05
 
 ### Added

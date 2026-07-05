@@ -45,6 +45,20 @@ Installs the single `ferry` binary to `~/.local/bin`. If that's not on your PATH
 installer prints the one line to add. It does not install Homebrew or run anything else.
 (No `sudo`, no shell edits: see [Principles](#principles).)
 
+### Verifying a download
+
+Every released binary carries a signed build-provenance attestation, so you can confirm
+it was built by ferry's release workflow from this repository before you trust it.
+Download a binary from the [Releases page](https://github.com/REPPL/ferry/releases), then
+verify it with the [GitHub CLI](https://cli.github.com):
+
+```bash
+gh attestation verify ferry-darwin-arm64 -R REPPL/ferry
+```
+
+A successful check prints the verified provenance; a missing or mismatched attestation
+fails the command, so a tampered or unofficial binary never passes.
+
 ## Quickstart
 
 ```bash
