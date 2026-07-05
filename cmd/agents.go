@@ -201,24 +201,7 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 		fmt.Fprintln(out, w)
 	}
 
-	// The bridge scan includes the built-in DEFAULT locations regardless of the
-	// current selection (so stale sync.sh-era symlinks are never silently
-	// stranded). A file bridge the current config will NOT redeploy has no
-	// managed copy to take its place, so removing it would strip a working link
-	// with no replacement. Migrate only bridges the plan covers; warn loudly and
-	// leave the rest in place.
-	itemPaths := map[string]bool{}
-	for _, it := range items {
-		itemPaths[it.Target.Home] = true
-	}
-	var toMigrate []agents.Bridge
-	for _, br := range bridges {
-		if itemPaths[br.Path] {
-			toMigrate = append(toMigrate, br)
-			continue
-		}
-		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location the current [agents] config does not manage; left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
-	}
+	toMigrate := partitionAdoptBridges(items, bridges, out)
 
 	// Record the migrated bridge list to a timestamped file first
 	// (human-readable provenance, independent of the engine's baselines).
@@ -239,6 +222,29 @@ func runAgentsAdopt(c *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "adopt: done. %s was not modified; run `ferry status` to verify, then delete its old sync script (e.g. %s) — ferry now manages the bridges. Other domains reconcile as usual with `ferry apply`.\n",
 		dir, filepath.Join(dir, "bin", "sync.sh"))
 	return nil
+}
+
+// partitionAdoptBridges returns the bridges the swap may migrate: those whose
+// path the plan redeploys. The bridge scan includes the built-in DEFAULT
+// locations regardless of the current selection (so stale sync.sh-era
+// symlinks are never silently stranded), but a file bridge the current config
+// will NOT redeploy has no managed copy to take its place — removing it would
+// strip a working link with no replacement. Such a bridge is warned about
+// loudly and left in place, never journal-removed.
+func partitionAdoptBridges(items []agents.Item, bridges []agents.Bridge, out io.Writer) []agents.Bridge {
+	itemPaths := map[string]bool{}
+	for _, it := range items {
+		itemPaths[it.Target.Home] = true
+	}
+	var toMigrate []agents.Bridge
+	for _, br := range bridges {
+		if itemPaths[br.Path] {
+			toMigrate = append(toMigrate, br)
+			continue
+		}
+		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location the current [agents] config does not manage; left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
+	}
+	return toMigrate
 }
 
 // refuseDirectoryBridges returns a loud, actionable error when any found
