@@ -265,6 +265,16 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
 			return fmt.Errorf("agents.asset.%s.source must stay within the repo's agents/ area, got %q", name, a.Source)
 		}
+		// The source must be a distinct subdirectory: the agents/ root itself
+		// (".") would spray general.md, coding.md and every other tree into
+		// $HOME, and "templates" holds the scaffold templates ferry carries but
+		// never deploys to $HOME. Both overlap the non-asset content.
+		if clean == "." {
+			return fmt.Errorf("agents.asset.%s.source must be a subdirectory under the repo's agents/ area, not the agents/ root %q", name, a.Source)
+		}
+		if clean == "templates" {
+			return fmt.Errorf("agents.asset.%s.source %q is reserved: templates holds scaffold templates, which are never deployed to $HOME", name, a.Source)
+		}
 	}
 	if a.Target != "" {
 		if filepath.IsAbs(a.Target) {

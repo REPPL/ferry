@@ -179,6 +179,16 @@ func TestLoadAgentsErrors(t *testing.T) {
 			wantSub: "must stay within $HOME",
 		},
 		{
+			name:    "asset source is the agents root",
+			shared:  "[agents.asset.x]\nsource = \".\"\ntarget = \".x\"\n",
+			wantSub: "must be a subdirectory",
+		},
+		{
+			name:    "asset source is the reserved templates directory",
+			shared:  "[agents.asset.x]\nsource = \"templates\"\ntarget = \".x\"\n",
+			wantSub: "reserved",
+		},
+		{
 			name:    "wrong-typed assets list",
 			shared:  "[agents]\nassets = true\n",
 			wantSub: "assets must be a list of strings",
