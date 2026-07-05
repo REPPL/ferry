@@ -4,14 +4,16 @@ name: release
 # (build, vet, tests including the race leg, and the behavioural eval suite
 # against a real Linux binary) against the PUSHED COMMIT; only if that gate is
 # green does it build the four cross-compiled binaries FROM THAT SAME COMMIT,
-# pin their real SHA256 into install.sh (no hand-pasting), commit that one-file
-# pin onto the default-branch tip (never the tag's whole tree), and publish a
-# GitHub Release with the binaries attached. Both jobs check out `github.sha` —
-# the commit the pushed tag pointed at, fixed for the whole run — never the tag
-# NAME, which could be force-re-pointed between the jobs to swap unverified
-# code into the release build. Net effect: a tag push produces a verified,
-# ready-to-install release whose binaries, checksums, and reported version all
-# come from the pushed commit — never the default-branch tip, never a moved tag.
+# generate a checksums.txt manifest over them, and publish a GitHub Release with
+# the binaries, checksums.txt, and their build-provenance attestations attached.
+# Nothing is pushed to any branch: install.sh fetches checksums.txt from the
+# release at install time, so no checksum is ever committed back. Both jobs check
+# out `github.sha` — the commit the pushed tag pointed at, fixed for the whole run
+# — never the tag NAME, which could be force-re-pointed between the jobs to swap
+# unverified code into the release build. Net effect: a tag push produces a
+# verified, ready-to-install release whose binaries, checksums, and reported
+# version all come from the pushed commit — never the default-branch tip, never a
+# moved tag.
 on:
   push:
     tags:
@@ -24,8 +26,8 @@ concurrency:
   cancel-in-progress: false
 
 # Floor for the workflow: read-only. The release job below elevates itself to
-# contents: write for the install.sh push and the Release creation; verify
-# stays read-only.
+# contents: write only to create the Release and upload its assets; verify stays
+# read-only. No job pushes to any branch.
 permissions:
   contents: read
 
@@ -127,24 +129,37 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:
-      contents: write       # push the pinned install.sh and create the Release
+      contents: write       # create the Release and upload its assets (no branch push)
       id-token: write       # mint the OIDC token attest-build-provenance signs with
       attestations: write   # publish the build-provenance attestations (and let the
                             # post-release verify step read them back through gh)
     steps:
-      - name: Check out the pushed commit (full history for the install.sh push)
+      - name: Check out the pushed commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        # Push credentials are REQUIRED here to commit the pinned install.sh back
-        # to the default branch; plan W3 (docs/plans/2026-07-05-v0.4.0.md) removes
-        # that push, and this suppression with it.
-        # zizmor: ignore[artipacked]
         with:
           # github.sha (the commit the pushed tag pointed at), not the tag NAME
           # and not the default-branch tip, so the binaries below are built from
           # the exact commit verify gated — a tag re-pointed mid-run changes
           # nothing here.
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          # No job step pushes to any branch, so no git-stored credentials are
+          # needed: gh uses GH_TOKEN and the ls-remote tripwire reads public refs.
+          persist-credentials: false
+
+      - name: Record the default-branch tip (no-branch-commit tripwire)
+        # This release job must push NOTHING to any branch. Record the remote
+        # default-branch tip now; the closing step re-reads it and fails the run
+        # if the branch moved BECAUSE OF THIS JOB. Anonymous ls-remote works
+        # because this repo is public; if it ever goes private, switch to
+        # `gh api repos/.../git/ref/heads/...` with GH_TOKEN.
+        run: |
+          set -euo pipefail
+          sha="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
+          test -n "$sha"
+          echo "DEFAULT_BRANCH_START_SHA=$sha" >> "$GITHUB_ENV"
+          echo "default-branch tip at job start: $sha"
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -154,64 +169,34 @@ jobs:
 
       - name: Cross-compile the four binaries (version-stamped from the tag)
         # VERSION=<tag> stamps `ferry --version` via -ldflags. The binaries built
-        # here are the ones whose checksums get pinned and which are uploaded, so
-        # the pins, the published assets, and the reported version are all in sync.
+        # here are the ones checksummed, attested, and uploaded below, so the
+        # manifest, the published assets, and the reported version are all in sync.
         run: make build VERSION="${GITHUB_REF_NAME}"
 
-      - name: Pin real checksums into install.sh
-        # pin-checksums rebuilds with the same VERSION so the hashes it writes match
-        # the version-stamped binaries that are uploaded below.
-        run: make pin-checksums VERSION="${GITHUB_REF_NAME}"
+      - name: Generate checksums.txt over the four binaries
+        # Hash the exact binaries built above into a sha256sum-format manifest.
+        # It is uploaded as a release asset; install.sh fetches it from the release
+        # and verifies each download against it. No rebuild — the bytes hashed here
+        # are the bytes uploaded below.
+        run: scripts/gen-checksums.sh
 
-      - name: Commit the pinned install.sh back to the default branch
-        # The pushed commit's WHOLE TREE must never reach the default branch:
-        # pushing HEAD would fast-forward the branch past review for a tag cut on
-        # an unmerged descendant of its tip, and abort as a non-fast-forward for
-        # a tag on an older commit (breaking older-tag releases). Instead, apply
-        # ONLY the install.sh pin as a fresh commit on the just-fetched
-        # default-branch tip, staged in a second worktree so the sha checkout the
-        # binaries were built from is never disturbed. This step runs BEFORE the
-        # Release is created: a failed push fails the job while nothing has been
-        # published yet — fail-closed, never a main/release skew. W3 removes this
-        # push entirely.
-        run: |
-          set -euo pipefail
-          # Identity: github-actions bot noreply — no personal PII.
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Fetch the CURRENT branch tip explicitly: the sha checkout above does
-          # not guarantee an up-to-date remote-tracking ref for the branch.
-          git fetch origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
-          WT="$RUNNER_TEMP/default-branch"
-          git worktree add --detach "$WT" "refs/remotes/origin/${DEFAULT_BRANCH}"
-          # Content-only copy: install.sh keeps the mode it already has on the
-          # branch, and the worktree's tree differs from the tip by this one file.
-          cp install.sh "$WT/install.sh"
-          cd "$WT"
-          # Only commit if install.sh actually changed (avoids empty commits).
-          if git diff --quiet -- install.sh; then
-            echo "install.sh checksums already up to date; nothing to commit."
-          else
-            git add install.sh
-            git commit -m "ci: pin install.sh checksums for ${GITHUB_REF_NAME}"
-            git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
-          fi
-        env:
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-
-      - name: Attest build provenance for the four binaries
-        # Generate and publish a signed SLSA build-provenance attestation for each
-        # cross-compiled binary, over the exact files uploaded below. Runs AFTER the
-        # checksum pin (which rebuilds bin/ferry-*) so the attested bytes are the
-        # published bytes, and BEFORE the Release so a failed attestation aborts
-        # before anything is published. Needs id-token: write (OIDC) and
+      - name: Attest build provenance for the binaries and checksums.txt
+        # Signed SLSA build-provenance for each cross-compiled binary AND the
+        # checksums.txt manifest, over the exact files uploaded below. Runs BEFORE
+        # the Release so a failed attestation aborts before anything is published.
+        # install.sh does not consume these attestations (it verifies the binary
+        # against checksums.txt); attesting checksums.txt makes the manifest a
+        # first-class, provenance-signed artifact for anyone who verifies it with
+        # `gh attestation verify`. Needs id-token: write (OIDC) and
         # attestations: write (the attestations store) from the job permissions.
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          subject-path: 'bin/ferry-*'
+          subject-path: |
+            bin/ferry-*
+            bin/checksums.txt
 
-      - name: Create the GitHub Release and upload the binaries
-        run: gh release create "${GITHUB_REF_NAME}" bin/ferry-* --verify-tag --title "${GITHUB_REF_NAME}" --notes ""
+      - name: Create the GitHub Release and upload the binaries + checksums.txt
+        run: gh release create "${GITHUB_REF_NAME}" bin/ferry-* bin/checksums.txt --verify-tag --title "${GITHUB_REF_NAME}" --notes ""
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -244,3 +229,38 @@ jobs:
         run: scripts/prune-releases.sh --current "${GITHUB_REF_NAME}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert the release job pushed nothing to the default branch
+        # Close the no-branch-commit tripwire opened at job start. Runs last so it
+        # covers every preceding step, including the release create and prune. If
+        # the tip is unchanged, done. If it moved, attribute: a push from this job
+        # would use the GITHUB_TOKEN and land as github-actions[bot], so a bot
+        # commit in the moved range fails the run, while an unrelated concurrent
+        # human merge is logged and tolerated (this job did not cause it).
+        # Honest scope: this proves no bot-identity commit reached the default
+        # branch during the job; a future step that pushed under some other
+        # explicitly-wired identity would be misattributed as external — but such
+        # a step would also have to add credentials this job no longer has
+        # (persist-credentials: false), which code review gates. If the range
+        # lookup itself fails (e.g. the branch was force-pushed mid-run), set -e
+        # fails the run — fail closed.
+        run: |
+          set -euo pipefail
+          end="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
+          if [ "$end" = "${DEFAULT_BRANCH_START_SHA}" ]; then
+            echo "default branch unchanged across the release job (${end}); the job pushed nothing."
+            exit 0
+          fi
+          committers="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${DEFAULT_BRANCH_START_SHA}...${end}" \
+            --jq '[.commits[].committer.login // "unknown"] | unique | join(" ")')"
+          echo "default branch moved during the release job: ${DEFAULT_BRANCH_START_SHA} -> ${end} (committers: ${committers})"
+          case " ${committers} " in
+            *" github-actions[bot] "*)
+              echo "a github-actions[bot] commit landed on the default branch during this job — the release workflow must never push to a branch" >&2
+              exit 1
+              ;;
+          esac
+          echo "movement attributed to commits outside this job; the release job itself pushed nothing."
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

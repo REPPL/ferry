@@ -52,3 +52,7 @@ local/
 
 # stray bare dev build (release binaries are bin/ferry-<goos>-<arch>)
 /bin/ferry
+
+# Release checksum manifest: a build artifact shipped as a release asset,
+# never committed (checksums leaving git history is the point of the design)
+/bin/checksums.txt

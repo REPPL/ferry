@@ -9,17 +9,22 @@
 # Flags:
 #   --init       after installing, chain `ferry init` (default: do NOT)
 #
-# INTEGRITY — honest wording: the pinned SHA256 below is verified against the
-# downloaded binary, and the network path is FAIL-CLOSED — with no pinned checksum
-# for the selected target it refuses to install rather than accept an unverified
-# binary. Verification catches corruption or tampering IN TRANSIT. It is NOT a full
-# security guarantee: the checksum ships from the same unauthenticated source as the
-# binary, so a compromised source could serve a matching pair. Treat this as a
-# personal-trust convenience, not a signature. (The release process fills in the
-# per-target SHA256 values below.)
+# INTEGRITY — honest wording: the installer fetches `checksums.txt` from the SAME
+# release it downloads the binary from, looks up this target's SHA256 in it, and
+# verifies the download against that hash. The network path is FAIL-CLOSED — an
+# unfetchable checksums.txt, no entry for the selected target, or a hash mismatch
+# each abort the install with nothing written. Verification catches corruption or
+# tampering IN TRANSIT. It is NOT a full security guarantee: checksums.txt ships from
+# the same unauthenticated source as the binary, so a compromised source could serve
+# a matching pair. Treat this as a personal-trust convenience, not a signature — for
+# a real signature, verify the binary's build-provenance attestation (see README).
 #
 # FERRY_FAKE_BINARY=/path/to/binary — TEST-ONLY override: install that explicit real
 # file instead of downloading. No implicit CWD/bin fallback; no placeholder.
+# FERRY_RELEASE_BASE_URL=<url> — TEST-ONLY override: fetch the binary and
+# checksums.txt from <url>/ instead of the GitHub release, so the fetch+verify path
+# can be exercised offline. file:// URLs ONLY (anything else is refused) and its
+# use is announced on stdout. Unset in normal use.
 set -euo pipefail
 
 VERSION="${FERRY_VERSION:-latest}"
@@ -48,21 +53,34 @@ case "$arch" in
 esac
 asset="ferry-${os}-${arch}"
 
-# Pinned SHA256 per target (release process fills these). On the public network
-# path an EMPTY value means "no pinned checksum for this target" and the install
-# REFUSES (fail-closed) — a downloaded binary is never installed unverified.
-# Referenced dynamically via `eval` below, hence shellcheck can't see the use.
-# shellcheck disable=SC2034
-{
-  sha_darwin_arm64="a16687f449b24436eec5b16b2c41d732137c1cc31dfc68d4c0c0a5e7e912e249"
-  sha_darwin_amd64="f878a3c043e249a88f3b6b5322adf3a0828aef1ae56849ffd778225c6a75a01a"
-  sha_linux_arm64="5dc474f481e24522252b7392b95f8528963097af1502030b74d85f93f8e1c2af"
-  sha_linux_amd64="b6cf260cfc51449b0f7bd6d625109807e7c8a683e0e63633e7792624588f19be"
-}
-eval "expected_sha=\${sha_${os}_${arch}}"
+# Resolve the release base URL: the binary and its checksums.txt come from the SAME
+# release. FERRY_RELEASE_BASE_URL (TEST-ONLY) overrides the GitHub location so the
+# fetch+verify path can run offline against a local release layout. It is
+# restricted to file:// URLs — a remote override would silently redirect the entire
+# trust root (the binary AND the checksums it is verified against), so anything
+# else is refused, and an active override is always announced loudly.
+if [ -n "${FERRY_RELEASE_BASE_URL:-}" ]; then
+  case "$FERRY_RELEASE_BASE_URL" in
+    file://*) ;;
+    *)
+      echo "ferry install: FERRY_RELEASE_BASE_URL is TEST-ONLY and must be a file:// URL; refusing '${FERRY_RELEASE_BASE_URL}'" >&2
+      exit 1
+      ;;
+  esac
+  echo "ferry install: TEST-ONLY release-source override active: ${FERRY_RELEASE_BASE_URL}"
+  base_url="${FERRY_RELEASE_BASE_URL%/}"
+elif [ "$VERSION" = "latest" ]; then
+  base_url="https://github.com/${REPO}/releases/latest/download"
+else
+  base_url="https://github.com/${REPO}/releases/download/${VERSION}"
+fi
+
+# Filled from the release's checksums.txt on the network path only.
+expected_sha=""
 
 tmp="$(mktemp)"
-trap 'rm -f "$tmp"' EXIT
+sums="$(mktemp)"
+trap 'rm -f "$tmp" "$sums"' EXIT
 
 # TEST-ONLY explicit artifact override. FERRY_FAKE_BINARY must point at a REAL
 # existing file, which is installed verbatim (place + chmod) instead of a network
@@ -89,27 +107,32 @@ elif [ "${FERRY_NO_NETWORK:-}" = "1" ]; then
   esac
   exit 0
 else
-  # Public network path — fail closed without a pinned checksum for this target.
-  if [ -z "$expected_sha" ]; then
-    echo "ferry install: no pinned checksum for ${asset}; refusing to install an unverified binary" >&2
+  # Public network path. Fetch checksums.txt from the SAME release FIRST and fail
+  # closed if it is missing or unfetchable — a binary is never installed unverified.
+  echo "ferry install: fetching checksums.txt (${VERSION})..."
+  if ! curl -fsSL "${base_url}/checksums.txt" -o "$sums"; then
+    echo "ferry install: could not fetch checksums.txt from the release; refusing to install an unverified binary" >&2
     exit 1
   fi
-  if [ "$VERSION" = "latest" ]; then
-    url="https://github.com/${REPO}/releases/latest/download/${asset}"
-  else
-    url="https://github.com/${REPO}/releases/download/${VERSION}/${asset}"
+  # Look up this target's hash. checksums.txt lines are `<sha256>  <asset>`.
+  # Strip a trailing CR so a CRLF-mangled manifest still diagnoses correctly
+  # (the hash comparison below is what gates the install, not this lookup).
+  expected_sha="$(awk -v a="$asset" '{ sub(/\r$/, "", $2) } $2 == a { print $1; exit }' "$sums")"
+  if [ -z "$expected_sha" ]; then
+    echo "ferry install: checksums.txt has no entry for ${asset}; refusing to install" >&2
+    exit 1
   fi
   echo "ferry install: downloading ${asset} (${VERSION})..."
-  curl -fsSL "$url" -o "$tmp"
+  curl -fsSL "${base_url}/${asset}" -o "$tmp"
   from_network=1
 fi
 
-# Integrity: verify the pinned SHA256 ONLY for a network download (the public path).
-# The network path already aborted above if no pin exists, so a downloaded binary is
-# always verified. The explicit FERRY_FAKE_BINARY test artifact is a real local file
-# the caller chose, not a release download, so it is installed verbatim without the
-# release pin (which describes the published binaries, not an arbitrary test file).
-if [ "$from_network" = "1" ] && [ -n "$expected_sha" ]; then
+# Integrity: verify the download against the checksums.txt hash (network path only).
+# The network path aborts above if checksums.txt or this target's entry is missing,
+# so a downloaded binary is ALWAYS verified before install. The FERRY_FAKE_BINARY
+# test artifact is a real local file the caller chose, not a release download, so it
+# is installed verbatim (checksums.txt describes the published binaries only).
+if [ "$from_network" = "1" ]; then
   if command -v shasum >/dev/null 2>&1; then
     got="$(shasum -a 256 "$tmp" | awk '{print $1}')"
   else
