@@ -148,11 +148,10 @@ jobs:
 
       - name: Record the default-branch tip (no-branch-commit tripwire)
         # This release job must push NOTHING to any branch. Record the remote
-        # default-branch tip now and assert at the end of the job that it is
-        # unchanged. Honest scope: this proves the branch tip is identical across
-        # the job, not that no push could ever occur; since the job runs no
-        # `git push`, its real value is a REGRESSION tripwire — if a future edit
-        # reintroduces a branch push, the closing assertion fails the run.
+        # default-branch tip now; the closing step re-reads it and fails the run
+        # if the branch moved BECAUSE OF THIS JOB. Anonymous ls-remote works
+        # because this repo is public; if it ever goes private, switch to
+        # `gh api repos/.../git/ref/heads/...` with GH_TOKEN.
         run: |
           set -euo pipefail
           sha="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
@@ -232,18 +231,36 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Assert the release job pushed nothing to the default branch
-        # Close the no-branch-commit tripwire opened at job start: the remote
-        # default-branch tip must be identical now. A difference means a step in
-        # this job moved the branch (it must never) and fails the run. Runs last so
-        # it covers every preceding step, including the release create and prune.
+        # Close the no-branch-commit tripwire opened at job start. Runs last so it
+        # covers every preceding step, including the release create and prune. If
+        # the tip is unchanged, done. If it moved, attribute: a push from this job
+        # would use the GITHUB_TOKEN and land as github-actions[bot], so a bot
+        # commit in the moved range fails the run, while an unrelated concurrent
+        # human merge is logged and tolerated (this job did not cause it).
+        # Honest scope: this proves no bot-identity commit reached the default
+        # branch during the job; a future step that pushed under some other
+        # explicitly-wired identity would be misattributed as external — but such
+        # a step would also have to add credentials this job no longer has
+        # (persist-credentials: false), which code review gates. If the range
+        # lookup itself fails (e.g. the branch was force-pushed mid-run), set -e
+        # fails the run — fail closed.
         run: |
           set -euo pipefail
           end="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
-          if [ "$end" != "${DEFAULT_BRANCH_START_SHA}" ]; then
-            echo "default branch moved during the release job: ${DEFAULT_BRANCH_START_SHA} -> ${end}" >&2
-            echo "this release job must never push to a protected branch" >&2
-            exit 1
+          if [ "$end" = "${DEFAULT_BRANCH_START_SHA}" ]; then
+            echo "default branch unchanged across the release job (${end}); the job pushed nothing."
+            exit 0
           fi
-          echo "default branch unchanged across the release job (${end}); the job pushed nothing."
+          committers="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${DEFAULT_BRANCH_START_SHA}...${end}" \
+            --jq '[.commits[].committer.login // "unknown"] | unique | join(" ")')"
+          echo "default branch moved during the release job: ${DEFAULT_BRANCH_START_SHA} -> ${end} (committers: ${committers})"
+          case " ${committers} " in
+            *" github-actions[bot] "*)
+              echo "a github-actions[bot] commit landed on the default branch during this job — the release workflow must never push to a branch" >&2
+              exit 1
+              ;;
+          esac
+          echo "movement attributed to commits outside this job; the release job itself pushed nothing."
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
