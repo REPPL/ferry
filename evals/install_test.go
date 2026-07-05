@@ -11,13 +11,16 @@ package evals
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // conformanceMode reports whether this is a final-conformance run (Wave-3+), in
@@ -77,12 +80,16 @@ func TestInstallSingleBinary_AC_install_single_binary(t *testing.T) {
 		t.Fatalf("copy binary: %v", err)
 	}
 
-	// Run the isolated copy with a HOME pointed at another temp dir.
+	// Run the isolated copy with a HOME pointed at another temp dir. The exec is
+	// retried on ETXTBSY only (the harness copy-then-exec race, golang/go#22315);
+	// the AC assertion below is unchanged — a real failure still fails.
 	home := t.TempDir()
-	cmd := exec.Command(dst, "--help")
-	cmd.Env = []string{"HOME=" + home, "PATH=" + isolated, "NO_COLOR=1"}
-	cmd.Dir = isolated
-	out, err := cmd.CombinedOutput()
+	out, err := execCombinedRetryETXTBSY(func() *exec.Cmd {
+		cmd := exec.Command(dst, "--help")
+		cmd.Env = []string{"HOME=" + home, "PATH=" + isolated, "NO_COLOR=1"}
+		cmd.Dir = isolated
+		return cmd
+	})
 	if err != nil {
 		t.Errorf("AC-install-single-binary: isolated ferry --help failed (needs sidecar files?): %v\n%s", err, out)
 	}
@@ -336,10 +343,16 @@ func TestHarnessBinaryRunsFromBinDir(t *testing.T) {
 	if err := copyExecutable(bin, dst); err != nil {
 		t.Fatalf("harness self-check: placement copy failed: %v", err)
 	}
-	cmd := exec.Command(dst, "--help")
-	cmd.Env = []string{"HOME=" + s.Home, "PATH=" + s.BinDir, "NO_COLOR=1"}
-	cmd.Dir = s.Home
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// Retry on ETXTBSY only: this freshly-copied binary can be transiently held
+	// open-for-write by a sibling parallel test's fork (golang/go#22315), which is
+	// exactly the "text file busy" flake this self-check hits on busy CI.
+	out, err := execCombinedRetryETXTBSY(func() *exec.Cmd {
+		cmd := exec.Command(dst, "--help")
+		cmd.Env = []string{"HOME=" + s.Home, "PATH=" + s.BinDir, "NO_COLOR=1"}
+		cmd.Dir = s.Home
+		return cmd
+	})
+	if err != nil {
 		t.Errorf("harness self-check: binary under ~/.local/bin does not run: %v\n%s", err, out)
 	}
 }
@@ -386,6 +399,34 @@ func countExportPathLines(out string) int {
 		}
 	}
 	return n
+}
+
+// execCombinedRetryETXTBSY runs the command built by newCmd and returns its
+// combined output, retrying ONLY when the exec itself is refused with ETXTBSY
+// ("text file busy"); it never retries any other error, so a genuine failure
+// still surfaces at once.
+//
+// This mitigates the well-known Go/Linux fork-exec race (golang/go#22315). The
+// eval suite runs dozens of tests under t.Parallel(); several write an executable
+// with copyExecutable (os.WriteFile) and then exec it. A CONCURRENT test's fork
+// can transiently inherit a writable fd to a just-written binary, so the kernel
+// refuses THIS test's exec with ETXTBSY until that sibling's exec closes the
+// inherited fd. It is a race in the HARNESS's own copy-then-exec — not a ferry
+// defect — and is load-dependent, which is why it surfaces on busy CI and passes
+// on the same tree at lower load. Go's own os/exec tests apply the same bounded
+// ETXTBSY retry. Each attempt rebuilds the Cmd because an *exec.Cmd is single-use.
+func execCombinedRetryETXTBSY(newCmd func() *exec.Cmd) ([]byte, error) {
+	const maxAttempts = 10
+	var out []byte
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		out, err = newCmd().CombinedOutput()
+		if err == nil || !errors.Is(err, syscall.ETXTBSY) {
+			return out, err
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	return out, err
 }
 
 // copyExecutable copies src to dst preserving the executable bit.
