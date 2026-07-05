@@ -199,6 +199,87 @@ exit 0
 	}
 }
 
+// TestPruneSkipsNonSemverCurrent asserts that a --current tag outside strict
+// vMAJOR.MINOR.PATCH (e.g. a rehearsal or pre-release tag like
+// v0.0.1-rehearsal, which still matches the workflow's v* trigger) makes the
+// script SKIP pruning: exit 0 with a one-line message naming the tag. Such a
+// tag is not part of the retention lineage, so there is nothing to prune —
+// and a hard failure here would redden an otherwise-successful release run.
+// The allowlist discipline still holds: no gh release delete and no git call
+// may happen on the skip path.
+func TestPruneSkipsNonSemverCurrent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("prune-releases.sh is a POSIX shell script")
+	}
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	script := scriptPath(t)
+	tmp := t.TempDir()
+	stubDir := filepath.Join(tmp, "stub-bin")
+	if err := os.MkdirAll(stubDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ghLog := filepath.Join(tmp, "gh.log")
+	gitLog := filepath.Join(tmp, "git.log")
+
+	// Same recording stubs as TestPruneNeverDeletesTags: gh logs every
+	// invocation and answers `release list`; git logs every invocation.
+	writeStub(t, stubDir, "gh", `#!/usr/bin/env bash
+echo "gh $*" >> "$GH_LOG"
+if [ "$1" = "release" ] && [ "$2" = "list" ]; then
+  printf 'v0.1.0\nv0.1.1\nv0.1.2\n'
+fi
+exit 0
+`)
+	writeStub(t, stubDir, "git", `#!/usr/bin/env bash
+echo "git $*" >> "$GIT_LOG"
+exit 0
+`)
+
+	const current = "v0.0.1-rehearsal"
+	cmd := exec.Command("bash", script, "--current", current)
+	cmd.Env = append(os.Environ(),
+		"PATH="+stubDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GH_LOG="+ghLog,
+		"GIT_LOG="+gitLog,
+		"GITHUB_TOKEN=stub-token",
+	)
+	out, err := cmd.CombinedOutput()
+	text := string(out)
+	t.Logf("output:\n%s", text)
+
+	// A non-semver current tag is a SKIP, never a failure (the old script
+	// exited 2 here, reddening the release run after a successful publish).
+	if err != nil {
+		t.Fatalf("script must exit 0 for a non-semver --current tag, got: %v\noutput:\n%s", err, text)
+	}
+	// The skip message names the tag so the run log says what happened.
+	if !strings.Contains(text, current) || !strings.Contains(strings.ToLower(text), "skip") {
+		t.Errorf("expected a skip message naming %q, got:\n%s", current, text)
+	}
+
+	// Allowlist still enforced on the skip path: no delete, no git, and any gh
+	// call that did happen must be the read-only release list.
+	gh := readOrEmpty(t, ghLog)
+	if strings.Contains(gh, "release delete") {
+		t.Errorf("skip path performed a gh release delete:\n%s", gh)
+	}
+	allowedGH := regexp.MustCompile(`^gh release list --limit 200 --json tagName,isDraft,isPrerelease --jq .*$`)
+	for _, line := range strings.Split(strings.TrimRight(gh, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		if !allowedGH.MatchString(line) {
+			t.Errorf("gh invoked outside the skip-path allowlist: %q\nall gh invocations:\n%s", line, gh)
+		}
+	}
+	if git := readOrEmpty(t, gitLog); strings.TrimSpace(git) != "" {
+		t.Errorf("skip path invoked git:\n%s", git)
+	}
+}
+
 func readOrEmpty(t *testing.T, path string) string {
 	t.Helper()
 	b, err := os.ReadFile(path)
