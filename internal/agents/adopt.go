@@ -19,10 +19,43 @@ import (
 // generated combined.md and the old bin/ scripts are deliberately NOT
 // imported: combined is derived by ferry, and the scripts are what ferry
 // replaces.
-var (
-	sstTopFiles = []string{"general.md", "coding.md"}
-	sstTrees    = []string{"templates", "skills", "agents", "hooks"}
-)
+// sstTopFiles are the source-of-truth top-level files adopt imports. The
+// subtrees to import are DERIVED from the resolved asset registry (see
+// importTrees), not hard-coded, so a custom mapping's tree is imported and
+// its bridge is not removed with nothing to replace it.
+var sstTopFiles = []string{"general.md", "coding.md"}
+
+// alwaysImportedTrees are the non-asset subtrees adopt always imports: the
+// scaffold templates ferry carries but never deploys to $HOME. The asset
+// subtrees are appended from the resolved registry.
+var alwaysImportedTrees = []string{"templates"}
+
+// importTrees returns the source subtrees ImportSST copies from the adopted
+// directory: the always-imported scaffold templates plus every resolved asset
+// mapping's SOURCE directory. Deriving from the registry — instead of a
+// hard-coded list — keeps import in lockstep with FindBridges (which is
+// registry-driven), so adopting a machine that bridged a custom mapping
+// imports that mapping's live tree rather than dropping it.
+func importTrees(cfg config.AgentsConfig) ([]string, error) {
+	mappings, err := ResolveAssets(cfg)
+	if err != nil {
+		return nil, err
+	}
+	trees := append([]string(nil), alwaysImportedTrees...)
+	seen := map[string]bool{}
+	for _, t := range trees {
+		seen[t] = true
+	}
+	for _, m := range mappings {
+		src := filepath.Clean(m.Source)
+		if seen[src] {
+			continue
+		}
+		seen[src] = true
+		trees = append(trees, src)
+	}
+	return trees, nil
+}
 
 // ImportSST copies an existing instruction directory's source files into the
 // config repo's agents/ area, NON-DESTRUCTIVELY on both sides: srcDir is only
@@ -37,13 +70,17 @@ var (
 // symlink already sitting inside the config repo's agents/ tree (e.g.
 // agents/hooks -> ~/.ssh) is refused with a loud skip and never written
 // THROUGH. nil disables the extra validation (tests only).
-func ImportSST(srcDir, destDir string, guard func(string) (string, error), out io.Writer) error {
+func ImportSST(srcDir, destDir string, cfg config.AgentsConfig, guard func(string) (string, error), out io.Writer) error {
 	for _, name := range sstTopFiles {
 		if err := importFile(filepath.Join(srcDir, name), filepath.Join(destDir, name), guard, out); err != nil {
 			return err
 		}
 	}
-	for _, tree := range sstTrees {
+	trees, err := importTrees(cfg)
+	if err != nil {
+		return err
+	}
+	for _, tree := range trees {
 		root := filepath.Join(srcDir, tree)
 		fi, err := os.Lstat(root)
 		if err != nil || !fi.IsDir() {

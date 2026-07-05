@@ -35,7 +35,7 @@ func TestImportSST(t *testing.T) {
 	write("bin/sync.sh", "#!/bin/sh\n", 0o755)
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatalf("ImportSST: %v", err)
 	}
 
@@ -70,6 +70,42 @@ func TestImportSST(t *testing.T) {
 	}
 }
 
+// TestImportSSTImportsCustomMappingTrees pins finding 2: the import set must
+// derive from the resolved asset registry, not a hard-coded tree list. A
+// custom [agents.asset.<name>] mapping (githooks) whose live tree the old
+// setup bridged must be imported into the repo, so the swap that removes its
+// bridge deploys the migrated files in their place — never a silent loss.
+func TestImportSSTImportsCustomMappingTrees(t *testing.T) {
+	src := t.TempDir()
+	dest := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		path := filepath.Join(src, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("general.md", "G\n")
+	write("githooks/pre-commit", "#!/bin/sh\necho hi\n")
+
+	cfg := config.AgentsConfig{
+		Asset: map[string]config.AgentsAsset{
+			"githooks": {Source: "githooks", Target: ".githooks"},
+		},
+	}
+	var buf bytes.Buffer
+	if err := ImportSST(src, dest, cfg, nil, &buf); err != nil {
+		t.Fatalf("ImportSST: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dest, "githooks", "pre-commit"))
+	if err != nil || string(got) != "#!/bin/sh\necho hi\n" {
+		t.Errorf("custom mapping tree not imported: %q, %v", got, err)
+	}
+}
+
 func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	src := t.TempDir()
 	dest := t.TempDir()
@@ -82,7 +118,7 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, "general.md"))
@@ -101,7 +137,7 @@ func TestImportSSTNeverOverwritesDifferingRepoFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dest, "general.md"), []byte("from src\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := ImportSST(src, dest, nil, &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, nil, &buf); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "general.md") {
@@ -161,7 +197,7 @@ func TestImportSSTRefusesGuardedDestinations(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := ImportSST(src, dest, refuseSymlinkComponents(t, dest), &buf); err != nil {
+	if err := ImportSST(src, dest, config.AgentsConfig{}, refuseSymlinkComponents(t, dest), &buf); err != nil {
 		t.Fatalf("ImportSST: %v", err)
 	}
 
