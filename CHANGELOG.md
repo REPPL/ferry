@@ -11,6 +11,16 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Changed
+
+- **Installer shows ferry's identity on success.** After a successful install,
+  `install.sh` prints ferry's banner (ASCII logo plus next-step hints) by
+  running the just-installed binary, instead of a bare next-step line.
+- **Plain-language `ferry init` closing hint.** `ferry init` now closes with
+  "run `ferry apply` to set up this machine — it backs up anything it changes
+  first, so `ferry restore` can undo it", dropping the "reconcile" jargon and
+  the nested `--apply --yes` parenthetical (the flags stay in `--help`).
+
 ## [0.4.0] - 2026-07-05
 
 ### Added
