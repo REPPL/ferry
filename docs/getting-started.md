@@ -12,15 +12,15 @@ the work it deliberately does **not** reimplement:
 
 | Prerequisite | Why ferry needs it | When |
 |---|---|---|
-| **macOS** | Terminal configuration (iTerm2, Apple Terminal) uses macOS-native preference mechanisms. The cross-platform core (dotfiles, dependencies, backup/restore) is built for Linux too: **Linux support is coming soon**. | always (Linux: soon) |
+| **macOS** | Terminal configuration (iTerm2, Apple Terminal) uses macOS-native preference mechanisms and is macOS-only. The cross-platform core (dotfiles, dependencies, backup/restore) is CI-tested on Linux. | terminal configuration |
 | **`git`** | ferry does not embed git. It shells out to clone your config repo, and you commit/push your captured changes with git yourself. ferry preflights it and tells you how to install it if missing. | `init`, `capture` |
 | **A package manager** (Homebrew on macOS) | Only for installing declared dependencies via `ferry apply --deps`. ferry never installs the package manager for you: it uses whatever is present and tells you if none is. | `apply --deps` only |
 
 You do **not** need admin/root, and you do not need to pre-install anything ferry
 manages: that's ferry's job. The above are the host tools ferry stands on.
 
-> **Linux is coming soon.** The core is cross-platform; Linux terminal-emulator support
-> is still in progress.
+> **Linux scope.** The core (dotfiles, dependencies, backup/restore) is cross-platform
+> and CI-tested on Linux; terminal-emulator configuration is macOS-only.
 
 ---
 
