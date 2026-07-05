@@ -125,21 +125,28 @@ everything ferry ever touched.
 Sets a **project** repo up for the multi-tool pipeline. `name` defaults to the
 directory's base name. Idempotent; never overwrites an existing file.
 
+The layout separates **committed project memory** from **local-only runtime
+artefacts**: everything under `.work/` is meant to be committed, while
+scratch output and logs always live in `.work.local/` and never reach git.
+Both modes create `.work.local/scratch/` and `.work.local/logs/` and hide the
+whole `.work.local/` directory via the checkout-local git `info/exclude` —
+`.gitignore` is never touched.
+
 Default (tracked) mode, for a repo you own:
 
 | Item | Role |
 |---|---|
 | `AGENTS.md` | Router stamped from `agents/templates/AGENTS.md`, with `{{PROJECT}}` and `{{DATE}}` substituted |
 | `CLAUDE.md`, `GEMINI.md` | Relative symlinks to `AGENTS.md` **inside the project repo** (project-tracked content — ferry does not deploy these to `$HOME`) |
-| `.work/NEXT.md`, `.work/DECISIONS.md` | Committed session handoff and decision log |
-| `.work/scratch/`, `.work/logs/` | Gitignored scratch (entries appended to `.gitignore`) |
+| `.work/NEXT.md`, `.work/DECISIONS.md` | Committed session handoff and decision log (nothing else lives in `.work/`) |
+| `.work.local/scratch/`, `.work.local/logs/` | Local-only runtime artefacts, hidden via git `info/exclude` |
 | `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |
 
 `--private` mode, for a repo you do not own — zero tracked trace:
 
 | Item | Role |
 |---|---|
-| `.work.local/NEXT.md`, `DECISIONS.md`, `ISSUES.md` | The same logs plus a private observation list |
+| `.work.local/NEXT.md`, `DECISIONS.md`, `ISSUES.md` | The same logs plus a private observation list, alongside the `scratch/` and `logs/` dirs |
 | git `info/exclude` entry | Hides `.work.local/` locally; never committed or pushed |
 
 Anything already sitting where a bridge symlink would go is left untouched: a

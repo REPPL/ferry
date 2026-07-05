@@ -29,21 +29,25 @@ type ScaffoldOptions struct {
 // Scaffold sets a project repo up for the multi-tool agent pipeline. It is
 // idempotent and NEVER overwrites an existing file.
 //
-// Default (tracked) mode — your own repo:
+// Runtime artefacts (scratch output, logs) live in `.work.local/` in BOTH
+// modes and are never committed: every scaffold creates
+// .work.local/{scratch,logs} and hides the whole directory via the git
+// info/exclude mechanism (local to the checkout — no tracked file is ever
+// touched for it; there is no .gitignore editing).
+//
+// Default (tracked) mode — your own repo — additionally creates the
+// COMMITTED project memory:
 //   - AGENTS.md router from the template, with {{PROJECT}} and {{DATE}}
 //     substituted (plain string replacement — no metacharacter hazards);
 //   - CLAUDE.md and GEMINI.md as RELATIVE symlinks to AGENTS.md INSIDE the
 //     project repo (these are the project's own tracked bridges — ferry never
 //     deploys them to $HOME, so the copy-not-symlink invariant is untouched);
-//   - a committed .work/ skeleton (NEXT.md, DECISIONS.md) with gitignored
-//     scratch/ and logs/;
-//   - .gitignore entries for the scratch parts;
+//   - a committed .work/ holding ONLY NEXT.md and DECISIONS.md;
 //   - the pre-commit template, only when the repo has none.
 //
 // --private mode — a repo you don't own, zero tracked trace:
-//   - .work.local/ only (NEXT.md, DECISIONS.md, ISSUES.md + scratch/logs),
-//     hidden via .git/info/exclude (local to the checkout, never committed).
-//     No AGENTS.md, no symlinks, no .gitignore edits.
+//   - .work.local/ only (NEXT.md, DECISIONS.md, ISSUES.md alongside the
+//     scratch/logs dirs). No AGENTS.md, no symlinks, no tracked file touched.
 func Scaffold(opts ScaffoldOptions, out io.Writer) error {
 	repo, err := filepath.Abs(opts.RepoDir)
 	if err != nil {
@@ -82,22 +86,57 @@ func Scaffold(opts ScaffoldOptions, out io.Writer) error {
 		return nil
 	}
 
+	// Runtime artefacts live in .work.local/ in BOTH modes: create the dirs
+	// and hide the directory from git before anything mode-specific happens.
+	if err := ensureWorkLocalDirs(repo); err != nil {
+		return err
+	}
+	excludeWorkLocal(repo, out)
+
 	if opts.Private {
 		return scaffoldPrivate(repo, name, put, out)
 	}
 	return scaffoldTracked(opts, repo, name, put, out)
 }
 
-// scaffoldPrivate creates the zero-tracked-trace layout: .work.local/ with the
-// three logs, excluded via .git/info/exclude — which is local to the checkout
-// and never committed or pushed.
-func scaffoldPrivate(repo, name string, put func(templateName, dest string) error, out io.Writer) error {
-	w := filepath.Join(repo, ".work.local")
-	for _, d := range []string{filepath.Join(w, "scratch"), filepath.Join(w, "logs")} {
+// ensureWorkLocalDirs creates the runtime-artefact layout every scaffold
+// guarantees: .work.local/scratch and .work.local/logs.
+func ensureWorkLocalDirs(repo string) error {
+	for _, d := range []string{
+		filepath.Join(repo, ".work.local", "scratch"),
+		filepath.Join(repo, ".work.local", "logs"),
+	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+// excludeWorkLocal hides .work.local/ from git without touching any tracked
+// file: the entry goes into the repo's REAL git dir's info/exclude —
+// resolveGitDir follows a gitfile (linked worktree, submodule) and the
+// worktree commondir, since git reads info/exclude from the common dir. A
+// non-git directory only warns (there is nothing to exclude from).
+func excludeWorkLocal(repo string, out io.Writer) {
+	gitDir, ok := resolveGitDir(repo)
+	if !ok {
+		fmt.Fprintln(out, "WARN: not a git repo — .work.local/ cannot be excluded locally")
+		return
+	}
+	exclude := filepath.Join(gitDir, "info", "exclude")
+	if err := appendLineOnce(exclude, ".work.local/"); err != nil {
+		fmt.Fprintf(out, "WARN: could not write %s (%v) — exclude .work.local/ yourself\n", exclude, err)
+		return
+	}
+	fmt.Fprintln(out, "excluded: .work.local/ via git info/exclude (local-only, not committed)")
+}
+
+// scaffoldPrivate creates the zero-tracked-trace layout: .work.local/ holds
+// the three logs alongside the runtime-artefact dirs the caller already
+// created; nothing tracked is created or modified.
+func scaffoldPrivate(repo, name string, put func(templateName, dest string) error, out io.Writer) error {
+	w := filepath.Join(repo, ".work.local")
 	if err := put("NEXT.md", filepath.Join(w, "NEXT.md")); err != nil {
 		return err
 	}
@@ -107,32 +146,19 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 	if err := put("ISSUES.md", filepath.Join(w, "ISSUES.md")); err != nil {
 		return err
 	}
-
-	// Hide .work.local/ from git without touching any tracked file. The
-	// exclude file lives in the repo's REAL git dir — resolveGitDir follows a
-	// gitfile (linked worktree, submodule) and the worktree commondir, since
-	// git reads info/exclude from the common dir.
-	if gitDir, ok := resolveGitDir(repo); ok {
-		exclude := filepath.Join(gitDir, "info", "exclude")
-		if err := appendLineOnce(exclude, ".work.local/"); err != nil {
-			return err
-		}
-		fmt.Fprintln(out, "excluded: .work.local/ via git info/exclude (local-only, not committed)")
-	} else {
-		fmt.Fprintln(out, "WARN: not a git repo — .work.local/ cannot be excluded locally")
-	}
 	fmt.Fprintf(out, "done: %s (private mode — no tracked files were created or modified)\n", name)
 	return nil
 }
 
-// scaffoldTracked creates the tracked layout: committed .work/ skeleton,
-// AGENTS.md router, in-repo CLAUDE.md/GEMINI.md symlinks, the pre-commit
-// config when absent, and the .gitignore entries.
+// scaffoldTracked creates the committed layout on top of the shared
+// .work.local/ runtime dirs: a .work/ holding ONLY the committed memory
+// (NEXT.md, DECISIONS.md), the AGENTS.md router, the in-repo
+// CLAUDE.md/GEMINI.md symlinks, and the pre-commit config when absent. It
+// never touches .gitignore — runtime artefacts are excluded via
+// .work.local/ + info/exclude, and .work/ is meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
-	for _, d := range []string{filepath.Join(repo, ".work", "scratch"), filepath.Join(repo, ".work", "logs")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return err
-		}
+	if err := os.MkdirAll(filepath.Join(repo, ".work"), 0o755); err != nil {
+		return err
 	}
 	if err := put("NEXT.md", filepath.Join(repo, ".work", "NEXT.md")); err != nil {
 		return err
@@ -184,20 +210,6 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 			return werr
 		}
 		fmt.Fprintln(out, "created:  .pre-commit-config.yaml (activate with: pre-commit install)")
-	}
-
-	// Gitignore the scratch parts of .work/ (NEXT.md / DECISIONS.md ARE
-	// committed). ANY .git — a directory OR a gitfile (linked worktree,
-	// submodule) — counts as a git repo here.
-	if _, ok := resolveGitDir(repo); ok {
-		gi := filepath.Join(repo, ".gitignore")
-		updated, aerr := appendGitignoreBlock(gi)
-		if aerr != nil {
-			return aerr
-		}
-		if updated {
-			fmt.Fprintln(out, "updated:  .gitignore")
-		}
 	}
 
 	fmt.Fprintf(out, "done: %s — now fill in the placeholder sections of AGENTS.md\n", name)
@@ -296,32 +308,4 @@ func appendLineOnce(path, line string) error {
 	defer f.Close()
 	_, err = f.WriteString(line + "\n")
 	return err
-}
-
-// gitignoreBlock is the exact block the shell scaffold appended; the sentinel
-// line ".work/scratch/" gates idempotence.
-const gitignoreBlock = "\n# agent working state (NEXT.md and DECISIONS.md ARE committed)\n.work/scratch/\n.work/logs/\n"
-
-// appendGitignoreBlock appends the .work/ scratch entries to the repo's
-// .gitignore unless the sentinel line is already present, creating the file if
-// absent. It reports whether it wrote anything.
-func appendGitignoreBlock(path string) (bool, error) {
-	existing, err := os.ReadFile(path)
-	if err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return false, err
-	}
-	for _, l := range strings.Split(string(existing), "\n") {
-		if strings.HasPrefix(l, ".work/scratch/") {
-			return false, nil
-		}
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-	if _, err := f.WriteString(gitignoreBlock); err != nil {
-		return false, err
-	}
-	return true, nil
 }

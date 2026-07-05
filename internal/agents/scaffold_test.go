@@ -57,9 +57,17 @@ func TestScaffoldTrackedMode(t *testing.T) {
 		t.Errorf("AGENTS.md = %q, want %q", agentsMD, want)
 	}
 
-	for _, rel := range []string{".work/NEXT.md", ".work/DECISIONS.md", ".work/scratch", ".work/logs", ".pre-commit-config.yaml"} {
+	// Committed memory in .work/, runtime artefacts in .work.local/ — both
+	// modes share the .work.local layout.
+	for _, rel := range []string{".work/NEXT.md", ".work/DECISIONS.md", ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml"} {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
+		}
+	}
+	// .work/ holds ONLY the committed memory: no scratch/logs there.
+	for _, rel := range []string{".work/scratch", ".work/logs"} {
+		if _, err := os.Lstat(filepath.Join(repo, rel)); err == nil {
+			t.Errorf("%s exists; runtime artefacts belong in .work.local/", rel)
 		}
 	}
 
@@ -74,12 +82,17 @@ func TestScaffoldTrackedMode(t *testing.T) {
 		}
 	}
 
-	gi, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
-	if err != nil {
-		t.Fatal(err)
+	// Tracked mode never touches .gitignore; .work.local/ is hidden via the
+	// checkout-local git info/exclude instead.
+	if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); err == nil {
+		t.Error(".gitignore was created; scaffold must not touch it")
 	}
-	if !strings.Contains(string(gi), ".work/scratch/") || !strings.Contains(string(gi), ".work/logs/") {
-		t.Errorf(".gitignore missing scratch entries: %q", gi)
+	exclude, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
+	if err != nil {
+		t.Fatalf("info/exclude not written: %v", err)
+	}
+	if !strings.Contains(string(exclude), ".work.local/") {
+		t.Errorf("info/exclude missing the .work.local/ entry: %q", exclude)
 	}
 	if !strings.Contains(out, "done: "+name) {
 		t.Errorf("output missing done line: %q", out)
@@ -111,7 +124,8 @@ func TestScaffoldIsIdempotentAndNeverOverwrites(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(repo, "AGENTS.md"), custom, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	giBefore, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	excludePath := filepath.Join(repo, ".git", "info", "exclude")
+	exBefore, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,12 +141,15 @@ func TestScaffoldIsIdempotentAndNeverOverwrites(t *testing.T) {
 	if !strings.Contains(out, "exists:") {
 		t.Errorf("re-run did not report skips: %q", out)
 	}
-	giAfter, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	exAfter, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(giBefore, giAfter) {
-		t.Errorf(".gitignore grew on re-run:\n%q\nvs\n%q", giBefore, giAfter)
+	if !bytes.Equal(exBefore, exAfter) {
+		t.Errorf("info/exclude grew on re-run:\n%q\nvs\n%q", exBefore, exAfter)
+	}
+	if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); err == nil {
+		t.Error(".gitignore was created on re-run; scaffold must never touch it")
 	}
 }
 
@@ -339,21 +356,30 @@ func TestScaffoldPrivateModeInLinkedWorktree(t *testing.T) {
 	}
 }
 
-// TestScaffoldTrackedGitignoreWithGitfile: the .gitignore step must treat a
-// gitfile repo as a git repo too.
-func TestScaffoldTrackedGitignoreWithGitfile(t *testing.T) {
+// TestScaffoldTrackedExcludeWithGitfile: TRACKED mode hides .work.local/ via
+// the same gitfile-aware exclude machinery as private mode — the entry lands
+// in the RESOLVED git dir's info/exclude, and .gitignore is never touched.
+func TestScaffoldTrackedExcludeWithGitfile(t *testing.T) {
 	templates, repo := scaffoldFixture(t, false)
 	gitDir := filepath.Join(t.TempDir(), "gitdir")
 	mustMkdirAll(t, gitDir)
 	mustWrite(t, filepath.Join(repo, ".git"), "gitdir: "+gitDir+"\n")
 
 	runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-04"})
-	gi, err := os.ReadFile(filepath.Join(repo, ".gitignore"))
+	exclude, err := os.ReadFile(filepath.Join(gitDir, "info", "exclude"))
 	if err != nil {
-		t.Fatalf(".gitignore not written in a gitfile repo: %v", err)
+		t.Fatalf("resolved git dir's info/exclude not written: %v", err)
 	}
-	if !strings.Contains(string(gi), ".work/scratch/") {
-		t.Errorf(".gitignore missing entries: %q", gi)
+	if !strings.Contains(string(exclude), ".work.local/") {
+		t.Errorf("info/exclude missing the .work.local/ entry: %q", exclude)
+	}
+	if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); err == nil {
+		t.Error(".gitignore was created; scaffold must not touch it")
+	}
+	for _, rel := range []string{".work.local/scratch", ".work.local/logs"} {
+		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
+			t.Errorf("%s missing: %v", rel, err)
+		}
 	}
 }
 
