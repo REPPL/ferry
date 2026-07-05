@@ -29,13 +29,15 @@ test:
 vet:
 	go vet ./...
 
-# Pre-push gate (invoked by .githooks/pre-push): the same build/vet/test trio
-# the CI check job runs, natively. Host-native `go build` — not the
-# cross-compiling `build` target — because it mirrors CI, not a release.
+# Pre-push gate (invoked by .githooks/pre-push): the same four steps the CI
+# check job runs (build, vet, test, race-enabled internal tests), natively.
+# Host-native `go build` — not the cross-compiling `build` target — because it
+# mirrors CI, not a release.
 preflight:
 	go build ./...
 	go vet ./...
 	go test ./...
+	go test -race ./internal/...
 
 clean:
 	rm -rf $(BINDIR)
