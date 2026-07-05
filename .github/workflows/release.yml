@@ -4,9 +4,9 @@ name: release
 # (build, vet, the Go test suite, and the behavioural eval suite against a real
 # Linux binary) against the PUSHED COMMIT; only if that gate is green does it
 # build the four cross-compiled binaries FROM THAT SAME COMMIT, pin their real
-# SHA256 into install.sh (no hand-pasting), commit the pinned install.sh back
-# to the default branch, and publish a GitHub Release with the binaries
-# attached. Both jobs check out `github.sha` — the commit the pushed tag
+# SHA256 into install.sh (no hand-pasting), commit that one-file pin onto the
+# default-branch tip (never the tag's whole tree), and publish a GitHub Release
+# with the binaries attached. Both jobs check out `github.sha` — the commit the pushed tag
 # pointed at, fixed for the whole run — never the tag NAME, which could be
 # force-re-pointed between the jobs to swap unverified code into the release
 # build. Net effect: a tag push produces a verified, ready-to-install release
@@ -157,21 +157,37 @@ jobs:
         run: make pin-checksums VERSION="${GITHUB_REF_NAME}"
 
       - name: Commit the pinned install.sh back to the default branch
+        # The pushed commit's WHOLE TREE must never reach the default branch:
+        # pushing HEAD would fast-forward the branch past review for a tag cut on
+        # an unmerged descendant of its tip, and abort as a non-fast-forward for
+        # a tag on an older commit (breaking older-tag releases). Instead, apply
+        # ONLY the install.sh pin as a fresh commit on the just-fetched
+        # default-branch tip, staged in a second worktree so the sha checkout the
+        # binaries were built from is never disturbed. This step runs BEFORE the
+        # Release is created: a failed push fails the job while nothing has been
+        # published yet — fail-closed, never a main/release skew. W3 removes this
+        # push entirely.
         run: |
+          set -euo pipefail
           # Identity: github-actions bot noreply — no personal PII.
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Fetch the CURRENT branch tip explicitly: the sha checkout above does
+          # not guarantee an up-to-date remote-tracking ref for the branch.
+          git fetch origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          WT="$RUNNER_TEMP/default-branch"
+          git worktree add --detach "$WT" "refs/remotes/origin/${DEFAULT_BRANCH}"
+          # Content-only copy: install.sh keeps the mode it already has on the
+          # branch, and the worktree's tree differs from the tip by this one file.
+          cp install.sh "$WT/install.sh"
+          cd "$WT"
           # Only commit if install.sh actually changed (avoids empty commits).
           if git diff --quiet -- install.sh; then
             echo "install.sh checksums already up to date; nothing to commit."
           else
             git add install.sh
             git commit -m "ci: pin install.sh checksums for ${GITHUB_REF_NAME}"
-            # HEAD is the tagged commit; pushing HEAD:<default> fast-forwards the
-            # default branch when the tag sits at its tip (the normal case). A tag
-            # on an older commit is refused here as a non-fast-forward — failing
-            # closed rather than rewinding the branch. W3 removes this push.
-            git push origin HEAD:"$DEFAULT_BRANCH"
+            git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
           fi
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
