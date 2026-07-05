@@ -20,6 +20,8 @@ called out in a **Breaking** section. See
 - The lexical `~/.ssh` write guard now compares case-insensitively, so a
   target such as `.SSH/config` is refused on the default case-insensitive
   macOS filesystem.
+- Clearer `agents adopt` diagnostics for directory-level bridges and for
+  stale bridges left in place at locations this adopt run does not cover.
 
 ## [0.4.0] - 2026-07-05
 

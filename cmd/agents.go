@@ -242,7 +242,7 @@ func partitionAdoptBridges(items []agents.Item, bridges []agents.Bridge, out io.
 			toMigrate = append(toMigrate, br)
 			continue
 		}
-		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location the current [agents] config does not manage; left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
+		fmt.Fprintf(out, "warning: stale bridge %s -> %s sits at a location not covered by this adopt run (the current [agents] config does not manage it, or its plan item was skipped); left in place. Remove it yourself, or add its mapping/harness to [agents] and re-run adopt.\n", br.Path, br.Dest)
 	}
 	return toMigrate
 }
@@ -265,7 +265,7 @@ func refuseDirectoryBridges(bridges []agents.Bridge) error {
 	if len(lines) == 0 {
 		return nil
 	}
-	return fmt.Errorf("agents adopt: %d directory-level bridge symlink(s) found; ferry cannot replace a directory bridge reversibly (a directory cannot be snapshotted for restore) and will not write through it. Remove the link(s) yourself — the adopted directory keeps the real files — then re-run adopt:\n%s",
+	return fmt.Errorf("agents adopt: %d directory-level bridge symlink(s) found; ferry refuses these whether or not the current config manages their location. A directory bridge cannot be migrated reversibly (a directory cannot be snapshotted for restore), and ferry will not write through one (that would mutate the adopted source directory). Remove the link(s) yourself — the adopted directory keeps the real files — then re-run adopt:\n%s",
 		len(lines), strings.Join(lines, "\n"))
 }
 
