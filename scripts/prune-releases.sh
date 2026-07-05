@@ -33,11 +33,15 @@ if [ -z "$CURRENT" ]; then
   exit 2
 fi
 
-# Validate the tag shape: v<major>.<minor>.<patch>, all numeric.
+# Validate the tag shape: v<major>.<minor>.<patch>, all numeric. A tag outside
+# that shape (a pre-release like v0.4.0-rc1, a rehearsal tag) still matches the
+# release workflow's v* trigger but is not part of the retention lineage, so
+# there is nothing to prune for it — SKIP (exit 0) rather than fail, or every
+# such release run would go red at this step after a successful publish.
 semver_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
 if ! printf '%s' "$CURRENT" | grep -Eq "$semver_re"; then
-  echo "prune-releases: --current '$CURRENT' is not a vMAJOR.MINOR.PATCH tag" >&2
-  exit 2
+  echo "prune-releases: '$CURRENT' is not a vMAJOR.MINOR.PATCH tag — not part of the retention lineage; skipping prune."
+  exit 0
 fi
 
 command -v gh >/dev/null 2>&1 || { echo "prune-releases: need the gh CLI" >&2; exit 1; }
