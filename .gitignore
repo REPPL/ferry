@@ -8,9 +8,10 @@
 *.so
 *.dylib
 
-# Cross-compiled ferry binaries ARE committed (install.sh selects one by uname).
-# Keep this un-ignore so any future bin/ ignore rule cannot block them.
-!bin/ferry-*
+# Cross-compiled ferry binaries are build artifacts (release-only since v0.4.0):
+# `make build` regenerates them and the release workflow ships them as assets, so
+# they are not committed and must never dirty the tree.
+/bin/ferry-*
 
 # Test binary, built with `go test -c`
 *.test
