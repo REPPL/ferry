@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/REPPL/ferry/internal/agents"
 	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/deps"
 	"github.com/REPPL/ferry/internal/dotfile"
@@ -34,6 +35,7 @@ const (
 	kindDotfile    planKind = iota // a file-domain target reconciled by copy
 	kindOverlay                    // a .local overlay materialised to its home path
 	kindPreference                 // a native macOS preference (plist/defaults) domain
+	kindAgents                     // an agents-domain target (derived content, repo-authoritative)
 )
 
 // planItem is one unit of work apply would perform. It carries the fully
@@ -57,6 +59,12 @@ type planItem struct {
 	// kindPreference (which carries its own prefDomain.Plan()) and for skipped
 	// items (skip/missing describe a blocked target instead).
 	state dotfile.State
+
+	// execBit records, for a kindAgents item, whether the repo source carried
+	// an executable bit — a first-ever write of a hook script materialises
+	// 0755 so it stays runnable (agents.ApplyItem reads it). Meaningless for
+	// other kinds.
+	execBit bool
 
 	// prefDomain is the constructed native macOS preference domain for a
 	// kindPreference item (iTerm2 / Apple Terminal). diff renders its Plan();
@@ -205,6 +213,23 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 		}
 		items = append(items, ditems...)
 		warnings = append(warnings, dwarn...)
+	}
+
+	// Agents domain: the harness registry × instruction sources × optional
+	// devtree × asset trees, expanded to 1:1 (content, target) items by
+	// planAgents and reconciled through the same three-way machinery as
+	// dotfiles. Gated behind `[manage] agents = true` (default off). When the
+	// domain is de-scoped, previously applied targets collapse into one
+	// de-scope warning (files left untouched).
+	if ctx.Scope.IsManaged("agents") {
+		aitems, awarn, aerr := planAgents(ctx, home, lastApplied)
+		if aerr != nil {
+			return nil, nil, aerr
+		}
+		items = append(items, aitems...)
+		warnings = append(warnings, awarn...)
+	} else {
+		warnings = append(warnings, descopeAgentsWarnings(lastApplied, nil, false)...)
 	}
 
 	// Terminal preference domains: represent in-scope iterm2 / Apple Terminal as
@@ -662,6 +687,9 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	var conflicts []string
 	// Collect deferred last-applied results: persisted ONLY after run.Commit().
 	var deferred []dotfile.Result
+	// Agents targets touched by this plan, for the cumulative restore record
+	// (key -> absolute home path), persisted post-commit.
+	agentsTargets := map[string]string{}
 	for i := range plan {
 		it := &plan[i]
 		switch it.kind {
@@ -751,6 +779,46 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "  %-22s note: %s\n", "", res.Note)
 			}
 			continue
+		case kindAgents:
+			// Agents targets deploy their DERIVED in-memory content through the
+			// same Backuper/journal as dotfiles (agents.ApplyItem), with the
+			// domain's repo-authoritative wording on refusals: a live edit is
+			// never captured back in v1, so the fix is the repo copy (or --force).
+			//
+			// Every planned agents target is also collected for the persisted
+			// target record (agents-targets.json, unioned post-commit): scoped
+			// restore reverts from that record, so a later de-scope — or a
+			// deleted repo — can never hide a previously applied target.
+			agentsTargets[it.target.Name] = it.target.Home
+			res, err := agents.ApplyItem(agents.Item{
+				Key:     it.target.Name,
+				Label:   it.domain,
+				Target:  it.target,
+				Content: it.content,
+				Exec:    it.execBit,
+			}, lastApplied, b, force)
+			if err != nil {
+				var conflict *dotfile.ConflictError
+				if errors.As(err, &conflict) {
+					conflicts = append(conflicts, it.domain)
+					fmt.Fprintf(out, "  %-22s CONFLICT: edited live AND in the repo; not overwritten (agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain)
+					continue
+				}
+				// The empty-over-substantial data-loss guard aborts the run, same
+				// as a dotfile target (the run rolls back inline).
+				return err
+			}
+			if res.ForcedEmptyOverSubstantial {
+				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
+			}
+			if res.Action == dotfile.ActionSkipped {
+				fmt.Fprintf(out, "  %-22s skipped (edited live; agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain)
+				continue
+			}
+			deferred = append(deferred, res)
+			it.action = string(res.Action)
+			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
+			continue
 		case kindDotfile, kindOverlay:
 			if it.skip {
 				fmt.Fprintf(out, "  %-22s skipped (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
@@ -792,6 +860,19 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	// ignores results with no PendingHash (noop/skipped), so passing all is safe.
 	if err := dotfile.CommitLastApplied(deferred, lastApplied); err != nil {
 		return fmt.Errorf("commit last-applied: %w", err)
+	}
+	// Union this plan's agents targets into the persisted record (cumulative —
+	// entries are never removed) so `ferry restore agents` can resolve the
+	// full applied set WITHOUT the config repo, including later-de-scoped
+	// targets. Post-commit like last-applied: a rolled-back run records nothing.
+	if len(agentsTargets) > 0 {
+		stateDir, err := paths.StateDir()
+		if err != nil {
+			return fmt.Errorf("record agents targets: %w", err)
+		}
+		if err := agents.RecordTargets(stateDir, agentsTargets); err != nil {
+			return fmt.Errorf("record agents targets: %w", err)
+		}
 	}
 	if len(conflicts) > 0 {
 		fmt.Fprintf(out, "%d conflict(s) left unchanged: %s\n", len(conflicts), strings.Join(conflicts, ", "))
@@ -919,6 +1000,27 @@ func printPlan(out io.Writer, plan []planItem) {
 					fmt.Fprintf(out, "  %-22s [preference domain] %s — %s\n", it.domain, pe.Domain, pe.Summary)
 				}
 			}
+		case kindAgents:
+			// Agents targets share the dotfile states but carry the domain's
+			// repo-authoritative guidance: a live edit is fixed in the repo copy
+			// (capture never ingests these in v1), so the pointers differ.
+			switch it.state {
+			case dotfile.StateClean:
+				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
+			case dotfile.StateMissing:
+				create++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
+			case dotfile.StateRepoAhead:
+				update++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
+			case dotfile.StateLocallyDrifted:
+				fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
+			case dotfile.StateConflict:
+				conflict++
+				fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+			default:
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+			}
 		default:
 			if it.skip {
 				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
@@ -974,7 +1076,7 @@ func planSummary(create, update, conflict int) string {
 // mechanism). Only a StateClean dotfile/overlay is "nothing to do".
 func planItemPending(it planItem) bool {
 	switch it.kind {
-	case kindDotfile, kindOverlay:
+	case kindDotfile, kindOverlay, kindAgents:
 		if it.skip {
 			return true
 		}
@@ -1036,6 +1138,12 @@ func descopeDotfileWarnings(ctx *cmdContext, store *dotfile.Store) []string {
 		// declared dotfile that merely ends in ".local" (e.g. ".env.local") is NOT
 		// suppressed and still warns correctly when de-scoped.
 		if isSidecarKey(name) {
+			continue
+		}
+		// Agents-domain records are namespaced under "agents/" and report their
+		// OWN de-scope (descopeAgentsWarnings) — they are never declared dotfiles,
+		// so warning here would be a false positive on every apply.
+		if strings.HasPrefix(name, agentsKeyPrefix) {
 			continue
 		}
 		if inScope[strings.TrimPrefix(name, ".")] {

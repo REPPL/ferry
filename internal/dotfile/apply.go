@@ -162,11 +162,56 @@ func ApplyDeferred(t Target, store *Store, b Backuper, force, dryRun bool) (Resu
 	return apply(t, store, b, force, dryRun, false)
 }
 
-// apply is the shared core. persist=true records last-applied immediately
-// (eager Apply); persist=false leaves it to the caller via Result.PendingHash
-// (deferred ApplyDeferred + CommitLastApplied).
+// ApplyContentDeferred is ApplyDeferred with the repo side provided IN MEMORY:
+// content stands in for the repo source (the caller already composed/derived
+// it — e.g. the agents domain's rendered instruction sets), so no repo file
+// and no temp staging is involved. It runs the SAME three-way decision table,
+// data-loss guard, and Backuper-mediated atomic write as the file-based apply
+// — one state machine, no parallel copy.
+//
+// freshPerm is the mode for a FIRST-EVER write of the destination (an
+// existing regular destination's mode is preserved, exactly as for a
+// dotfile); pass 0o644 for plain files or 0o755 for scripts that must stay
+// runnable. last-applied is never persisted directly: the hash rides on
+// Result.PendingHash for the caller's post-journal CommitLastApplied.
+func ApplyContentDeferred(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force bool) (Result, error) {
+	return applyContent(t, content, freshPerm, store, b, force, false, false)
+}
+
+// apply is the file-based entry to the shared core: it reads the repo source
+// ONCE (refusing a symlinked or non-regular source, matching hashFile's
+// contract) and delegates to applyContent, so the bytes that are classified
+// are byte-identical to the bytes written — the "repo changed mid-apply"
+// race is impossible by construction. persist=true records last-applied
+// immediately (eager Apply); persist=false leaves it to the caller via
+// Result.PendingHash (deferred ApplyDeferred + CommitLastApplied).
 func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Result, error) {
-	st, err := Classify(t, store)
+	fi, err := os.Lstat(t.Repo)
+	if errors.Is(err, os.ErrNotExist) {
+		// A declared target with no repo source is a configuration error the
+		// caller must surface; the domain cannot materialize nothing.
+		return Result{}, fmt.Errorf("dotfile: repo source missing for %q (%s)", t.Name, t.Repo)
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	if !fi.Mode().IsRegular() {
+		return Result{}, &UnexpectedKindError{Path: t.Repo, Mode: fi.Mode()}
+	}
+	content, err := os.ReadFile(t.Repo)
+	if err != nil {
+		return Result{}, err
+	}
+	return applyContent(t, content, defaultPerm, store, b, force, dryRun, persist)
+}
+
+// applyContent is the ONE shared apply core: the three-way decision table over
+// the in-memory desired content (ClassifyContent), the empty-over-substantial
+// data-loss guard, and the Backuper-mediated write. Both the file-based apply
+// (which reads t.Repo first) and ApplyContentDeferred (in-memory content)
+// funnel here, so the two paths can never diverge.
+func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, dryRun, persist bool) (Result, error) {
+	st, err := ClassifyContent(t, content, store)
 	if err != nil {
 		return Result{}, err
 	}
@@ -202,7 +247,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 		if force {
 			// Data-loss guard: refuse (or, under force, warn about) replacing a
 			// substantial live file with an empty/near-empty repo source.
-			if err := guardEmptyOverSubstantial(t, force, dryRun, &res); err != nil {
+			if err := guardEmptyOverSubstantial(t, content, force, dryRun, &res); err != nil {
 				return res, err
 			}
 			action := ActionUpdated
@@ -210,7 +255,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 				res.Action = action
 				return res, nil
 			}
-			if err := writeTarget(t, store, b, st.RepoHash, persist, &res); err != nil {
+			if err := writeContent(t, content, st.RepoHash, freshPerm, store, b, persist, &res); err != nil {
 				return Result{}, err
 			}
 			res.Action = action
@@ -230,7 +275,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 		// created target has nothing to erase). Refuse an empty-over-substantial
 		// overwrite without --force; warn (via res) when --force overrides it.
 		if st.LiveExists {
-			if err := guardEmptyOverSubstantial(t, force, dryRun, &res); err != nil {
+			if err := guardEmptyOverSubstantial(t, content, force, dryRun, &res); err != nil {
 				return res, err
 			}
 		}
@@ -238,7 +283,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 			res.Action = action
 			return res, nil
 		}
-		if err := writeTarget(t, store, b, st.RepoHash, persist, &res); err != nil {
+		if err := writeContent(t, content, st.RepoHash, freshPerm, store, b, persist, &res); err != nil {
 			return Result{}, err
 		}
 		res.Action = action
@@ -401,28 +446,24 @@ func StripFerryOverlayDirective(content []byte) []byte {
 }
 
 // guardEmptyOverSubstantial enforces the empty-over-substantial data-loss guard
-// for a target whose live file exists and is about to be overwritten. It reads
-// the effective repo source (t.Repo) and the live file (t.Home): when the repo
-// source is empty/near-empty (blank/whitespace/comments-only) AND the live file
+// for a target whose live file exists and is about to be overwritten. It judges
+// the desired content against the live file (t.Home): when the desired content
+// is empty/near-empty (blank/whitespace/comments-only) AND the live file
 // is substantial, the transition would erase real config. Without --force it
 // returns an *EmptyOverSubstantialError (apply writes nothing, live file
 // untouched). With --force it does NOT error but records the hazard on res so the
 // caller warns before the overwrite proceeds. Any non-dangerous transition is a
-// no-op. A repo-read error is returned (writeTarget would fail anyway); a
-// live-read error is treated as "not substantial" (fail open to the normal path —
-// the deploy's own write handles a genuinely unreadable target).
+// no-op. A live-read error is treated as "not substantial" (fail open to the
+// normal path — the deploy's own write handles a genuinely unreadable target).
 //
 // Near-emptiness is judged on the USER's real managed content: ferry's injected
 // per-machine overlay directive is stripped first (stripFerryOverlayDirective) so
 // the zsh include path — which stages raw shared source PLUS ferry's generated
 // `source ~/…local` line — cannot smuggle an empty shared source past the guard on
-// the strength of ferry's OWN boilerplate.
-func guardEmptyOverSubstantial(t Target, force, dryRun bool, res *Result) error {
-	repo, err := os.ReadFile(t.Repo)
-	if err != nil {
-		return err
-	}
-	if !isNearEmpty(stripFerryOverlayDirective(repo)) {
+// the strength of ferry's OWN boilerplate. desired is the exact in-memory content
+// the apply would write, so the guard judges precisely the bytes at stake.
+func guardEmptyOverSubstantial(t Target, desired []byte, force, dryRun bool, res *Result) error {
+	if !isNearEmpty(stripFerryOverlayDirective(desired)) {
 		return nil // user's managed source has real content: not the dangerous transition.
 	}
 	live, err := os.ReadFile(t.Home)
@@ -449,26 +490,19 @@ func guardEmptyOverSubstantial(t Target, force, dryRun bool, res *Result) error 
 	return nil
 }
 
-// writeTarget copies the repo content to the home destination through the
-// Backuper and records the new last-applied hash. When persist is true the hash
-// is written to the store immediately (only after a successful write, so a failed
-// write never advances last-applied); when false it is recorded on res.PendingHash
-// for the caller to commit post-journal.
-func writeTarget(t Target, store *Store, b Backuper, repoHash string, persist bool, res *Result) error {
+// writeContent copies the desired content to the home destination through the
+// Backuper and records the new last-applied hash. The bytes written are the
+// SAME bytes ClassifyContent hashed (repoHash), so last-applied can never
+// record a lie. An existing regular destination keeps its mode; a fresh write
+// takes freshPerm. When persist is true the hash is written to the store
+// immediately (only after a successful write, so a failed write never advances
+// last-applied); when false it is recorded on res.PendingHash for the caller
+// to commit post-journal.
+func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMode, store *Store, b Backuper, persist bool, res *Result) error {
 	if b == nil {
 		return errors.New("dotfile: nil Backuper")
 	}
-	content, err := os.ReadFile(t.Repo)
-	if err != nil {
-		return err
-	}
-	// Defend the invariant: the bytes we are about to write must hash to the
-	// repoHash Classify computed, or last-applied would record a lie.
-	if hashBytes(content) != repoHash {
-		return fmt.Errorf("dotfile: repo source for %q changed mid-apply", t.Name)
-	}
-
-	perm := defaultPerm
+	perm := freshPerm
 	if fi, err := os.Lstat(t.Home); err == nil && fi.Mode().IsRegular() {
 		perm = fi.Mode().Perm() // preserve an existing destination's mode
 	}

@@ -78,6 +78,16 @@ func runStatus(c *cobra.Command, _ []string) error {
 			}
 			continue
 		}
+		// Agents targets share the three-way states but carry the domain's
+		// repo-authoritative guidance (capture never ingests them in v1), so
+		// their drift lines point at the repo copy, not `ferry capture`.
+		if it.kind == kindAgents {
+			reported++
+			if reportAgentsStatus(out, colour, it.domain, it.state) {
+				drifted++
+			}
+			continue
+		}
 		if it.kind != kindDotfile && it.kind != kindOverlay {
 			continue
 		}
@@ -207,6 +217,34 @@ func terminalRepoStatusSource(repo, domain, prefID string) string {
 		return filepath.Join(repo, "iterm2", prefID+".plist")
 	}
 	return filepath.Join(repo, "terminal", prefID+".plist")
+}
+
+// reportAgentsStatus prints one status line for an agents-domain target and
+// reports whether it counts as drift. Same three-way states as reportStatus,
+// but the guidance is the domain's: agents targets are repo-authoritative in
+// v1 (capture skips them), so a live edit is resolved by updating the repo
+// copy (or overriding with `ferry apply --force`), never by capture.
+func reportAgentsStatus(out io.Writer, colour func(*color.Color, string) string, name string, state dotfile.State) (isDrift bool) {
+	switch state {
+	case dotfile.StateClean:
+		fmt.Fprintf(out, "  %-22s %s\n", name, colour(colGreen, "clean"))
+		return false
+	case dotfile.StateLocallyDrifted:
+		fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", name, colour(colYellow, "drifted"))
+		return true
+	case dotfile.StateConflict:
+		fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", name, colour(colRed, "conflict"))
+		return true
+	case dotfile.StateRepoAhead:
+		fmt.Fprintf(out, "  %-22s %s (repo changed; run `ferry apply` to deploy it)\n", name, colour(colYellow, "repo-ahead"))
+		return true
+	case dotfile.StateMissing:
+		fmt.Fprintf(out, "  %-22s %s (not yet deployed; run `ferry apply`)\n", name, colour(colYellow, "missing"))
+		return true
+	default:
+		fmt.Fprintf(out, "  %-22s %s\n", name, state)
+		return true
+	}
 }
 
 // reportStatus prints one git-status-like line for a target and reports whether

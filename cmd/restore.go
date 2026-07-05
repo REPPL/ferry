@@ -177,18 +177,48 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	// The "agents" domain fans out to MANY file paths (one per harness target,
+	// devtree file, and asset copy), resolved from ferry's PERSISTED target
+	// record (agents-targets.json) — never the live manifest — so it covers
+	// later-de-scoped targets and needs NO config repo (restore's
+	// repo-independence guarantee holds). It is expanded here, BEFORE
+	// resolveScopedPaths would misread the name as a dotfile (~/.agents).
+	var rest []string
+	agentsRequested := false
+	for _, d := range domains {
+		if d == "agents" {
+			agentsRequested = true
+			continue
+		}
+		rest = append(rest, d)
+	}
+
 	// resolveScopedPaths refuses ~/.ssh + path-traversal dotfile names (the security
 	// boundary): a refused name is reported and dropped, never restored to a ~/.ssh
 	// path. validDomains stays parallel to absPaths for the report loop below.
-	validDomains, absPaths, refusals := resolveScopedPaths(domains)
+	validDomains, absPaths, refusals := resolveScopedPaths(rest)
+	if agentsRequested {
+		apaths, aerr := agentsRestorePaths()
+		if aerr != nil {
+			refusals = append(refusals, fmt.Sprintf("restore: cannot resolve the agents domain's targets (%v); run a full `ferry restore` instead", aerr))
+		}
+		for _, p := range apaths {
+			validDomains = append(validDomains, "agents")
+			absPaths = append(absPaths, p)
+		}
+	}
 	for _, r := range refusals {
 		fmt.Fprintln(out, r)
 	}
 
-	// Report only the domains that actually had a baseline to restore.
+	// Report only the domains that actually had a baseline to restore. A
+	// fanned-out domain (agents) contributes many paths under one name, so
+	// the report deduplicates.
 	var restored []string
+	seen := map[string]bool{}
 	for i, d := range validDomains {
-		if eng.HasBaseline(absPaths[i]) {
+		if eng.HasBaseline(absPaths[i]) && !seen[d] {
+			seen[d] = true
 			restored = append(restored, d)
 		}
 	}

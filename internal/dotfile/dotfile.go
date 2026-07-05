@@ -139,6 +139,40 @@ func TargetFor(repoRoot, home, name string) (Target, error) {
 	}, nil
 }
 
+// NestedTarget builds a Target for a home-RELATIVE destination path that does
+// NOT follow the dotfile "."-prefix convention — a nested path such as
+// ".codex/AGENTS.md" or "<devtree>/CLAUDE.md". name is the caller's stable
+// last-applied store key (e.g. "agents/codex"); rel is the destination path
+// relative to home.
+//
+// It is the SAME security boundary as TargetFor — validateHomeTarget refuses
+// an absolute rel, a `..` climb out of $HOME, and anything at/under ~/.ssh —
+// PLUS a symlink-RESOLVING containment check: unlike a flat dotfile (whose
+// only parent is $HOME itself), a nested destination sits under intermediate
+// directories, and a symlinked intermediate (~/.claude -> /elsewhere, or a
+// harness path routed through ~/w -> ~/.ssh) would let a lexically-valid
+// write land outside $HOME or inside ~/.ssh. validateHomeTargetResolved walks
+// the existing components and refuses any that resolve out. The returned
+// Target has no repo source (callers supply effective content in memory via
+// ClassifyContent) and defaults Overlay to OverlayWholeFileReplace.
+func NestedTarget(home, rel, name string) (Target, error) {
+	if filepath.IsAbs(rel) {
+		return Target{}, ErrPathEscapesHome
+	}
+	dest := filepath.Join(home, rel)
+	if err := validateHomeTarget(home, dest); err != nil {
+		return Target{}, err
+	}
+	if err := validateHomeTargetResolved(home, dest); err != nil {
+		return Target{}, err
+	}
+	return Target{
+		Name:    name,
+		Home:    dest,
+		Overlay: OverlayWholeFileReplace,
+	}, nil
+}
+
 // IncludeSidecarTarget is TargetFor for an include-style domain (zsh): the same
 // ~/.ssh + traversal validation, but the Target's Overlay is
 // OverlayIncludeSidecar so the apply command materializes the overlay as a
@@ -178,6 +212,132 @@ func validateHomeTarget(home, dest string) error {
 		return ErrForbiddenSSHPath
 	}
 	return nil
+}
+
+// maxTargetSymlinkHops bounds symlink resolution in the nested-target walk so
+// a cyclic chain (a -> b -> a) cannot loop forever; exceeding it fails closed.
+const maxTargetSymlinkHops = 40
+
+// validateHomeTargetResolved enforces the containment rules on a nested home
+// target WITH symlinks resolved: every EXISTING component between $HOME and
+// dest's PARENT directory is walked, and a symlinked component must resolve
+// to a location that is still strictly within $HOME and not at/under ~/.ssh —
+// otherwise a write to the lexically-valid dest would land through the link
+// outside $HOME (ErrPathEscapesHome) or inside ~/.ssh (ErrForbiddenSSHPath).
+//
+// The LEAF itself is deliberately NOT resolved: a symlink at the destination
+// is a distinct, observable state the write path refuses on its own
+// (hashFile/ClassifyContent return UnexpectedKindError, and atomic writes
+// replace-not-follow), and adopt must still be able to BUILD a Target for a
+// bridge symlink in order to enumerate and migrate it.
+//
+// The walk is LEXICAL in the ~/.ssh-paranoid style of the rest of ferry: each
+// component is Lstat'd (never following the component itself), a symlink's
+// target TEXT is read with os.Readlink (no follow) and resolved by pure path
+// arithmetic, and NOTHING at/under ~/.ssh is ever Lstat'd, Readlink'd, or
+// EvalSymlink'd — the moment path math lands a component there, the walk
+// refuses by string compare alone. Only $HOME itself (a trusted ancestor
+// strictly above ~/.ssh) is EvalSymlink'd, so an absolute link target in
+// resolved form (e.g. macOS /var -> /private/var) compares on the same real
+// filesystem. A not-yet-existing tail (fresh machine) is fine: there is no
+// symlink left to traverse.
+func validateHomeTargetResolved(home, dest string) error {
+	cleanHome := filepath.Clean(home)
+	resolvedHome := cleanHome
+	if r, err := filepath.EvalSymlinks(cleanHome); err == nil {
+		resolvedHome = r
+	}
+
+	// inHome/underSSH compare against BOTH the raw and resolved $HOME so a
+	// link target written in either form is judged correctly.
+	inHome := func(p string) bool {
+		return strictlyUnder(cleanHome, p) || strictlyUnder(resolvedHome, p)
+	}
+	underSSH := func(p string) bool {
+		return underOrEqualPath(filepath.Join(cleanHome, sshDirName), p) ||
+			underOrEqualPath(filepath.Join(resolvedHome, sshDirName), p)
+	}
+
+	// Walk the PARENT chain only (see the leaf note above). A parent equal to
+	// $HOME has no intermediate components to validate.
+	parent := filepath.Dir(filepath.Clean(dest))
+	if parent == cleanHome {
+		return nil
+	}
+	rel, err := filepath.Rel(cleanHome, parent)
+	if err != nil {
+		return ErrPathEscapesHome
+	}
+	segs := strings.Split(rel, string(filepath.Separator))
+	cur := resolvedHome
+	hops := 0
+	for _, seg := range segs {
+		if seg == "" || seg == "." {
+			continue
+		}
+		next := filepath.Join(cur, seg)
+		// Never Lstat at/under ~/.ssh: conclude by string compare alone.
+		if underSSH(next) {
+			return ErrForbiddenSSHPath
+		}
+		// Resolve this component through its WHOLE symlink chain (a link to a
+		// link must not slip through via the kernel's own resolution on the
+		// next Lstat), validating every hop.
+		for {
+			fi, lerr := os.Lstat(next)
+			if lerr != nil {
+				if errors.Is(lerr, fs.ErrNotExist) {
+					// A not-yet-existing tail: no symlink left to traverse. The
+					// remaining components are pure lexical joins, already
+					// validated lexically.
+					return nil
+				}
+				// ELOOP / permission / anything else: fail closed.
+				return lerr
+			}
+			if fi.Mode()&fs.ModeSymlink == 0 {
+				break
+			}
+			hops++
+			if hops > maxTargetSymlinkHops {
+				return ErrPathEscapesHome // fail closed on a pathological chain
+			}
+			targetTxt, rerr := os.Readlink(next)
+			if rerr != nil {
+				return rerr
+			}
+			if !filepath.IsAbs(targetTxt) {
+				targetTxt = filepath.Join(filepath.Dir(next), targetTxt)
+			}
+			targetTxt = filepath.Clean(targetTxt)
+			if underSSH(targetTxt) {
+				return ErrForbiddenSSHPath
+			}
+			if !inHome(targetTxt) {
+				return ErrPathEscapesHome
+			}
+			next = targetTxt
+		}
+		// Continue the walk from the fully resolved (in-$HOME) component.
+		cur = next
+	}
+	return nil
+}
+
+// strictlyUnder reports whether p is a strict descendant of base (not base
+// itself), by pure path arithmetic. Both must be clean absolute paths.
+func strictlyUnder(base, p string) bool {
+	rel, err := filepath.Rel(base, p)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// underOrEqualPath reports whether p equals base or is a descendant of it, by
+// pure path arithmetic. Both must be clean absolute paths.
+func underOrEqualPath(base, p string) bool {
+	return p == base || strictlyUnder(base, p)
 }
 
 // hashBytes returns the lowercase hex sha256 of content. This is the canonical
