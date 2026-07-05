@@ -464,7 +464,14 @@ func (fr fakeRelease) writeChecksums(t *testing.T, entries map[string]string) {
 	for name, hash := range entries {
 		fmt.Fprintf(&b, "%s  %s\n", hash, name)
 	}
-	if err := os.WriteFile(filepath.Join(fr.dir, "checksums.txt"), []byte(b.String()), 0o644); err != nil {
+	fr.writeChecksumsRaw(t, b.String())
+}
+
+// writeChecksumsRaw writes checksums.txt verbatim — for manifests writeChecksums'
+// canonical form cannot express (e.g. CRLF line endings).
+func (fr fakeRelease) writeChecksumsRaw(t *testing.T, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(fr.dir, "checksums.txt"), []byte(content), 0o644); err != nil {
 		t.Fatalf("fakeRelease: write checksums.txt: %v", err)
 	}
 }
@@ -492,13 +499,20 @@ func requireCurlFileScheme(t *testing.T) {
 // code, and the expected install path.
 func runReleaseInstall(t *testing.T, installer string, s *Sandbox, fr fakeRelease) (out string, code int, installed string) {
 	t.Helper()
+	return runInstallWithBaseURL(t, installer, s, "file://"+fr.dir)
+}
+
+// runInstallWithBaseURL is runReleaseInstall with an explicit FERRY_RELEASE_BASE_URL
+// value, so tests can also probe the override's own guard rails (non-file:// refusal).
+func runInstallWithBaseURL(t *testing.T, installer string, s *Sandbox, baseURL string) (out string, code int, installed string) {
+	t.Helper()
 	cmd := exec.Command("bash", installer)
 	cmd.Dir = s.Home
 	cmd.Env = []string{
 		"HOME=" + s.Home,
 		"PATH=" + os.Getenv("PATH"), // real curl / shasum / awk / cp
 		"NO_COLOR=1",
-		"FERRY_RELEASE_BASE_URL=file://" + fr.dir,
+		"FERRY_RELEASE_BASE_URL=" + baseURL,
 	}
 	b, err := cmd.CombinedOutput()
 	code = 0
@@ -507,7 +521,7 @@ func runReleaseInstall(t *testing.T, installer string, s *Sandbox, fr fakeReleas
 		if asExitError(err, &ee) {
 			code = ee.ExitCode()
 		} else {
-			t.Fatalf("runReleaseInstall: failed to run install.sh: %v", err)
+			t.Fatalf("runInstallWithBaseURL: failed to run install.sh: %v", err)
 		}
 	}
 	return string(b), code, filepath.Join(s.BinDir, "ferry")
@@ -602,5 +616,65 @@ func TestInstallVerifiesChecksums_missingEntryRefused(t *testing.T) {
 	}
 	if _, err := os.Stat(installed); err == nil {
 		t.Errorf("no entry: %s installed though checksums.txt lacked its entry", installed)
+	}
+}
+
+// TestInstallReleaseOverrideNonFileRefused: FERRY_RELEASE_BASE_URL is a TEST-ONLY
+// seam restricted to file:// — a remote value would redirect the entire trust root
+// (binary AND checksums) — so an https:// value is refused outright, nothing
+// installed, nothing fetched.
+func TestInstallReleaseOverride_nonFileURLRefused(t *testing.T) {
+	t.Parallel()
+	installer := locateInstaller(t)
+	s := NewSandbox(t)
+
+	// .invalid TLD (RFC 2606): guaranteed unresolvable, so even a broken guard
+	// could not silently succeed against a real remote.
+	out, code, installed := runInstallWithBaseURL(t, installer, s, "https://release-override.invalid/download")
+	if code == 0 {
+		t.Errorf("https override: installer exited 0 (must refuse a non-file:// FERRY_RELEASE_BASE_URL)\n%s", out)
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("https override: %s was installed despite a refused release-source override", installed)
+	}
+	if !strings.Contains(out, "must be a file:// URL") {
+		t.Errorf("https override: expected the file://-only refusal message\n%s", out)
+	}
+}
+
+// TestInstallVerifiesChecksumsCRLF: a CRLF-mangled checksums.txt still verifies —
+// the lookup strips the trailing CR, so a correct hash installs and a wrong hash
+// is still refused as a SHA256 mismatch (never weakened, only better diagnosed).
+func TestInstallVerifiesChecksums_crlfManifest(t *testing.T) {
+	t.Parallel()
+	installer := locateInstaller(t)
+	requireCurlFileScheme(t)
+
+	content := []byte("#!/bin/sh\necho fake-ferry\n")
+
+	// Correct hash, CRLF line endings → installs the exact served binary.
+	sOK := NewSandbox(t)
+	frOK := newFakeRelease(t, content)
+	frOK.writeChecksumsRaw(t, sha256Hex(content)+"  "+frOK.asset+"\r\n")
+	out, code, installed := runReleaseInstall(t, installer, sOK, frOK)
+	if code != 0 {
+		t.Errorf("CRLF+correct hash: installer exited %d (want 0 — CR must not break the lookup)\n%s", code, out)
+	} else if got, err := os.ReadFile(installed); err != nil || !bytes.Equal(got, content) {
+		t.Errorf("CRLF+correct hash: installed binary missing or differs from the served bytes: %v", err)
+	}
+
+	// Wrong hash, CRLF line endings → still a SHA256-mismatch refusal, nothing installed.
+	sBad := NewSandbox(t)
+	frBad := newFakeRelease(t, content)
+	frBad.writeChecksumsRaw(t, sha256Hex([]byte("other bytes\n"))+"  "+frBad.asset+"\r\n")
+	out, code, installed = runReleaseInstall(t, installer, sBad, frBad)
+	if code == 0 {
+		t.Errorf("CRLF+wrong hash: installer exited 0 (CR strip must not weaken verification)\n%s", out)
+	}
+	if _, err := os.Stat(installed); err == nil {
+		t.Errorf("CRLF+wrong hash: %s installed despite a checksum mismatch", installed)
+	}
+	if !strings.Contains(out, "SHA256 mismatch") {
+		t.Errorf("CRLF+wrong hash: expected a SHA256 mismatch refusal\n%s", out)
 	}
 }
