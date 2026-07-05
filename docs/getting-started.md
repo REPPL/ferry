@@ -37,8 +37,9 @@ curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 This installs **only** the `ferry` binary to `~/.local/bin`: **no admin rights
 required**, so it works on any account, including locked-down or managed machines. If
 `~/.local/bin` isn't already on your PATH, the installer prints the one line to add to
-your shell config (it never edits your shell itself). It does not install Homebrew or
-run anything else.
+your shell config (it never edits your shell itself). It does not install Homebrew, edit
+your shell, or run `ferry init`; it runs the freshly installed binary once to print
+ferry's banner, and nothing else.
 
 To build from source instead:
 
