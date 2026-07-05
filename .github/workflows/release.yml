@@ -2,13 +2,16 @@ name: release
 
 # Pushing a version tag (vX.Y.Z) first re-runs the full verification gate
 # (build, vet, the Go test suite, and the behavioural eval suite against a real
-# Linux binary) against the TAG's commit; only if that gate is green does it
-# build the four cross-compiled binaries FROM THE SAME TAG commit, pin their
-# real SHA256 into install.sh (no hand-pasting), commit the pinned install.sh
-# back to the default branch, and publish a GitHub Release with the binaries
-# attached. Net effect: a tag push produces a verified, ready-to-install release
-# whose binaries, checksums, and reported version all come from the tagged
-# commit — never from whatever happens to sit at the default-branch tip.
+# Linux binary) against the PUSHED COMMIT; only if that gate is green does it
+# build the four cross-compiled binaries FROM THAT SAME COMMIT, pin their real
+# SHA256 into install.sh (no hand-pasting), commit the pinned install.sh back
+# to the default branch, and publish a GitHub Release with the binaries
+# attached. Both jobs check out `github.sha` — the commit the pushed tag
+# pointed at, fixed for the whole run — never the tag NAME, which could be
+# force-re-pointed between the jobs to swap unverified code into the release
+# build. Net effect: a tag push produces a verified, ready-to-install release
+# whose binaries, checksums, and reported version all come from the pushed
+# commit — never the default-branch tip, never a moved tag.
 on:
   push:
     tags:
@@ -27,22 +30,26 @@ permissions:
   contents: read
 
 jobs:
-  # Gate the release on the TAG's commit. This mirrors ci.yml's checks — build,
+  # Gate the release on the pushed commit. This mirrors ci.yml's checks — build,
   # vet, the full Go test suite — plus the full behavioural eval suite against a
   # real Linux binary (the same steps as ci.yml's `evals-linux` job). A red
   # suite or a red eval here aborts before anything is built or published.
-  # Checked out at the tag ref (github.ref), NEVER the default-branch tip, so the
-  # gate exercises exactly the commit whose binaries will ship.
+  # Checked out at github.sha (the commit the pushed tag pointed at), NEVER the
+  # default-branch tip or the re-resolvable tag name, so the gate exercises
+  # exactly the commit whose binaries will ship.
   verify:
     timeout-minutes: 20
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - name: Check out the tagged commit
+      - name: Check out the pushed commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.ref }}
+          # github.sha, not the tag ref: checkout re-resolves a NAMED ref at each
+          # job's start, so a tag moved after the push could differ here. The sha
+          # is the commit the pushed tag pointed at, immutable for this run.
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Set up Go
@@ -108,8 +115,9 @@ jobs:
           echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."
 
   # Build and publish ONLY after verify is green. Binaries are cross-compiled
-  # from the tagged commit (github.ref), so the shipped artefacts match the code
-  # that just passed the gate.
+  # from the same pushed commit (github.sha) that verify just gated, so the
+  # shipped artefacts match the code that passed — even if the tag has been
+  # re-pointed since verify started.
   release:
     needs: verify
     timeout-minutes: 30
@@ -117,18 +125,18 @@ jobs:
     permissions:
       contents: write   # push the pinned install.sh and create the Release
     steps:
-      - name: Check out the tagged commit (full history for the install.sh push)
+      - name: Check out the pushed commit (full history for the install.sh push)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         # Push credentials are REQUIRED here to commit the pinned install.sh back
         # to the default branch; plan W3 (docs/plans/2026-07-05-v0.4.0.md) removes
         # that push, and this suppression with it.
         # zizmor: ignore[artipacked]
         with:
-          # Check out the TAG (github.ref), not the default-branch tip, so the
-          # binaries below are built from the tagged commit. The pinned install.sh
-          # is pushed to the default branch via an explicit refspec, not by
-          # checking that branch out here.
-          ref: ${{ github.ref }}
+          # github.sha (the commit the pushed tag pointed at), not the tag NAME
+          # and not the default-branch tip, so the binaries below are built from
+          # the exact commit verify gated — a tag re-pointed mid-run changes
+          # nothing here.
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Set up Go
