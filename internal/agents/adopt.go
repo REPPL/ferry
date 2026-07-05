@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/REPPL/ferry/internal/config"
+	"github.com/REPPL/ferry/internal/dotfile"
 )
 
 // sstTopFiles / sstTrees are the source-of-truth pieces adopt imports from an
@@ -219,6 +220,21 @@ func FindBridges(home, adoptedDir string, cfg config.AgentsConfig) ([]Bridge, er
 		}
 		target = filepath.Clean(target)
 		if pathWithin(adopted, target) {
+			// Resolved-containment gate: the candidate is a symlink into the
+			// adopted dir, but if its PARENT chain resolves outside $HOME or
+			// under ~/.ssh, journal-removing it would delete a file that
+			// physically lives outside $HOME. NestedTarget applies exactly the
+			// planner's containment (lexical + parent chain resolved, leaf left
+			// unresolved so the bridge symlink itself stays enumerable); a
+			// refusal drops the candidate. A directory-level bridge (the symlink
+			// IS the leaf, parent chain in-$HOME) passes and is surfaced below.
+			rel, rerr := filepath.Rel(cleanHome, cand)
+			if rerr != nil {
+				continue
+			}
+			if _, verr := dotfile.NestedTarget(cleanHome, rel, "agents/bridge"); verr != nil {
+				continue
+			}
 			// os.Stat follows the link: a destination that is a directory marks
 			// a directory-level bridge (refused by the caller, never migrated).
 			isDir := false

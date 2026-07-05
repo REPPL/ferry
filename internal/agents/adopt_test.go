@@ -362,6 +362,63 @@ func TestFindBridgesScansCustomAssetMappingTargets(t *testing.T) {
 	}
 }
 
+// TestFindBridgesRefusesEscapingParentChain pins finding 1: a "bridge" whose
+// PARENT directory resolves OUTSIDE $HOME (or under ~/.ssh) must never be
+// enumerated as removable — journal-removing it would delete a file that
+// physically lives outside $HOME. bridgeCandidate is lexical only, so without
+// the resolved-containment gate the escaping leaf slips through and the swap
+// removes it.
+func TestFindBridgesRefusesEscapingParentChain(t *testing.T) {
+	home := t.TempDir()
+	adopted := t.TempDir()
+	if err := os.WriteFile(filepath.Join(adopted, "general.md"), []byte("g"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case A: parent resolves OUTSIDE $HOME. ~/w -> <external>, and
+	// <external>/RULES.md is itself a bridge symlink into the adopted dir.
+	external := t.TempDir()
+	if err := os.Symlink(filepath.Join(adopted, "general.md"), filepath.Join(external, "RULES.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(external, filepath.Join(home, "w")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Case B: parent resolves under ~/.ssh. ~/s -> ~/.ssh, and
+	// ~/.ssh/RULES.md is a bridge symlink into the adopted dir.
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(adopted, "general.md"), filepath.Join(home, ".ssh", "RULES.md")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(home, ".ssh"), filepath.Join(home, "s")); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := config.AgentsConfig{
+		Harnesses:    []string{"outer", "sshward"},
+		HarnessesSet: true,
+		Harness: map[string]config.AgentsHarness{
+			"outer":   {Target: "w/RULES.md", Source: "combined"},
+			"sshward": {Target: "s/RULES.md", Source: "combined"},
+		},
+	}
+	bridges, err := FindBridges(home, adopted, cfg)
+	if err != nil {
+		t.Fatalf("FindBridges: %v", err)
+	}
+	for _, b := range bridges {
+		if b.Path == filepath.Join(home, "w", "RULES.md") {
+			t.Errorf("enumerated a bridge whose parent escapes $HOME: %s -> %s (removing it would delete a file outside $HOME)", b.Path, b.Dest)
+		}
+		if b.Path == filepath.Join(home, "s", "RULES.md") {
+			t.Errorf("enumerated a bridge whose parent resolves under ~/.ssh: %s -> %s", b.Path, b.Dest)
+		}
+	}
+}
+
 func TestFindBridgesResolvesRelativeLinks(t *testing.T) {
 	home := t.TempDir()
 	adopted := filepath.Join(home, "Workspace", ".agents")
