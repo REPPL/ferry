@@ -1,17 +1,17 @@
 name: release
 
 # Pushing a version tag (vX.Y.Z) first re-runs the full verification gate
-# (build, vet, the Go test suite, and the behavioural eval suite against a real
-# Linux binary) against the PUSHED COMMIT; only if that gate is green does it
-# build the four cross-compiled binaries FROM THAT SAME COMMIT, pin their real
-# SHA256 into install.sh (no hand-pasting), commit that one-file pin onto the
-# default-branch tip (never the tag's whole tree), and publish a GitHub Release
-# with the binaries attached. Both jobs check out `github.sha` — the commit the pushed tag
-# pointed at, fixed for the whole run — never the tag NAME, which could be
-# force-re-pointed between the jobs to swap unverified code into the release
-# build. Net effect: a tag push produces a verified, ready-to-install release
-# whose binaries, checksums, and reported version all come from the pushed
-# commit — never the default-branch tip, never a moved tag.
+# (build, vet, tests including the race leg, and the behavioural eval suite
+# against a real Linux binary) against the PUSHED COMMIT; only if that gate is
+# green does it build the four cross-compiled binaries FROM THAT SAME COMMIT,
+# pin their real SHA256 into install.sh (no hand-pasting), commit that one-file
+# pin onto the default-branch tip (never the tag's whole tree), and publish a
+# GitHub Release with the binaries attached. Both jobs check out `github.sha` —
+# the commit the pushed tag pointed at, fixed for the whole run — never the tag
+# NAME, which could be force-re-pointed between the jobs to swap unverified
+# code into the release build. Net effect: a tag push produces a verified,
+# ready-to-install release whose binaries, checksums, and reported version all
+# come from the pushed commit — never the default-branch tip, never a moved tag.
 on:
   push:
     tags:
@@ -31,9 +31,10 @@ permissions:
 
 jobs:
   # Gate the release on the pushed commit. This mirrors ci.yml's checks — build,
-  # vet, the full Go test suite — plus the full behavioural eval suite against a
-  # real Linux binary (the same steps as ci.yml's `evals-linux` job). A red
-  # suite or a red eval here aborts before anything is built or published.
+  # vet, the full Go test suite, the race leg — plus the full behavioural eval
+  # suite against a real Linux binary (the same steps as ci.yml's `evals-linux`
+  # job). A red suite or a red eval here aborts before anything is built or
+  # published.
   # Checked out at github.sha (the commit the pushed tag pointed at), NEVER the
   # default-branch tip or the re-resolvable tag name, so the gate exercises
   # exactly the commit whose binaries will ship.
@@ -68,6 +69,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Test (race, internal)
+        run: go test -race ./internal/...
 
       - name: Install strace (enables the AC-ssh-not-read strict leg on Linux)
         run: sudo apt-get update && sudo apt-get install -y strace
