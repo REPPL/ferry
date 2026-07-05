@@ -34,15 +34,39 @@ func FirstSegmentIsSSH(rel string) bool {
 
 // UnderHomeSSH reports whether path is home's ~/.ssh directory itself or a
 // descendant of it, by pure path arithmetic — it never stats path or ~/.ssh.
-// Case is folded ONLY on the ".ssh" segment (see FirstSegmentIsSSH); the home
-// parent components match EXACTLY. Both home and path must be clean absolute
-// paths.
+// Case is folded on EVERY component (the home parents AND the ".ssh" leaf): on a
+// case-insensitive filesystem (the macOS default) a wrong-case HOME parent (e.g.
+// /Users/ALICE vs /Users/alice) names the SAME directory, so a candidate such as
+// /Users/ALICE/.ssh/config still resolves inside the real ~/.ssh and must be
+// caught. filepath.Rel compares case-sensitively, so folding only the ".ssh"
+// leaf would let such a candidate escape the guard. Folding the parents also
+// over-refuses a genuinely-distinct wrong-case HOME on a case-SENSITIVE
+// filesystem, which is acceptable fail-closed behaviour. Both home and path must
+// be clean absolute paths.
 func UnderHomeSSH(home, path string) bool {
-	rel, err := filepath.Rel(home, path)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	homeSegs := segments(home)
+	pathSegs := segments(path)
+	// path must have at least one component (the ".ssh" leaf) beyond home.
+	if len(pathSegs) <= len(homeSegs) {
 		return false
 	}
-	return FirstSegmentIsSSH(rel)
+	for i := range homeSegs {
+		if !strings.EqualFold(homeSegs[i], pathSegs[i]) {
+			return false
+		}
+	}
+	return strings.EqualFold(pathSegs[len(homeSegs)], SSHDirName)
+}
+
+// segments splits a clean absolute path into its non-empty components, dropping
+// the leading separator. The path is Clean'd first so "." and ".." are already
+// collapsed and no empty interior components remain.
+func segments(p string) []string {
+	trimmed := strings.TrimPrefix(filepath.Clean(p), string(filepath.Separator))
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, string(filepath.Separator))
 }
 
 // UnderHomeSSHExact reports whether the clean absolute path p is $HOME/.ssh or a
