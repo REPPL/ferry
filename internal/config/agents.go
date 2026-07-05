@@ -40,7 +40,7 @@ type AgentsAsset struct {
 
 // AgentsConfig is the parsed, merged `[agents]` table of ferry.toml overlaid
 // with ferry.local.toml (local wins per key; the harness and asset maps merge
-// per name). Everything is optional: the zero value means "all built-in
+// per field, local wins). Everything is optional: the zero value means "all built-in
 // harnesses and asset mappings, no devtree" — the domain itself is still
 // gated behind `[manage] agents = true`.
 type AgentsConfig struct {
@@ -72,8 +72,8 @@ var agentsSourceValues = map[string]bool{"general": true, "coding": true, "combi
 
 // LoadAgents loads and merges the `[agents]` tables of ferry.toml and
 // ferry.local.toml under repoPath (local wins: devtree and harnesses replace
-// per key when the local file sets them; harness declarations merge per name
-// with local entries overriding shared ones). Both files are read through the
+// per key when the local file sets them; harness and asset declarations merge
+// per field with local values overriding shared ones). Both files are read through the
 // same symlink-refusing guard as the manifest. A repo with no `[agents]` table
 // at all yields the zero AgentsConfig, not an error.
 func LoadAgents(repoPath string) (AgentsConfig, error) {
@@ -290,7 +290,7 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 
 // mergeAgents overlays local on shared: devtree and the selection lists
 // replace per key when the local file explicitly sets them; harness and asset
-// declarations merge per name with local entries winning.
+// declarations merge per FIELD, with a local entry's set fields winning.
 func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 	out := AgentsConfig{
 		Harness: map[string]AgentsHarness{},
@@ -317,19 +317,28 @@ func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 		out.AssetsSet = true
 	}
 
+	// Local harness and asset declarations merge per FIELD (local wins), not
+	// wholesale: a documented partial override (local sets only one field) must
+	// keep the shared entry's other field rather than blank it — a blanked
+	// required field makes Resolve/ResolveAssets hard-error the whole domain
+	// for an entry that is not a built-in, and silently discards a shared
+	// override of a built-in.
 	for name, h := range shared.harness {
 		out.Harness[name] = h
 	}
 	for name, h := range local.harness {
-		out.Harness[name] = h
+		merged := out.Harness[name]
+		if h.Target != "" {
+			merged.Target = h.Target
+		}
+		if h.Source != "" {
+			merged.Source = h.Source
+		}
+		out.Harness[name] = merged
 	}
 	for name, a := range shared.asset {
 		out.Asset[name] = a
 	}
-	// Local asset declarations merge per FIELD (local wins), not wholesale: a
-	// documented partial override (local sets only target) must keep the shared
-	// source rather than blank it — a blanked source makes ResolveAssets
-	// hard-error the whole domain for a mapping that is not a built-in.
 	for name, a := range local.asset {
 		merged := out.Asset[name]
 		if a.Source != "" {

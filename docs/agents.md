@@ -42,7 +42,8 @@ deterministic (no timestamps), so re-applying an unchanged repo is a no-op.
 
 Everything under `[agents]` is optional. `ferry.local.toml` overrides
 `ferry.toml` per key; `[agents.harness.<name>]` and `[agents.asset.<name>]`
-tables merge per name (local wins).
+tables merge per field (local wins), so a local table that sets only one
+field overrides just that field of the shared entry.
 
 ```toml
 [agents]

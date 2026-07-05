@@ -71,6 +71,20 @@ func TestLoadAgents(t *testing.T) {
 			},
 		},
 		{
+			name:   "local harness declarations merge per field",
+			shared: "[agents.harness.myh]\ntarget = \".myh/RULES.md\"\nsource = \"general\"\n",
+			local:  "[agents.harness.myh]\nsource = \"combined\"\n",
+			want: AgentsConfig{
+				Harness: map[string]AgentsHarness{
+					// Local sets only source; the shared target survives (local
+					// wins per field, not wholesale) — a partial override must not
+					// blank the target and hard-error resolve for a custom harness.
+					"myh": {Target: ".myh/RULES.md", Source: "combined"},
+				},
+				Asset: map[string]AgentsAsset{},
+			},
+		},
+		{
 			name:   "asset mapping and selection",
 			shared: "[agents]\nassets = [\"hooks\", \"githooks\"]\n\n[agents.asset.githooks]\nsource = \"githooks\"\ntarget = \".githooks\"\n",
 			want: AgentsConfig{
