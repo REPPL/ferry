@@ -11,21 +11,6 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
-### Added
-
-- **Release provenance attestations.** Every released binary now carries a
-  signed SLSA build-provenance attestation, generated in the release
-  workflow and proven by a post-release `gh attestation verify` step.
-  Verify a download yourself with
-  `gh attestation verify ferry-<goos>-<arch> -R REPPL/ferry`.
-
-### Changed
-
-- **Release pruning keeps git tags.** Retention still removes superseded
-  GitHub Releases and their assets, but never deletes the git tag: tags are
-  immutable once pushed, so a pruned version's tag and commit stay
-  reachable.
-
 ## [0.4.0] - 2026-07-05
 
 ### Added
@@ -80,11 +65,15 @@ called out in a **Breaking** section. See
   building the published binaries from that same commit. A red suite
   aborts the release; a tag on an older commit releases binaries built
   from that commit, not from the branch tip.
-- **Build provenance attestations.** Every released binary carries an
-  `actions/attest-build-provenance` attestation. Verify a download with
-  `gh attestation verify <binary> -R <owner>/<repo>`. Git tags are now
-  immutable — the release-pruning script may remove superseded releases
-  but never deletes a tag.
+- **Build provenance attestations.** Every released binary and the
+  `checksums.txt` manifest carry a signed SLSA build-provenance
+  attestation, generated in the release workflow and proven by a
+  post-release `gh attestation verify` step. Verify a download yourself
+  with `gh attestation verify ferry-<goos>-<arch> -R REPPL/ferry`.
+- **Release pruning keeps git tags.** Retention still removes superseded
+  GitHub Releases and their assets, but never deletes the git tag: tags
+  are immutable once pushed, so a pruned version's tag and commit stay
+  reachable.
 
 ### Breaking
 
