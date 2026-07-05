@@ -204,6 +204,18 @@ func parseAgents(data []byte) (agentsFileConfig, error) {
 			return agentsFileConfig{}, fmt.Errorf("agents.%s is not a recognised setting (expected devtree, harnesses, harness.<name>, assets, or asset.<name>)", key)
 		}
 	}
+
+	// Catch typo'd fields inside the harness/asset sub-tables: the top-level
+	// switch only sees the direct children of [agents], so an unknown key such
+	// as `agents.asset.x.tpyo` would otherwise be silently discarded. md tracks
+	// every key not consumed by a PrimitiveDecode above; filter to the agents
+	// tree so the other domains' tables (which this parser does not decode) are
+	// not mistaken for unknown keys.
+	for _, k := range md.Undecoded() {
+		if len(k) > 0 && k[0] == "agents" {
+			return agentsFileConfig{}, fmt.Errorf("%s is not a recognised setting", k.String())
+		}
+	}
 	return cfg, nil
 }
 

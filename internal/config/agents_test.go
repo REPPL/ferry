@@ -178,6 +178,16 @@ func TestLoadAgentsErrors(t *testing.T) {
 			shared:  "[agents]\nassets = true\n",
 			wantSub: "assets must be a list of strings",
 		},
+		{
+			name:    "unknown key in an asset table",
+			shared:  "[agents.asset.x]\nsource = \"x\"\ntarget = \".x\"\ntypo = true\n",
+			wantSub: "agents.asset.x.typo",
+		},
+		{
+			name:    "unknown key in a harness table",
+			shared:  "[agents.harness.x]\ntarget = \".x/X.md\"\ntpyo = \"combined\"\n",
+			wantSub: "agents.harness.x.tpyo",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
