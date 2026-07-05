@@ -11,7 +11,7 @@
   <img src="https://img.shields.io/github/last-commit/REPPL/ferry?cacheSeconds=300" alt="Last commit">
   <br />
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
-  <img src="https://img.shields.io/badge/Linux-coming%20soon-FCC624?logo=linux&logoColor=black" alt="Linux: coming soon">
+  <img src="https://img.shields.io/badge/Linux-core%20CI--tested-FCC624?logo=linux&logoColor=black" alt="Linux: core CI-tested">
 
 </div>
 
