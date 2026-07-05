@@ -10,7 +10,7 @@ VERSION ?=
 # smaller, path-clean binary suitable for public distribution.
 LDFLAGS := -s -w$(if $(VERSION), -X github.com/REPPL/ferry/cmd.version=$(VERSION),)
 
-.PHONY: build test vet clean checksums release-prep pin-checksums release
+.PHONY: build test vet clean checksums release-prep pin-checksums release preflight
 
 # Cross-compile every supported target to bin/ferry-<goos>-<arch>.
 # Pass VERSION=vX.Y.Z to stamp the version (release builds); omit for a dev build.
@@ -28,6 +28,16 @@ test:
 
 vet:
 	go vet ./...
+
+# Pre-push gate (invoked by .githooks/pre-push): the same four steps the CI
+# check job runs (build, vet, test, race-enabled internal tests), natively.
+# Host-native `go build` — not the cross-compiling `build` target — because it
+# mirrors CI, not a release.
+preflight:
+	go build ./...
+	go vet ./...
+	go test ./...
+	go test -race ./internal/...
 
 clean:
 	rm -rf $(BINDIR)
