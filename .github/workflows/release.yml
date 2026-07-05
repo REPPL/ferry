@@ -15,10 +15,15 @@ permissions:
 
 jobs:
   release:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo (full history, default branch)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        # Push credentials are REQUIRED here to commit the pinned install.sh;
+        # plan W3 (docs/plans/2026-07-05-v0.4.0.md) removes that push, and this
+        # suppression with it.
+        # zizmor: ignore[artipacked]
         with:
           # Check out the branch tip (not the detached tag) so we can commit the
           # pinned install.sh back to the default branch.
@@ -26,9 +31,10 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.25'
+          cache: false
 
       - name: Cross-compile the four binaries (version-stamped from the tag)
         # VERSION=<tag> stamps `ferry --version` via -ldflags. The binaries built
@@ -52,15 +58,15 @@ jobs:
           else
             git add install.sh
             git commit -m "ci: pin install.sh checksums for ${GITHUB_REF_NAME}"
-            git push origin HEAD:"${{ github.event.repository.default_branch }}"
+            git push origin HEAD:"$DEFAULT_BRANCH"
           fi
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
       - name: Create the GitHub Release and upload the binaries
-        uses: softprops/action-gh-release@v3
-        with:
-          files: bin/ferry-*
+        run: gh release create "${GITHUB_REF_NAME}" bin/ferry-* --verify-tag --title "${GITHUB_REF_NAME}" --notes ""
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prune superseded releases (retention policy)
         # Runs ONLY after the new release is published (a failed publish stops the job
