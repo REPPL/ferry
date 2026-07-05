@@ -18,6 +18,7 @@ func scaffoldFixture(t *testing.T, git bool) (templates, repo string) {
 		"NEXT.md":                "# Next — {{PROJECT}}\n",
 		"DECISIONS.md":           "# Decisions — {{PROJECT}} ({{DATE}})\n",
 		"ISSUES.md":              "# Issues — {{PROJECT}}\n",
+		"docs-README.md":         "# docs — map for {{PROJECT}}\n",
 		"pre-commit-config.yaml": "repos: []\n",
 	} {
 		if err := os.WriteFile(filepath.Join(templates, name), []byte(content), 0o644); err != nil {
@@ -58,11 +59,24 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	}
 
 	// Committed memory in .work/, runtime artefacts in .work.local/ — both
-	// modes share the .work.local layout.
-	for _, rel := range []string{".work/NEXT.md", ".work/DECISIONS.md", ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml"} {
+	// modes share the .work.local layout. The docs hierarchy carries the map
+	// plus the dated-record directories.
+	for _, rel := range []string{
+		".work/NEXT.md", ".work/DECISIONS.md",
+		".work.local/scratch", ".work.local/logs",
+		"docs/decisions", "docs/research", "docs/plans",
+		".pre-commit-config.yaml",
+	} {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}
+	}
+	docsMap, err := os.ReadFile(filepath.Join(repo, "docs", "README.md"))
+	if err != nil {
+		t.Fatalf("docs/README.md missing: %v", err)
+	}
+	if want := "# docs — map for " + name + "\n"; string(docsMap) != want {
+		t.Errorf("docs/README.md = %q, want %q (substituted)", docsMap, want)
 	}
 	// .work/ holds ONLY the committed memory: no scratch/logs there.
 	for _, rel := range []string{".work/scratch", ".work/logs"} {
@@ -96,6 +110,38 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	}
 	if !strings.Contains(out, "done: "+name) {
 		t.Errorf("output missing done line: %q", out)
+	}
+}
+
+// TestScaffoldNeverOverwritesDocsReadme pins the docs map's never-overwrite
+// rule: an existing docs/README.md (the project's own map) is skipped, and
+// the dated-record directories are still ensured.
+func TestScaffoldNeverOverwritesDocsReadme(t *testing.T) {
+	templates, repo := scaffoldFixture(t, true)
+	custom := []byte("my own docs map\n")
+	if err := os.MkdirAll(filepath.Join(repo, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "docs", "README.md"), custom, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := runScaffold(t, ScaffoldOptions{RepoDir: repo, TemplatesDir: templates, Date: "2026-07-05"})
+
+	got, err := os.ReadFile(filepath.Join(repo, "docs", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, custom) {
+		t.Errorf("existing docs/README.md was overwritten: %q", got)
+	}
+	if !strings.Contains(out, "exists:") {
+		t.Errorf("output missing the exists skip: %q", out)
+	}
+	for _, rel := range []string{"docs/decisions", "docs/research", "docs/plans"} {
+		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
+			t.Errorf("%s missing: %v", rel, err)
+		}
 	}
 }
 
@@ -223,7 +269,7 @@ func TestScaffoldPrivateMode(t *testing.T) {
 		}
 	}
 	// Zero tracked trace: none of the tracked-mode artefacts may exist.
-	for _, rel := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".gitignore", ".work", ".pre-commit-config.yaml"} {
+	for _, rel := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".gitignore", ".work", "docs", ".pre-commit-config.yaml"} {
 		if _, err := os.Lstat(filepath.Join(repo, rel)); err == nil {
 			t.Errorf("private mode created tracked artefact %s", rel)
 		}

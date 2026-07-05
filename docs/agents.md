@@ -30,7 +30,7 @@ The domain reads from the `agents/` directory of the config repo:
 |---|---|
 | `agents/general.md` | Rules for all tasks, everywhere (edit this) |
 | `agents/coding.md` | Rules for coding work (edit this) |
-| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `pre-commit-config.yaml` |
+| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `pre-commit-config.yaml` |
 | `agents/skills/` | Claude Code skills, deployed recursively to `~/.claude/skills/` |
 | `agents/agents/` | Claude Code sub-agents, deployed recursively to `~/.claude/agents/` |
 | `agents/hooks/` | Hook scripts, deployed recursively to `~/.claude/hooks/` (executable bits preserved) |
@@ -138,6 +138,8 @@ Default (tracked) mode, for a repo you own:
 |---|---|
 | `AGENTS.md` | Router stamped from `agents/templates/AGENTS.md`, with `{{PROJECT}}` and `{{DATE}}` substituted |
 | `CLAUDE.md`, `GEMINI.md` | Relative symlinks to `AGENTS.md` **inside the project repo** (project-tracked content — ferry does not deploy these to `$HOME`) |
+| `docs/README.md` | The documentation map, stamped from `agents/templates/docs-README.md`: the four Diátaxis directories, decisions (MADR, `NNNN-title.md`), dated research and plans, and the root-markdown allowlist |
+| `docs/decisions/`, `docs/research/`, `docs/plans/` | Dated-record directories, created up front (the Diátaxis content directories are created on first use) |
 | `.work/NEXT.md`, `.work/DECISIONS.md` | Committed session handoff and decision log (nothing else lives in `.work/`) |
 | `.work.local/scratch/`, `.work.local/logs/` | Local-only runtime artefacts, hidden via git `info/exclude` |
 | `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |

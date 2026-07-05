@@ -152,10 +152,11 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 
 // scaffoldTracked creates the committed layout on top of the shared
 // .work.local/ runtime dirs: a .work/ holding ONLY the committed memory
-// (NEXT.md, DECISIONS.md), the AGENTS.md router, the in-repo
-// CLAUDE.md/GEMINI.md symlinks, and the pre-commit config when absent. It
-// never touches .gitignore — runtime artefacts are excluded via
-// .work.local/ + info/exclude, and .work/ is meant to be committed whole.
+// (NEXT.md, DECISIONS.md), the AGENTS.md router, the docs/ hierarchy with
+// its map (docs/README.md), the in-repo CLAUDE.md/GEMINI.md symlinks, and
+// the pre-commit config when absent. It never touches .gitignore — runtime
+// artefacts are excluded via .work.local/ + info/exclude, and .work/ is
+// meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
 	if err := os.MkdirAll(filepath.Join(repo, ".work"), 0o755); err != nil {
 		return err
@@ -167,6 +168,20 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		return err
 	}
 	if err := put("AGENTS.md", filepath.Join(repo, "AGENTS.md")); err != nil {
+		return err
+	}
+
+	// Docs hierarchy: the map (docs/README.md, stamped from the
+	// docs-README.md template, never overwriting an existing one) plus the
+	// directories that hold dated records. The Diátaxis content directories
+	// (tutorials/how-to/reference/explanation) are created on first use, not
+	// up front.
+	for _, d := range []string{"decisions", "research", "plans"} {
+		if err := os.MkdirAll(filepath.Join(repo, "docs", d), 0o755); err != nil {
+			return err
+		}
+	}
+	if err := put("docs-README.md", filepath.Join(repo, "docs", "README.md")); err != nil {
 		return err
 	}
 
