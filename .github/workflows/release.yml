@@ -1,33 +1,146 @@
 name: release
 
-# Pushing a version tag (vX.Y.Z) builds the four cross-compiled binaries, pins
-# their real SHA256 into install.sh (no hand-pasting), commits the pinned
-# install.sh back to the default branch, and publishes a GitHub Release with the
-# binaries attached. Net effect: a tag push produces a verified, ready-to-install
-# release with checksums that match the published assets.
+# Pushing a version tag (vX.Y.Z) first re-runs the full verification gate
+# (build, vet, tests including the race leg, and the behavioural eval suite
+# against a real Linux binary) against the PUSHED COMMIT; only if that gate is
+# green does it build the four cross-compiled binaries FROM THAT SAME COMMIT,
+# pin their real SHA256 into install.sh (no hand-pasting), commit that one-file
+# pin onto the default-branch tip (never the tag's whole tree), and publish a
+# GitHub Release with the binaries attached. Both jobs check out `github.sha` —
+# the commit the pushed tag pointed at, fixed for the whole run — never the tag
+# NAME, which could be force-re-pointed between the jobs to swap unverified
+# code into the release build. Net effect: a tag push produces a verified,
+# ready-to-install release whose binaries, checksums, and reported version all
+# come from the pushed commit — never the default-branch tip, never a moved tag.
 on:
   push:
     tags:
       - 'v*'
 
+# Never run two releases of the same tag concurrently, and never cancel a
+# release mid-flight — a half-published release is worse than a queued one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Floor for the workflow: read-only. The release job below elevates itself to
+# contents: write for the install.sh push and the Release creation; verify
+# stays read-only.
 permissions:
-  contents: write   # needed to push the pinned install.sh and create the Release
+  contents: read
 
 jobs:
+  # Gate the release on the pushed commit. This mirrors ci.yml's checks — build,
+  # vet, the full Go test suite, the race leg — plus the full behavioural eval
+  # suite against a real Linux binary (the same steps as ci.yml's `evals-linux`
+  # job). A red suite or a red eval here aborts before anything is built or
+  # published.
+  # Checked out at github.sha (the commit the pushed tag pointed at), NEVER the
+  # default-branch tip or the re-resolvable tag name, so the gate exercises
+  # exactly the commit whose binaries will ship.
+  verify:
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # github.sha, not the tag ref: checkout re-resolves a NAMED ref at each
+          # job's start, so a tag moved after the push could differ here. The sha
+          # is the commit the pushed tag pointed at, immutable for this run.
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25'
+          # cache: false — this workflow is tag-triggered; module caching in a
+          # release-triggering workflow is a cache-poisoning vector (zizmor).
+          cache: false
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test (race, internal)
+        run: go test -race ./internal/...
+
+      - name: Install strace (enables the AC-ssh-not-read strict leg on Linux)
+        run: sudo apt-get update && sudo apt-get install -y strace
+
+      - name: Build the Linux ferry binary
+        run: go build -o "$RUNNER_TEMP/ferry" .
+
+      # FERRY_CONFORMANCE=1 makes a missing install.sh a FAILURE (not a skip) for
+      # the offline installer ACs, matching the final-conformance contract in
+      # evals/README.
+      - name: Run the full eval suite against the Linux binary
+        run: FERRY_BIN="$RUNNER_TEMP/ferry" FERRY_INSTALL_SH="$PWD/install.sh" FERRY_CONFORMANCE=1 go test ./evals/...
+
+      # Independent, gating cross-check of the "never reads ~/.ssh" promise: run a
+      # non-doctor ferry command under strace and FAIL if it performs any
+      # open/openat under ~/.ssh/. A second, script-level tripwire alongside the
+      # in-Go strace leg above — a real syscall assertion, not a proxy.
+      - name: strace tripwire — no ~/.ssh opens (AC-ssh-not-read)
+        run: |
+          set -euo pipefail
+          SBOX="$RUNNER_TEMP/ssh-not-read-sandbox"
+          mkdir -p "$SBOX/.ssh" "$SBOX/.config/ferry" "$SBOX/.local/state/ferry" "$SBOX/repo"
+          # Seed a sentinel private key ferry must never open.
+          printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nSENTINELKEYMATERIAL\n-----END OPENSSH PRIVATE KEY-----\n' > "$SBOX/.ssh/id_ed25519"
+          chmod 600 "$SBOX/.ssh/id_ed25519"
+          # Minimal repo + machine config so a non-doctor command has scope to read.
+          printf '[manage]\ndotfiles = [".zshrc"]\n' > "$SBOX/repo/ferry.toml"
+          printf 'repo = "%s"\n' "$SBOX/repo" > "$SBOX/.config/ferry/config.toml"
+          TRACE="$RUNNER_TEMP/ssh-not-read.strace"
+          # -f follows a git subprocess too; status is a read-only non-doctor command.
+          # ferry's own exit status is irrelevant here (|| true); the trace is the check.
+          HOME="$SBOX" strace -f -e trace=open,openat -o "$TRACE" "$RUNNER_TEMP/ferry" status </dev/null || true
+          # Harden against a silent no-op: if strace produced no trace at all (not
+          # installed, crashed), the grep below would find nothing and pass falsely.
+          # Require a non-empty trace so this tripwire can never green on a broken run.
+          if [ ! -s "$TRACE" ]; then
+            echo "AC-ssh-not-read: strace produced no trace — cannot verify; failing closed" >&2
+            exit 1
+          fi
+          # FAIL if any open/openat line names a path under the sandbox ~/.ssh/.
+          if grep -E 'open(at)?\(' "$TRACE" | grep -F "$SBOX/.ssh" ; then
+            echo "AC-ssh-not-read: ferry opened a path under ~/.ssh/ (must never read it)" >&2
+            exit 1
+          fi
+          echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."
+
+  # Build and publish ONLY after verify is green. Binaries are cross-compiled
+  # from the same pushed commit (github.sha) that verify just gated, so the
+  # shipped artefacts match the code that passed — even if the tag has been
+  # re-pointed since verify started.
   release:
+    needs: verify
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # push the pinned install.sh and create the Release
     steps:
-      - name: Check out the repo (full history, default branch)
+      - name: Check out the pushed commit (full history for the install.sh push)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        # Push credentials are REQUIRED here to commit the pinned install.sh;
-        # plan W3 (docs/plans/2026-07-05-v0.4.0.md) removes that push, and this
-        # suppression with it.
+        # Push credentials are REQUIRED here to commit the pinned install.sh back
+        # to the default branch; plan W3 (docs/plans/2026-07-05-v0.4.0.md) removes
+        # that push, and this suppression with it.
         # zizmor: ignore[artipacked]
         with:
-          # Check out the branch tip (not the detached tag) so we can commit the
-          # pinned install.sh back to the default branch.
-          ref: ${{ github.event.repository.default_branch }}
+          # github.sha (the commit the pushed tag pointed at), not the tag NAME
+          # and not the default-branch tip, so the binaries below are built from
+          # the exact commit verify gated — a tag re-pointed mid-run changes
+          # nothing here.
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -48,17 +161,37 @@ jobs:
         run: make pin-checksums VERSION="${GITHUB_REF_NAME}"
 
       - name: Commit the pinned install.sh back to the default branch
+        # The pushed commit's WHOLE TREE must never reach the default branch:
+        # pushing HEAD would fast-forward the branch past review for a tag cut on
+        # an unmerged descendant of its tip, and abort as a non-fast-forward for
+        # a tag on an older commit (breaking older-tag releases). Instead, apply
+        # ONLY the install.sh pin as a fresh commit on the just-fetched
+        # default-branch tip, staged in a second worktree so the sha checkout the
+        # binaries were built from is never disturbed. This step runs BEFORE the
+        # Release is created: a failed push fails the job while nothing has been
+        # published yet — fail-closed, never a main/release skew. W3 removes this
+        # push entirely.
         run: |
+          set -euo pipefail
           # Identity: github-actions bot noreply — no personal PII.
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Fetch the CURRENT branch tip explicitly: the sha checkout above does
+          # not guarantee an up-to-date remote-tracking ref for the branch.
+          git fetch origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          WT="$RUNNER_TEMP/default-branch"
+          git worktree add --detach "$WT" "refs/remotes/origin/${DEFAULT_BRANCH}"
+          # Content-only copy: install.sh keeps the mode it already has on the
+          # branch, and the worktree's tree differs from the tip by this one file.
+          cp install.sh "$WT/install.sh"
+          cd "$WT"
           # Only commit if install.sh actually changed (avoids empty commits).
           if git diff --quiet -- install.sh; then
             echo "install.sh checksums already up to date; nothing to commit."
           else
             git add install.sh
             git commit -m "ci: pin install.sh checksums for ${GITHUB_REF_NAME}"
-            git push origin HEAD:"$DEFAULT_BRANCH"
+            git push origin HEAD:"refs/heads/${DEFAULT_BRANCH}"
           fi
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
