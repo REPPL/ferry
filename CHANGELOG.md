@@ -59,6 +59,8 @@ called out in a **Breaking** section. See
 
 ### Changed
 
+- **The starter zshrc seeded by the wizard is a minimal neutral example.**
+  Machine-specific configuration belongs in `~/.zshrc.local`.
 - **Releases build from the tag commit, gated by the test suite.** The
   release workflow now verifies (build, vet, full `go test ./...`, and the
   eval suite against a built Linux binary) at the tagged ref before
