@@ -494,6 +494,7 @@ func managedRepoPath(s *Sandbox) string {
 // originURLIn returns origin's URL for an explicit repo dir.
 func originURLIn(repo string) string {
 	cmd := exec.Command("git", "-C", repo, "remote", "get-url", "origin")
+	cmd.Env = gitIsolatedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -921,7 +922,7 @@ func assertNoSecretInGitObjects(t *testing.T, repo, needle string) {
 	// `git rev-list --all --objects --reflog` + fsck's dangling/unreachable set together
 	// enumerate reachable AND recoverable objects. cat-file --batch dumps each blob's
 	// content; grep the lot for the needle.
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat")
+	env := gitIsolatedEnv("GIT_PAGER=cat")
 	collect := func(args ...string) []string {
 		c := exec.Command("git", append([]string{"-C", repo}, args...)...)
 		c.Env = env

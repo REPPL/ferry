@@ -375,11 +375,12 @@ func TestCaptureNoAutocommit_AC_capture_no_autocommit(t *testing.T) {
 
 // --- small git/string helpers ---
 
-// gitEnv returns a deterministic git identity env for sandbox repos.
+// gitEnv returns the isolated env for eval-side git against a sandbox repo: a
+// deterministic identity with every inherited GIT_* variable stripped, so a
+// `git init --bare`/`commit` here can never resolve to (and corrupt) the host
+// repo when the suite runs inside a linked worktree. See gitIsolatedEnv.
 func gitEnv() []string {
-	return append(os.Environ(),
-		"GIT_AUTHOR_NAME=eval", "GIT_AUTHOR_EMAIL=eval@localhost",
-		"GIT_COMMITTER_NAME=eval", "GIT_COMMITTER_EMAIL=eval@localhost")
+	return gitIsolatedEnv()
 }
 
 func gitCommitAll(t *testing.T, repo, msg string) {

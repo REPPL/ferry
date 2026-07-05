@@ -461,14 +461,14 @@ func (s *Sandbox) AssertNoSecretInRepo(t *testing.T, secret string) {
 	// reachable from reflogs; grepping its full text catches a secret that was
 	// committed and later removed from the working tree.
 	logCmd := exec.Command("git", "-C", s.Repo, "log", "-p", "--all", "--full-history")
-	logCmd.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0")
+	logCmd.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	if out, e := logCmd.CombinedOutput(); e == nil {
 		if bytes.Contains(out, needle) {
 			t.Errorf("secret leak: seeded secret bytes found in git HISTORY (git log -p --all) — committed then possibly removed")
 		}
 	}
 	// Belt-and-braces: grep every committed blob across all reachable commits.
-	gitEnv := append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	gitEnv := gitIsolatedEnv()
 	revList := exec.Command("git", "-C", s.Repo, "rev-list", "--all")
 	revList.Env = gitEnv
 	if revs, e := revList.CombinedOutput(); e == nil {
@@ -685,6 +685,44 @@ func (s *Sandbox) UnderHome(p string) bool {
 }
 
 // -----------------------------------------------------------------------------
+// Git isolation
+// -----------------------------------------------------------------------------
+
+// gitIsolatedEnv returns the environment every eval-side `git` invocation MUST
+// use so it can only ever act on the sandbox repo named by `-C`/cmd.Dir and can
+// NEVER resolve to the host repository.
+//
+// The suite is regularly run from inside a linked git worktree (agents work in
+// worktrees). In that context the process inherits GIT_DIR / GIT_WORK_TREE /
+// GIT_INDEX_FILE / GIT_CONFIG* pointing at the host repo. An explicit GIT_DIR in
+// the environment WINS over `-C <dir>` directory discovery, so a helper that did
+// `append(os.Environ(), …)` would have `git init --bare` reinitialise the HOST
+// repo as bare (writing core.bare=true into its .git/config) and `git commit`
+// layer stray commits onto the checked-out branch — the exact repo-corruption
+// incident this isolation prevents.
+//
+// It strips every inherited GIT_* variable, then pins a deterministic identity,
+// non-interactive behaviour, and neutralised config discovery (no system config,
+// an empty global config) so nothing outside the sandbox can influence the run.
+func gitIsolatedEnv(extra ...string) []string {
+	env := make([]string, 0, len(os.Environ())+8)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue // drop GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_CONFIG*/… host bleed
+		}
+		env = append(env, kv)
+	}
+	env = append(env,
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_AUTHOR_NAME=eval", "GIT_AUTHOR_EMAIL=eval@localhost",
+		"GIT_COMMITTER_NAME=eval", "GIT_COMMITTER_EMAIL=eval@localhost",
+	)
+	return append(env, extra...)
+}
+
+// -----------------------------------------------------------------------------
 // Repo / scope seeding helpers
 // -----------------------------------------------------------------------------
 
@@ -699,9 +737,7 @@ func (s *Sandbox) InitGitRepo(t *testing.T) {
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = s.Repo
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=eval", "GIT_AUTHOR_EMAIL=eval@localhost",
-			"GIT_COMMITTER_NAME=eval", "GIT_COMMITTER_EMAIL=eval@localhost")
+		cmd.Env = gitIsolatedEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}

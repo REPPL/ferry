@@ -53,10 +53,10 @@ func TestInitFresh_AC_init_fresh(t *testing.T) {
 
 	// (a) a usable ferry config repo exists on disk (git recognises it) AND it is a
 	// real WORKING TREE (not bare) — the Fresh workflow commits in a working clone.
-	if out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--git-dir").CombinedOutput(); err != nil {
+	if out, err := runGitIn(repoPath, "rev-parse", "--git-dir"); err != nil {
 		t.Fatalf("AC-init-fresh: recorded repo %q is not a usable git repo (clone-only impl?): %v\n%s", repoPath, err, out)
 	}
-	wt, err := exec.Command("git", "-C", repoPath, "rev-parse", "--is-bare-repository").CombinedOutput()
+	wt, err := runGitIn(repoPath, "rev-parse", "--is-bare-repository")
 	if err != nil || strings.TrimSpace(string(wt)) != "false" {
 		t.Errorf("AC-init-fresh: fresh repo at %q is BARE (got %q) — Fresh workflow needs a committable working tree", repoPath, strings.TrimSpace(string(wt)))
 	}
@@ -104,7 +104,7 @@ func TestInitFresh_AC_init_fresh(t *testing.T) {
 	if !sameDir(repo2, custom) {
 		t.Errorf("AC-init-fresh: `--fresh %s` recorded repo %q; expected the explicit dir %q", custom, repo2, custom)
 	}
-	if out, err := exec.Command("git", "-C", repo2, "rev-parse", "--git-dir").CombinedOutput(); err != nil {
+	if out, err := runGitIn(repo2, "rev-parse", "--git-dir"); err != nil {
 		t.Errorf("AC-init-fresh: repo at explicit `--fresh` dir %q is not a usable git repo: %v\n%s", repo2, err, out)
 	}
 }
@@ -186,8 +186,7 @@ func TestInitCloneHTTPS_AC_init_clone_https(t *testing.T) {
 
 	// PROVE A WORKING CLONE: the recorded path is a real working tree AND it
 	// contains the source's marker file (so the clone actually pulled content).
-	cmd := exec.Command("git", "-C", repoPath, "rev-parse", "--is-inside-work-tree")
-	if out, err := cmd.CombinedOutput(); err != nil || strings.TrimSpace(string(out)) != "true" {
+	if out, err := runGitIn(repoPath, "rev-parse", "--is-inside-work-tree"); err != nil || strings.TrimSpace(out) != "true" {
 		t.Errorf("AC-init-clone-https: recorded repo %q is not a working tree (got %q, err %v)", repoPath, out, err)
 	}
 	if _, err := os.Stat(filepath.Join(repoPath, markerFile)); err != nil {
@@ -320,9 +319,7 @@ func makeBareRepo(t *testing.T) (bare, markerFile string) {
 	runGit := func(dir string, args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=eval", "GIT_AUTHOR_EMAIL=eval@localhost",
-			"GIT_COMMITTER_NAME=eval", "GIT_COMMITTER_EMAIL=eval@localhost")
+		cmd.Env = gitIsolatedEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}

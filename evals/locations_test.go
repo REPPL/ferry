@@ -65,7 +65,7 @@ func TestConfigTOML_AC_loc_config_toml(t *testing.T) {
 	}
 	if _, err := os.Stat(recorded); err != nil {
 		t.Errorf("AC-loc-config-toml: recorded repo path %q does not exist on disk: %v\n%s", recorded, err, body)
-	} else if out, gerr := exec.Command("git", "-C", recorded, "rev-parse", "--git-dir").CombinedOutput(); gerr != nil {
+	} else if out, gerr := runGitIn(recorded, "rev-parse", "--git-dir"); gerr != nil {
 		t.Errorf("AC-loc-config-toml: recorded repo path %q is not a git repo: %v\n%s", recorded, gerr, out)
 	}
 
@@ -522,6 +522,7 @@ func gitStatusIgnored(t *testing.T, repo string) string {
 	}
 	cmd := exec.Command("git", "status", "--porcelain", "--ignored")
 	cmd.Dir = repo
+	cmd.Env = gitIsolatedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status --ignored: %v\n%s", err, out)

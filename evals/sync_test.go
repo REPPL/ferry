@@ -111,7 +111,7 @@ func assertNoSecretInBareObjects(t *testing.T, bare, needle string) {
 	if _, err := exec.LookPath("git"); err != nil {
 		return
 	}
-	env := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat")
+	env := gitIsolatedEnv("GIT_PAGER=cat")
 	ids := map[string]bool{}
 	collect := func(args ...string) {
 		c := exec.Command("git", append([]string{"-C", bare}, args...)...)
