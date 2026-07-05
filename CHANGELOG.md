@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-05
+
 ### Changed
 
 - **Installer shows ferry's identity on success.** After a successful install,
