@@ -1,0 +1,6 @@
+{
+  "version": 99,
+  "targets": {
+    "__HOME__/.claude/CLAUDE.md": "agents/claude"
+  }
+}

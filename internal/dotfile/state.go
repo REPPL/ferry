@@ -1,15 +1,31 @@
 package dotfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/REPPL/ferry/internal/paths"
+	"github.com/REPPL/ferry/internal/statefile"
 )
+
+// lastAppliedVersion is the current on-disk schema version of the last-applied
+// store. Version 1 is the first versioned form: a JSON envelope carrying this
+// integer plus the applied map. A file with no "version" field is the original
+// v0.3.x form (a bare name->hash map) and reads as version 1, migrated forward on
+// the next mutating open. See internal/statefile for the shared version contract.
+const lastAppliedVersion = 1
+
+// lastAppliedFile is the versioned on-disk envelope for the last-applied store.
+type lastAppliedFile struct {
+	Version int               `json:"version"`
+	Applied map[string]string `json:"applied"`
+}
 
 // stateFileName is the per-machine last-applied record, kept under ferry's
 // state dir (NOT in the repo): it records, per managed target, the content hash
@@ -117,8 +133,42 @@ func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := json.Unmarshal(data, &s.applied); err != nil {
+	// Resolve the on-disk schema version. A file a newer ferry wrote is refused
+	// here (FutureVersionError) BEFORE any decode or write, so a downgraded ferry
+	// leaves it untouched rather than corrupting it.
+	version, migrate, err := statefile.Resolve(s.path, data, lastAppliedVersion)
+	if err != nil {
 		return nil, err
+	}
+	if migrate {
+		// The original v0.3.x form is a bare name->hash map: decode it directly.
+		if err := json.Unmarshal(data, &s.applied); err != nil {
+			return nil, err
+		}
+		// Migrate-on-read, but only on the mutating path: back the pre-migration
+		// file up first, then rewrite it in the current versioned envelope form.
+		// The read-only status/diff path decodes in memory and writes nothing.
+		if !readOnly {
+			if _, err := statefile.BackupForMigration(s.path, version); err != nil {
+				return nil, err
+			}
+			if err := s.save(); err != nil {
+				return nil, err
+			}
+		}
+	} else {
+		// Strict envelope decode: an unknown top-level key means the payload is
+		// not where the schema says (e.g. a hand-edit put hashes beside "version"
+		// instead of under "applied"). Silently reading that as an EMPTY store
+		// would let the next save permanently overwrite the record with no
+		// backup, so it is a clean refusal instead.
+		dec := json.NewDecoder(bytes.NewReader(data))
+		dec.DisallowUnknownFields()
+		var env lastAppliedFile
+		if err := dec.Decode(&env); err != nil {
+			return nil, fmt.Errorf("dotfile: state file %s is not a valid version %d last-applied record (%v) — the file has been left untouched; repair or remove it", s.path, version, err)
+		}
+		s.applied = env.Applied
 	}
 	if s.applied == nil {
 		s.applied = map[string]string{}
@@ -158,9 +208,10 @@ func (s *Store) set(name, hash string) error {
 	return s.save()
 }
 
-// save atomically rewrites the store file (temp + rename), 0600.
+// save atomically rewrites the store file (temp + rename), 0600, in the current
+// versioned envelope form.
 func (s *Store) save() error {
-	data, err := json.MarshalIndent(s.applied, "", "  ")
+	data, err := json.MarshalIndent(lastAppliedFile{Version: lastAppliedVersion, Applied: s.applied}, "", "  ")
 	if err != nil {
 		return err
 	}

@@ -1,15 +1,32 @@
 package agents
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/REPPL/ferry/internal/paths"
+	"github.com/REPPL/ferry/internal/statefile"
 )
+
+// targetsVersion is the current on-disk schema version of the agents target
+// record. Version 1 is the first versioned form: a JSON envelope carrying this
+// integer plus the path->key targets map. A file with no "version" field is the
+// original pre-versioning form (a bare path->key map) and reads as version 1,
+// migrated forward on the next mutating write. See internal/statefile for the
+// shared version contract.
+const targetsVersion = 1
+
+// targetsFile is the versioned on-disk envelope for the agents target record.
+type targetsFile struct {
+	Version int               `json:"version"`
+	Targets map[string]string `json:"targets"`
+}
 
 // targetsFileName is the persisted record of every $HOME destination the
 // agents domain has applied on this machine (absolute path -> store key),
@@ -46,19 +63,30 @@ func RecordTargets(stateDir string, targets map[string]string) error {
 		return err
 	}
 
-	record, err := readTargetRecord(stateDir)
+	path := filepath.Join(stateDir, targetsFileName)
+	record, version, migrate, err := loadTargetRecord(stateDir)
 	if err != nil {
+		// A future-version record is refused here, before any write, leaving the
+		// newer ferry's file untouched.
 		return err
 	}
-	for key, path := range targets {
-		record[path] = key
+	if migrate {
+		// Migrate-on-read (mutating path): preserve the pre-migration file before
+		// this union rewrites it in the current versioned envelope form. The
+		// backup is named after the resolved source version being migrated away
+		// from (matching the dotfile store).
+		if _, err := statefile.BackupForMigration(path, version); err != nil {
+			return err
+		}
+	}
+	for key, dest := range targets {
+		record[dest] = key
 	}
 
-	data, err := json.MarshalIndent(record, "", "  ")
+	data, err := json.MarshalIndent(targetsFile{Version: targetsVersion, Targets: record}, "", "  ")
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(stateDir, targetsFileName)
 	tmp, err := os.CreateTemp(stateDir, ".agents-targets-*.tmp")
 	if err != nil {
 		return err
@@ -90,7 +118,9 @@ func RecordedTargetPaths(stateDir string) ([]string, error) {
 	if err := paths.HardenStoreDir(stateDir); err != nil {
 		return nil, err
 	}
-	record, err := readTargetRecord(stateDir)
+	// A read enumerates the record without migrating it: this is the write-free
+	// restore path. A future-version record is still refused.
+	record, _, _, err := loadTargetRecord(stateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -102,18 +132,47 @@ func RecordedTargetPaths(stateDir string) ([]string, error) {
 	return out, nil
 }
 
-// readTargetRecord loads the record map; an absent file is an empty map.
-func readTargetRecord(stateDir string) (map[string]string, error) {
-	data, err := os.ReadFile(filepath.Join(stateDir, targetsFileName))
+// loadTargetRecord loads the path->key record, resolving its on-disk schema
+// version. It returns the record, the resolved on-disk version, whether the file
+// must be migrated forward, and any refusal. An absent file is an empty,
+// current-version record. migrate is true when the file is the original
+// pre-versioning bare-map form, so a mutating caller must back it up before
+// rewriting it as an envelope. A file a newer ferry wrote is refused with a
+// *statefile.FutureVersionError and the file is left untouched.
+func loadTargetRecord(stateDir string) (record map[string]string, version int, migrate bool, err error) {
+	path := filepath.Join(stateDir, targetsFileName)
+	data, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return map[string]string{}, nil
+		return map[string]string{}, targetsVersion, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
-	record := map[string]string{}
-	if err := json.Unmarshal(data, &record); err != nil {
-		return nil, err
+	version, migrate, err = statefile.Resolve(path, data, targetsVersion)
+	if err != nil {
+		return nil, 0, false, err
 	}
-	return record, nil
+	if migrate {
+		// The original pre-versioning form is a bare path->key map.
+		m := map[string]string{}
+		if err := json.Unmarshal(data, &m); err != nil {
+			return nil, 0, false, err
+		}
+		return m, version, true, nil
+	}
+	// Strict envelope decode: an unknown top-level key means the payload is not
+	// where the schema says (e.g. a hand-edit put destinations beside "version"
+	// instead of under "targets"). Silently reading that as an EMPTY record would
+	// let the next union discard every previously recorded destination — and with
+	// it what `ferry restore agents` can revert — so refuse cleanly instead.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var env targetsFile
+	if err := dec.Decode(&env); err != nil {
+		return nil, 0, false, fmt.Errorf("agents: target record %s is not a valid version %d record (%v) — the file has been left untouched; repair or remove it", path, version, err)
+	}
+	if env.Targets == nil {
+		env.Targets = map[string]string{}
+	}
+	return env.Targets, version, false, nil
 }

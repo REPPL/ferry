@@ -4,12 +4,22 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/REPPL/ferry/internal/statefile"
 )
+
+// journalVersion is the current on-disk schema version of a journal manifest.
+// Version 1 is the first versioned form. A manifest with no "version" field is
+// the original pre-versioning form and reads as version 1. A manifest a newer
+// ferry wrote is refused on read (never rolled back or deleted), so a downgraded
+// ferry cannot mis-revert state a newer one owns. See internal/statefile.
+const journalVersion = 1
 
 // Journal layout, per run, under journalDir:
 //
@@ -26,6 +36,7 @@ const completeMarker = "COMPLETE"
 
 // JournalEntry is one apply run's record.
 type JournalEntry struct {
+	Version   int       `json:"version"`
 	RunID     string    `json:"run_id"`
 	StartedAt time.Time `json:"started_at"`
 	Changes   []Change  `json:"changes"`
@@ -68,7 +79,7 @@ func (e *Engine) Begin() (*run, error) {
 	}
 	r := &run{
 		dir:   dir,
-		entry: JournalEntry{RunID: id, StartedAt: time.Now().UTC()},
+		entry: JournalEntry{Version: journalVersion, RunID: id, StartedAt: time.Now().UTC()},
 	}
 	if err := r.flush(); err != nil {
 		return nil, err
@@ -147,12 +158,22 @@ func (e *Engine) listRuns() ([]string, error) {
 
 func (e *Engine) loadEntry(runID string) (JournalEntry, error) {
 	var entry JournalEntry
-	data, err := os.ReadFile(filepath.Join(e.runDir(runID), "manifest.json"))
+	path := filepath.Join(e.runDir(runID), "manifest.json")
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return entry, err
 	}
+	// Refuse a manifest a newer ferry wrote BEFORE parsing it, so a downgraded
+	// ferry never rolls back (or deletes) a run it cannot faithfully interpret.
+	if _, _, verr := statefile.Resolve(path, data, journalVersion); verr != nil {
+		return entry, verr
+	}
 	if err := json.Unmarshal(data, &entry); err != nil {
 		return entry, err
+	}
+	// A pre-versioning manifest carries no "version" field; it is schema v1.
+	if entry.Version == 0 {
+		entry.Version = journalVersion
 	}
 	return entry, nil
 }
@@ -186,8 +207,15 @@ func (e *Engine) RollbackIncomplete() ([]string, error) {
 func (e *Engine) rollbackRun(runID string) error {
 	entry, err := e.loadEntry(runID)
 	if err != nil {
-		// A run dir with no readable manifest carries no recoverable record;
-		// drop it so it stops being flagged as incomplete forever.
+		// A manifest a NEWER ferry wrote must be left completely alone — not
+		// rolled back and not dropped — so a downgraded ferry cannot destroy a
+		// newer run's record. Surface the refusal instead.
+		var fv *statefile.FutureVersionError
+		if errors.As(err, &fv) {
+			return err
+		}
+		// Any other unreadable manifest carries no recoverable record; drop it so
+		// it stops being flagged as incomplete forever.
 		return os.RemoveAll(e.runDir(runID))
 	}
 	dir := e.runDir(runID)

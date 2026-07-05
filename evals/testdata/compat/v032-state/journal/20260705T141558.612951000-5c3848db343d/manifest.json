@@ -1,0 +1,16 @@
+{
+  "run_id": "20260705T141558.612951000-5c3848db343d",
+  "started_at": "2026-07-05T14:15:58.613018Z",
+  "changes": [
+    {
+      "prior": {
+        "path": "__HOME__/.zshrc",
+        "kind": "file",
+        "mode": 420,
+        "has_blob": true,
+        "mod_time": "2026-07-05T15:15:58.600602745+01:00"
+      },
+      "action": "write"
+    }
+  ]
+}
