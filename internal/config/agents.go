@@ -326,8 +326,19 @@ func mergeAgents(shared, local agentsFileConfig) AgentsConfig {
 	for name, a := range shared.asset {
 		out.Asset[name] = a
 	}
+	// Local asset declarations merge per FIELD (local wins), not wholesale: a
+	// documented partial override (local sets only target) must keep the shared
+	// source rather than blank it — a blanked source makes ResolveAssets
+	// hard-error the whole domain for a mapping that is not a built-in.
 	for name, a := range local.asset {
-		out.Asset[name] = a
+		merged := out.Asset[name]
+		if a.Source != "" {
+			merged.Source = a.Source
+		}
+		if a.Target != "" {
+			merged.Target = a.Target
+		}
+		out.Asset[name] = merged
 	}
 	return out
 }
