@@ -127,7 +127,10 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # push the pinned install.sh and create the Release
+      contents: write       # push the pinned install.sh and create the Release
+      id-token: write       # mint the OIDC token attest-build-provenance signs with
+      attestations: write   # publish the build-provenance attestations (and let the
+                            # post-release verify step read them back through gh)
     steps:
       - name: Check out the pushed commit (full history for the install.sh push)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -196,16 +199,47 @@ jobs:
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
+      - name: Attest build provenance for the four binaries
+        # Generate and publish a signed SLSA build-provenance attestation for each
+        # cross-compiled binary, over the exact files uploaded below. Runs AFTER the
+        # checksum pin (which rebuilds bin/ferry-*) so the attested bytes are the
+        # published bytes, and BEFORE the Release so a failed attestation aborts
+        # before anything is published. Needs id-token: write (OIDC) and
+        # attestations: write (the attestations store) from the job permissions.
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: 'bin/ferry-*'
+
       - name: Create the GitHub Release and upload the binaries
         run: gh release create "${GITHUB_REF_NAME}" bin/ferry-* --verify-tag --title "${GITHUB_REF_NAME}" --notes ""
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the published attestation against a freshly downloaded binary
+        # Post-release gate (plan W2 eval): prove the attestation is real and
+        # retrievable. Download one binary FRESH from the just-created Release and run
+        # `gh attestation verify` against this repo; a failure fails the whole run. gh
+        # reads the release asset (contents: read, covered by contents: write) and the
+        # attestation (attestations read, covered by attestations: write). Runs before
+        # the prune so the release it verifies is guaranteed still present.
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/attest-verify"
+          mkdir -p "$DL"
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'ferry-linux-amd64' \
+            --dir "$DL"
+          gh attestation verify "$DL/ferry-linux-amd64" --repo "${GITHUB_REPOSITORY}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Prune superseded releases (retention policy)
         # Runs ONLY after the new release is published (a failed publish stops the job
         # before this step). Keeps the latest release of the current line plus the last
-        # release of every other line, deleting older within-line releases + their tags.
-        # It never prunes the release just created (--current), and refuses if a newer
+        # release of every other line, deleting older within-line RELEASES (never their
+        # git tags, which are immutable once pushed). It never prunes the release just
+        # created (--current), and refuses if a newer
         # patch than the current one somehow exists. See scripts/prune-releases.sh.
         run: scripts/prune-releases.sh --current "${GITHUB_REF_NAME}"
         env:
