@@ -13,7 +13,7 @@ the CLI surface may still change between minor versions (pre-1.0 = not yet API-s
 `v1.0.0` marks the first stable surface. The tag drives everything: the release
 workflow triggers on `v*`, and the tag is stamped into the binary via `-ldflags` so
 `ferry --version` reports it (e.g. `ferry v0.1.0`). Un-tagged local builds report the
-current development line (`v0.1.0-dev`).
+current development line (`v0.4.0-dev`).
 
 Checksums are **automated**, not hand-pasted. A script computes the SHA256 of each
 binary and writes it into `install.sh`; CI runs that script on a tag push.
