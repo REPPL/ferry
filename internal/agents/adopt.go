@@ -351,10 +351,13 @@ func strictlyWithin(base, p string) bool {
 
 // bridgeCandidate joins a home-relative destination LEXICALLY for bridge
 // scanning, applying only the lexical containment rules (strictly inside
-// $HOME, never at/under ~/.ssh). It deliberately does NOT run the planner's
-// symlink-RESOLVING validation (dotfile.NestedTarget): an out-pointing parent
-// symlink is exactly the bridge adopt exists to find, so a candidate must
-// stay enumerable when its parent is a symlink into the adopted directory.
+// $HOME, never at/under ~/.ssh) via the shared dotfile.ValidateHomeTarget —
+// the SAME lexical validator the planner's boundary uses, so the two cannot
+// drift. It deliberately does NOT run the symlink-RESOLVING validation here:
+// an out-pointing parent symlink is exactly the directory-level bridge adopt
+// exists to surface, so a candidate must stay enumerable when its parent is a
+// symlink into the adopted directory. The resolved-containment gate is applied
+// per candidate in FindBridges before a leaf is accepted as a removable bridge.
 // Nothing at the candidate is read here — the caller only Lstats it.
 func bridgeCandidate(home, rel string) (string, bool) {
 	if filepath.IsAbs(rel) {
@@ -362,15 +365,7 @@ func bridgeCandidate(home, rel string) (string, bool) {
 	}
 	cleanHome := filepath.Clean(home)
 	dest := filepath.Clean(filepath.Join(cleanHome, rel))
-	back, err := filepath.Rel(cleanHome, dest)
-	if err != nil || back == "." || back == ".." || strings.HasPrefix(back, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	first := back
-	if i := strings.IndexRune(back, filepath.Separator); i >= 0 {
-		first = back[:i]
-	}
-	if first == ".ssh" {
+	if err := dotfile.ValidateHomeTarget(cleanHome, dest); err != nil {
 		return "", false
 	}
 	return dest, true

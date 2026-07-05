@@ -127,7 +127,7 @@ func TargetFor(repoRoot, home, name string) (Target, error) {
 	// Resolve the home destination the same way it materializes (<home>/.bare),
 	// then validate the CLEANED path so `..` and absolute names cannot escape.
 	homeDest := filepath.Join(home, "."+bare)
-	if err := validateHomeTarget(home, homeDest); err != nil {
+	if err := ValidateHomeTarget(home, homeDest); err != nil {
 		return Target{}, err
 	}
 
@@ -145,7 +145,7 @@ func TargetFor(repoRoot, home, name string) (Target, error) {
 // last-applied store key (e.g. "agents/codex"); rel is the destination path
 // relative to home.
 //
-// It is the SAME security boundary as TargetFor — validateHomeTarget refuses
+// It is the SAME security boundary as TargetFor — ValidateHomeTarget refuses
 // an absolute rel, a `..` climb out of $HOME, and anything at/under ~/.ssh —
 // PLUS a symlink-RESOLVING containment check: unlike a flat dotfile (whose
 // only parent is $HOME itself), a nested destination sits under intermediate
@@ -160,7 +160,7 @@ func NestedTarget(home, rel, name string) (Target, error) {
 		return Target{}, ErrPathEscapesHome
 	}
 	dest := filepath.Join(home, rel)
-	if err := validateHomeTarget(home, dest); err != nil {
+	if err := ValidateHomeTarget(home, dest); err != nil {
 		return Target{}, err
 	}
 	if err := validateHomeTargetResolved(home, dest); err != nil {
@@ -187,11 +187,14 @@ func IncludeSidecarTarget(repoRoot, home, name string) (Target, error) {
 	return t, nil
 }
 
-// validateHomeTarget enforces the two boundary rules on a resolved home target:
-// it must sit strictly within $HOME (no `..` climb, no absolute escape) and must
-// NOT be ~/.ssh or anything under it. home and dest are both cleaned before
-// comparison so `.ssh/../.ssh/config`-style tricks cannot slip through.
-func validateHomeTarget(home, dest string) error {
+// ValidateHomeTarget enforces the two LEXICAL boundary rules on a resolved home
+// target: it must sit strictly within $HOME (no `..` climb, no absolute escape)
+// and must NOT be ~/.ssh or anything under it. home and dest are both cleaned
+// before comparison so `.ssh/../.ssh/config`-style tricks cannot slip through.
+// It is the single lexical containment validator; adopt's bridge scan and the
+// nested-target boundary both build on it. It does NOT resolve symlinks — that
+// is validateHomeTargetResolved's job.
+func ValidateHomeTarget(home, dest string) error {
 	cleanHome := filepath.Clean(home)
 	cleanDest := filepath.Clean(dest)
 
