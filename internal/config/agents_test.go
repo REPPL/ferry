@@ -174,6 +174,11 @@ func TestLoadAgentsErrors(t *testing.T) {
 			wantSub: "must stay within the repo's agents/ area",
 		},
 		{
+			name:    "asset target climbing out of home",
+			shared:  "[agents.asset.x]\nsource = \"x\"\ntarget = \"../evil\"\n",
+			wantSub: "must stay within $HOME",
+		},
+		{
 			name:    "wrong-typed assets list",
 			shared:  "[agents]\nassets = true\n",
 			wantSub: "assets must be a list of strings",

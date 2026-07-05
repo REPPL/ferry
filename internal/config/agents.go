@@ -266,8 +266,14 @@ func validateAssetSpec(name string, a AgentsAsset) error {
 			return fmt.Errorf("agents.asset.%s.source must stay within the repo's agents/ area, got %q", name, a.Source)
 		}
 	}
-	if a.Target != "" && filepath.IsAbs(a.Target) {
-		return fmt.Errorf("agents.asset.%s.target must be relative to $HOME, got the absolute path %q", name, a.Target)
+	if a.Target != "" {
+		if filepath.IsAbs(a.Target) {
+			return fmt.Errorf("agents.asset.%s.target must be relative to $HOME, got the absolute path %q", name, a.Target)
+		}
+		clean := filepath.Clean(a.Target)
+		if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
+			return fmt.Errorf("agents.asset.%s.target must stay within $HOME, got %q", name, a.Target)
+		}
 	}
 	return nil
 }
