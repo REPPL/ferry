@@ -11,6 +11,10 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Changed
+
+- The cross-compiled `bin/ferry-*` binaries are no longer tracked in git; they are build artifacts produced by `make build` and shipped as release assets.
+
 ### Fixed
 
 - Harness targets that climb out of `$HOME` via `..` are now rejected when

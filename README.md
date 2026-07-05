@@ -24,15 +24,6 @@ pulls local changes back when you want to harmonise them everywhere.
 > `ferry` is a research project for my personal use. Not ready for production as things
 > may break.
 
-## Documentation
-
-- [Getting started](docs/getting-started.md): zero to a working setup
-- [Configuration](docs/configuration.md): the manifest, scope, and the `.local` layer
-- [Agents](docs/agents.md): the agents domain — one set of AI-agent instructions (CLAUDE.md, AGENTS.md, skills, hooks) carried across machines and coding CLIs
-- [SSH](docs/ssh.md): how ferry treats SSH (hands-off) and how to move keys yourself
-- [Compatibility](docs/reference/compatibility.md): which surfaces are stable, the pre-1.0 rule, and how on-disk state is versioned
-- [Releases](docs/RELEASE.md): how releases are built, checksummed, attested, and pruned
-
 ## Install
 
 ```bash
@@ -75,6 +66,15 @@ ferry apply           # reconcile this machine to the repo
 ```
 
 See [Getting started](docs/getting-started.md) for the full happy path.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md): zero to a working setup
+- [Configuration](docs/configuration.md): the manifest, scope, and the `.local` layer
+- [Agents](docs/agents.md): the agents domain — one set of AI-agent instructions (CLAUDE.md, AGENTS.md, skills, hooks) carried across machines and coding CLIs
+- [SSH](docs/ssh.md): how ferry treats SSH (hands-off) and how to move keys yourself
+- [Compatibility](docs/reference/compatibility.md): which surfaces are stable, the pre-1.0 rule, and how on-disk state is versioned
+- [Releases](docs/RELEASE.md): how releases are built, checksummed, attested, and pruned
 
 ## Commands
 
