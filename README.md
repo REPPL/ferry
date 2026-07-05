@@ -12,17 +12,16 @@
   <br />
   <img src="https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white" alt="macOS">
   <img src="https://img.shields.io/badge/Linux-core%20CI--tested-FCC624?logo=linux&logoColor=black" alt="Linux: core CI-tested">
+  <br />
+  <img src="https://img.shields.io/badge/status-experimental-orange" alt="Status: experimental">
 
 </div>
 
 ---
 
-`ferry` carries your terminal setup across user accounts and machines. Define your
+`ferry` carries your development setup across user accounts and machines. Define your
 configuration once in a git repo; `ferry` reconciles any machine to match it, and
 pulls local changes back when you want to harmonise them everywhere.
-
-> `ferry` is a research project for my personal use. Not ready for production as things
-> may break.
 
 ## Install
 
@@ -30,13 +29,8 @@ pulls local changes back when you want to harmonise them everywhere.
 curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 ```
 
-> **Note:** the `curl … | bash` installer fetches the release's `checksums.txt` and
-> verifies each binary against it, failing closed if it is absent. Building from source
-> works today; see [RELEASE.md](docs/RELEASE.md) for how releases are cut.
-
 Installs the single `ferry` binary to `~/.local/bin`. If that's not on your PATH, the
-installer prints the one line to add. It does not install Homebrew or run anything else.
-(No `sudo`, no shell edits: see [Principles](#principles).)
+installer prints the one line to add.
 
 ### Verifying a download
 
