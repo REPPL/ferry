@@ -15,10 +15,11 @@ permissions:
 
 jobs:
   release:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo (full history, default branch)
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
         with:
           # Check out the branch tip (not the detached tag) so we can commit the
           # pinned install.sh back to the default branch.
@@ -26,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: '1.25'
 
@@ -56,7 +57,7 @@ jobs:
           fi
 
       - name: Create the GitHub Release and upload the binaries
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3
         with:
           files: bin/ferry-*
         env:
