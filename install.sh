@@ -22,8 +22,9 @@
 # FERRY_FAKE_BINARY=/path/to/binary — TEST-ONLY override: install that explicit real
 # file instead of downloading. No implicit CWD/bin fallback; no placeholder.
 # FERRY_RELEASE_BASE_URL=<url> — TEST-ONLY override: fetch the binary and
-# checksums.txt from <url>/ instead of the GitHub release (e.g. a file:// dir), so
-# the fetch+verify path can be exercised offline. Unset in normal use.
+# checksums.txt from <url>/ instead of the GitHub release, so the fetch+verify path
+# can be exercised offline. file:// URLs ONLY (anything else is refused) and its
+# use is announced on stdout. Unset in normal use.
 set -euo pipefail
 
 VERSION="${FERRY_VERSION:-latest}"
@@ -54,8 +55,19 @@ asset="ferry-${os}-${arch}"
 
 # Resolve the release base URL: the binary and its checksums.txt come from the SAME
 # release. FERRY_RELEASE_BASE_URL (TEST-ONLY) overrides the GitHub location so the
-# fetch+verify path can run offline against a local release layout.
+# fetch+verify path can run offline against a local release layout. It is
+# restricted to file:// URLs — a remote override would silently redirect the entire
+# trust root (the binary AND the checksums it is verified against), so anything
+# else is refused, and an active override is always announced loudly.
 if [ -n "${FERRY_RELEASE_BASE_URL:-}" ]; then
+  case "$FERRY_RELEASE_BASE_URL" in
+    file://*) ;;
+    *)
+      echo "ferry install: FERRY_RELEASE_BASE_URL is TEST-ONLY and must be a file:// URL; refusing '${FERRY_RELEASE_BASE_URL}'" >&2
+      exit 1
+      ;;
+  esac
+  echo "ferry install: TEST-ONLY release-source override active: ${FERRY_RELEASE_BASE_URL}"
   base_url="${FERRY_RELEASE_BASE_URL%/}"
 elif [ "$VERSION" = "latest" ]; then
   base_url="https://github.com/${REPO}/releases/latest/download"
@@ -103,7 +115,9 @@ else
     exit 1
   fi
   # Look up this target's hash. checksums.txt lines are `<sha256>  <asset>`.
-  expected_sha="$(awk -v a="$asset" '$2 == a { print $1; exit }' "$sums")"
+  # Strip a trailing CR so a CRLF-mangled manifest still diagnoses correctly
+  # (the hash comparison below is what gates the install, not this lookup).
+  expected_sha="$(awk -v a="$asset" '{ sub(/\r$/, "", $2) } $2 == a { print $1; exit }' "$sums")"
   if [ -z "$expected_sha" ]; then
     echo "ferry install: checksums.txt has no entry for ${asset}; refusing to install" >&2
     exit 1
