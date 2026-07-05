@@ -31,9 +31,7 @@ The domain reads from the `agents/` directory of the config repo:
 | `agents/general.md` | Rules for all tasks, everywhere (edit this) |
 | `agents/coding.md` | Rules for coding work (edit this) |
 | `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `prepare-commit-msg`, `pre-commit-config.yaml` |
-| `agents/skills/` | Claude Code skills, deployed recursively to `~/.claude/skills/` |
-| `agents/agents/` | Claude Code sub-agents, deployed recursively to `~/.claude/agents/` |
-| `agents/hooks/` | Hook scripts, deployed recursively to `~/.claude/hooks/` (executable bits preserved) |
+| `agents/<source>/` | One directory per asset mapping (see below), deployed recursively to the mapping's target under `$HOME` with executable bits preserved per file. The built-in mappings read `agents/skills/`, `agents/agents/`, and `agents/hooks/` |
 
 There is no committed `combined.md`: the combined content is **derived in
 memory** at apply time — a fixed one-line generated header, a blank line, then
@@ -43,17 +41,22 @@ deterministic (no timestamps), so re-applying an unchanged repo is a no-op.
 ## Configuration
 
 Everything under `[agents]` is optional. `ferry.local.toml` overrides
-`ferry.toml` per key; `[agents.harness.<name>]` tables merge per name (local
-wins).
+`ferry.toml` per key; `[agents.harness.<name>]` and `[agents.asset.<name>]`
+tables merge per name (local wins).
 
 ```toml
 [agents]
 devtree   = "Workspace"     # optional workspace directory, relative to $HOME
 harnesses = ["claude", "codex", "opencode", "companion", "gemini"]
+assets    = ["skills", "agents", "hooks"]
 
 [agents.harness.myharness]  # a user-defined harness: data, not code
 target = ".config/myharness/RULES.md"
 source = "combined"         # combined | general | coding
+
+[agents.asset.githooks]     # a user-defined asset mapping: data, not code
+source = "githooks"         # directory under the repo's agents/ area
+target = ".githooks"        # directory under $HOME
 ```
 
 | Key | Meaning | Default |
@@ -62,6 +65,9 @@ source = "combined"         # combined | general | coding
 | `harnesses` | Which harnesses deploy. A declared list restricts (and orders) the set; naming an unknown harness is an error. | all known harnesses |
 | `harness.<name>.target` | The harness's global instruction file, relative to `$HOME`. Required for a new harness; optional when overriding a built-in. | — |
 | `harness.<name>.source` | Which content the target receives: `general`, `coding`, or `combined`. | `combined` for a new harness |
+| `assets` | Which asset mappings deploy. A declared list restricts (and orders) the set — leaving a built-in out removes its tree from management; naming an unknown mapping is an error. | all known mappings |
+| `asset.<name>.source` | The mapping's source directory under the repo's `agents/` area. Required for a new mapping; optional when overriding a built-in. | — |
+| `asset.<name>.target` | The mapping's destination directory relative to `$HOME`. Required for a new mapping; optional when overriding a built-in. | — |
 
 ### Built-in harness registry
 
@@ -78,6 +84,41 @@ The registry ships as data; adding a harness never requires a code change.
 Claude Code receives the split pair (`general` at user level, `coding` at the
 devtree root) because it composes levels through its directory hierarchy; flat
 tools receive the pre-merged `combined` content.
+
+### Built-in asset-mapping registry
+
+Asset mappings are data too: each one copies a config-repo directory
+recursively to a directory under `$HOME`, per-file executable bits preserved.
+Every deployed file gets the full per-target treatment — hash-gated writes,
+drift in `status`/`diff`, backup and restore, collision refusal against every
+other harness and asset destination.
+
+| Mapping | Source | Target |
+|---|---|---|
+| `skills` | `agents/skills/` | `~/.claude/skills/` |
+| `agents` | `agents/agents/` | `~/.claude/agents/` |
+| `hooks` | `agents/hooks/` | `~/.claude/hooks/` |
+
+### Example: ferry-carried global git hooks
+
+A user-defined mapping is all it takes to carry global git hooks across
+machines:
+
+```toml
+[agents.asset.githooks]
+source = "githooks"
+target = ".githooks"
+```
+
+Dispatcher scripts placed in the config repo's `agents/githooks/` (one per
+hook name, e.g. `pre-commit`) then deploy as executables under
+`~/.githooks/`. Point git at them once per machine with
+`git config --global core.hooksPath ~/.githooks`. Each dispatcher delegates
+rather than replaces: it runs the current repo's own `.githooks/<name>` if
+present, then the repo's `.git/hooks/<name>` (so the pre-commit framework and
+any locally installed hooks keep working), exiting on the first failure. The
+dispatcher scripts themselves are config-repo content, like the scaffold
+templates — ferry carries and deploys them but does not ship them.
 
 ## Apply, status, diff, and restore semantics
 
