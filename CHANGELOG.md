@@ -11,6 +11,14 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Changed
+
+- Internal, no output change: the `agents scaffold` file layout is now a single
+  declarative table (`scaffoldLayout`) that both scaffold modes walk, replacing
+  the duplicated hardcoded `put(...)` sequences. A golden characterization test
+  locks the scaffold output byte-for-byte across tracked, private, and
+  attribution modes.
+
 ## [0.5.2] - 2026-07-06
 
 ### Security

@@ -36,6 +36,20 @@ func scaffoldFixture(t *testing.T, git bool) (templates, repo string) {
 	return templates, repo
 }
 
+// layoutDests derives the repo-relative put destinations the shared
+// scaffoldLayout table produces for a scaffold mode, in table order — so the
+// existence assertions track the single source of truth instead of re-listing
+// paths by hand.
+func layoutDests(private bool) []string {
+	var dests []string
+	for _, f := range scaffoldLayout {
+		if dest := f.destFor(private); dest != "" {
+			dests = append(dests, dest)
+		}
+	}
+	return dests
+}
+
 func runScaffold(t *testing.T, opts ScaffoldOptions) string {
 	t.Helper()
 	var buf bytes.Buffer
@@ -62,13 +76,15 @@ func TestScaffoldTrackedMode(t *testing.T) {
 
 	// Committed memory in .work/, runtime artefacts in .work.local/ — both
 	// modes share the .work.local layout. The docs hierarchy carries the map
-	// plus the dated-record directories.
-	for _, rel := range []string{
-		".work/NEXT.md", ".work/DECISIONS.md",
-		".work.local/scratch", ".work.local/logs",
-		"docs/decisions", "docs/research", "docs/plans",
-		".pre-commit-config.yaml",
-	} {
+	// plus the dated-record directories. The tracked put files come from the
+	// shared scaffoldLayout table (the single source of truth), so this loop
+	// tracks the layout automatically.
+	want := layoutDests(false) // tracked dests: .work/NEXT.md, .work/DECISIONS.md, AGENTS.md, docs/README.md
+	want = append(want, ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml")
+	for _, d := range scaffoldDocsDirs {
+		want = append(want, "docs/"+d)
+	}
+	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}
@@ -389,7 +405,11 @@ func TestScaffoldPrivateMode(t *testing.T) {
 		RepoDir: repo, Private: true, TemplatesDir: templates, Date: "2026-07-04",
 	})
 
-	for _, rel := range []string{".work.local/NEXT.md", ".work.local/DECISIONS.md", ".work.local/ISSUES.md", ".work.local/scratch", ".work.local/logs"} {
+	// The private put files come from the shared scaffoldLayout table (the
+	// single source of truth), alongside the shared runtime dirs.
+	want := layoutDests(true) // private dests: .work.local/{NEXT,DECISIONS,ISSUES}.md
+	want = append(want, ".work.local/scratch", ".work.local/logs")
+	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}

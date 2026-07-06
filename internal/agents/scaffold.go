@@ -145,18 +145,93 @@ func excludeWorkLocal(repo string, out io.Writer) {
 	fmt.Fprintln(out, "excluded: .work.local/ via git info/exclude (local-only, not committed)")
 }
 
+// scaffoldMode records which scaffold(s) a layout entry belongs to.
+type scaffoldMode int
+
+const (
+	modeTracked scaffoldMode = iota // default (tracked) scaffold only
+	modePrivate                     // --private scaffold only
+	modeBoth                        // both scaffolds, at mode-specific dests
+)
+
+// scaffoldFile is one templated put() target in the scaffold layout. dest
+// paths are repo-relative. mode says which scaffold(s) create the file; the
+// matching dest gives where. For modeBoth the two dests differ (`.work/` vs
+// `.work.local/`); for a single-mode file only that mode's dest is set.
+type scaffoldFile struct {
+	template    string
+	mode        scaffoldMode
+	trackedDest string
+	privateDest string
+}
+
+// destFor returns f's repo-relative dest for the requested scaffold, or "" when
+// f is not created in that scaffold.
+func (f scaffoldFile) destFor(private bool) string {
+	switch f.mode {
+	case modeTracked:
+		if private {
+			return ""
+		}
+		return f.trackedDest
+	case modePrivate:
+		if private {
+			return f.privateDest
+		}
+		return ""
+	default: // modeBoth
+		if private {
+			return f.privateDest
+		}
+		return f.trackedDest
+	}
+}
+
+// scaffoldLayout is the single source of truth for the templated put() files,
+// in the EXACT order the scaffolds stamp them. Tracked mode walks the entries
+// with a trackedDest (NEXT, DECISIONS, AGENTS, docs/README); private mode walks
+// the entries with a privateDest (NEXT, DECISIONS, ISSUES). The mode-specific
+// steps (the CLAUDE/GEMINI symlinks, the pre-commit copy, the --attribution
+// hook, and excludeWorkLocal) are imperative and live outside this table.
+var scaffoldLayout = []scaffoldFile{
+	{template: "NEXT.md", mode: modeBoth, trackedDest: ".work/NEXT.md", privateDest: ".work.local/NEXT.md"},
+	{template: "DECISIONS.md", mode: modeBoth, trackedDest: ".work/DECISIONS.md", privateDest: ".work.local/DECISIONS.md"},
+	{template: "ISSUES.md", mode: modePrivate, privateDest: ".work.local/ISSUES.md"},
+	{template: "AGENTS.md", mode: modeTracked, trackedDest: "AGENTS.md"},
+	{template: "docs-README.md", mode: modeTracked, trackedDest: "docs/README.md"},
+}
+
+// scaffoldDocsDirs are the docs/ subdirectories tracked mode creates up front
+// (they hold dated records). The Diátaxis content dirs (tutorials/how-to/
+// reference/explanation) are created on first use, not here.
+var scaffoldDocsDirs = []string{"decisions", "research", "plans"}
+
+// putLayout stamps every scaffoldLayout entry that applies to the requested
+// scaffold, in table order, creating each dest's parent dir first (put itself
+// does not). It preserves the exact put() order and the never-overwrite/skip
+// semantics.
+func putLayout(repo string, private bool, put func(templateName, dest string) error) error {
+	for _, f := range scaffoldLayout {
+		dest := f.destFor(private)
+		if dest == "" {
+			continue
+		}
+		full := filepath.Join(repo, dest)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			return err
+		}
+		if err := put(f.template, full); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // scaffoldPrivate creates the zero-tracked-trace layout: .work.local/ holds
 // the three logs alongside the runtime-artefact dirs the caller already
 // created; nothing tracked is created or modified.
 func scaffoldPrivate(repo, name string, put func(templateName, dest string) error, out io.Writer) error {
-	w := filepath.Join(repo, ".work.local")
-	if err := put("NEXT.md", filepath.Join(w, "NEXT.md")); err != nil {
-		return err
-	}
-	if err := put("DECISIONS.md", filepath.Join(w, "DECISIONS.md")); err != nil {
-		return err
-	}
-	if err := put("ISSUES.md", filepath.Join(w, "ISSUES.md")); err != nil {
+	if err := putLayout(repo, true, put); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "done: %s (private mode — no tracked files were created or modified)\n", name)
@@ -171,30 +246,20 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 // artefacts are excluded via .work.local/ + info/exclude, and .work/ is
 // meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
-	if err := os.MkdirAll(filepath.Join(repo, ".work"), 0o755); err != nil {
-		return err
-	}
-	if err := put("NEXT.md", filepath.Join(repo, ".work", "NEXT.md")); err != nil {
-		return err
-	}
-	if err := put("DECISIONS.md", filepath.Join(repo, ".work", "DECISIONS.md")); err != nil {
-		return err
-	}
-	if err := put("AGENTS.md", filepath.Join(repo, "AGENTS.md")); err != nil {
-		return err
-	}
-
-	// Docs hierarchy: the map (docs/README.md, stamped from the
-	// docs-README.md template, never overwriting an existing one) plus the
-	// directories that hold dated records. The Diátaxis content directories
-	// (tutorials/how-to/reference/explanation) are created on first use, not
-	// up front.
-	for _, d := range []string{"decisions", "research", "plans"} {
+	// Docs hierarchy directories that hold dated records (the map
+	// docs/README.md is a scaffoldLayout entry). The Diátaxis content
+	// directories (tutorials/how-to/reference/explanation) are created on
+	// first use, not up front.
+	for _, d := range scaffoldDocsDirs {
 		if err := os.MkdirAll(filepath.Join(repo, "docs", d), 0o755); err != nil {
 			return err
 		}
 	}
-	if err := put("docs-README.md", filepath.Join(repo, "docs", "README.md")); err != nil {
+
+	// The committed put files, in table order: the .work/ memory
+	// (NEXT.md, DECISIONS.md), the AGENTS.md router, and the docs map
+	// (docs/README.md, never overwriting an existing one).
+	if err := putLayout(repo, false, put); err != nil {
 		return err
 	}
 
