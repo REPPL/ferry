@@ -5,7 +5,9 @@ name: release
 # against a real Linux binary) against the PUSHED COMMIT; only if that gate is
 # green does it build the four cross-compiled binaries FROM THAT SAME COMMIT,
 # generate a checksums.txt manifest over them, and publish a GitHub Release with
-# the binaries, checksums.txt, and their build-provenance attestations attached.
+# the binaries, checksums.txt, and (on a public repo) their build-provenance
+# attestations attached — attestation is skipped on a user-owned private repo,
+# where GitHub does not offer the feature.
 # Nothing is pushed to any branch: install.sh fetches checksums.txt from the
 # release at install time, so no checksum is ever committed back. Both jobs check
 # out `github.sha` — the commit the pushed tag pointed at, fixed for the whole run
@@ -201,6 +203,14 @@ jobs:
         # first-class, provenance-signed artifact for anyone who verifies it with
         # `gh attestation verify`. Needs id-token: write (OIDC) and
         # attestations: write (the attestations store) from the job permissions.
+        #
+        # Skipped on a private repo: build-provenance attestation is not available
+        # for user-owned private repositories (GitHub gates the feature by repo
+        # visibility). The release still ships the binaries + checksums.txt, which
+        # install.sh verifies by hash; attestation re-enables automatically if ferry
+        # goes public. A skipped step is not a failure, so the publish steps below
+        # still run.
+        if: ${{ !github.event.repository.private }}
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
@@ -219,6 +229,10 @@ jobs:
         # reads the release asset (contents: read, covered by contents: write) and the
         # attestation (attestations read, covered by attestations: write). Runs before
         # the prune so the release it verifies is guaranteed still present.
+        #
+        # Skipped on a private repo: no attestation was produced above, so there is
+        # nothing to verify. Re-enables alongside attestation if ferry goes public.
+        if: ${{ !github.event.repository.private }}
         run: |
           set -euo pipefail
           DL="$RUNNER_TEMP/attest-verify"
