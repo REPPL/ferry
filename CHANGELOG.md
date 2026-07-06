@@ -24,8 +24,9 @@ called out in a **Breaking** section. See
   modifier, aborts the whole uninstall with the record left intact), and both
   the `apt-get remove` and `brew uninstall` invocations now place `--` before
   the package list so nothing after it can be read as an option. This runs as
-  root under `sudo ferry restore --packages`; the state file is `0700` and
-  symlink-hardened, so exploitation requires tampering with local ferry state,
+  root under `sudo ferry restore --packages`; the state directory is `0700`
+  (the record file itself `0600`) and symlink-hardened, so exploitation requires
+  tampering with local ferry state,
   but the boundary is now closed either way. Legitimate recorded names are
   unaffected.
 - **`restore --packages` also rejects a trailing `+` on a recorded apt entry,
