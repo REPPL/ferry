@@ -1,0 +1,10 @@
+# Canonical author identities.
+#
+# Collapses leftover local placeholder identities (eval/t/ferry — set by a
+# benchmark/eval harness that left git user.email at <name>@localhost) onto the
+# real author. This is display-only: git shortlog/blame/log and the contributor
+# graph read it; commit history is not rewritten.
+REPPL <77722411+REPPL@users.noreply.github.com> <eval@localhost>
+REPPL <77722411+REPPL@users.noreply.github.com> <ferry@localhost>
+REPPL <77722411+REPPL@users.noreply.github.com> <t@localhost>
+REPPL <77722411+REPPL@users.noreply.github.com> <t@t>
