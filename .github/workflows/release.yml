@@ -153,23 +153,25 @@ jobs:
           # nothing here.
           ref: ${{ github.sha }}
           # No job step pushes to any branch, so no git-stored credentials are
-          # needed: gh uses GH_TOKEN and the ls-remote tripwire reads public refs.
+          # needed: gh uses GH_TOKEN, and the no-branch-commit tripwire reads the
+          # default-branch ref through the API with GH_TOKEN, not git ls-remote.
           persist-credentials: false
 
       - name: Record the default-branch tip (no-branch-commit tripwire)
         # This release job must push NOTHING to any branch. Record the remote
         # default-branch tip now; the closing step re-reads it and fails the run
-        # if the branch moved BECAUSE OF THIS JOB. Anonymous ls-remote works
-        # because this repo is public; if it ever goes private, switch to
-        # `gh api repos/.../git/ref/heads/...` with GH_TOKEN.
+        # if the branch moved BECAUSE OF THIS JOB. Read the ref through the API
+        # with GH_TOKEN: an anonymous `git ls-remote` cannot authenticate to this
+        # private repo, and checkout runs with persist-credentials: false.
         run: |
           set -euo pipefail
-          sha="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${DEFAULT_BRANCH}" --jq '.object.sha')"
           test -n "$sha"
           echo "DEFAULT_BRANCH_START_SHA=$sha" >> "$GITHUB_ENV"
           echo "default-branch tip at job start: $sha"
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -269,7 +271,7 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          end="$(git ls-remote origin "refs/heads/${DEFAULT_BRANCH}" | cut -f1)"
+          end="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${DEFAULT_BRANCH}" --jq '.object.sha')"
           if [ "$end" = "${DEFAULT_BRANCH_START_SHA}" ]; then
             echo "default branch unchanged across the release job (${end}); the job pushed nothing."
             exit 0
