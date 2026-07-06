@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-07-06
+
 ### Security
 
 - **`restore --packages` can no longer be steered into running attacker-chosen
