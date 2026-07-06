@@ -63,6 +63,16 @@ jobs:
           # release-triggering workflow is a cache-poisoning vector (zizmor).
           cache: false
 
+      - name: Plan-doc shipped check
+        # Docs backstop for scripts/release.sh's local plan gate: if a
+        # docs/plans/*<tag>.md plan exists, its Status: line must read
+        # "shipped in <tag>"; a missing plan is fine (not every patch has one).
+        # VERSION comes via env (not inlined into the run script) to keep the
+        # tag ref out of the shell expansion (injection-safe, zizmor).
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: scripts/check-plan-shipped.sh "$VERSION"
+
       - name: Build
         run: go build ./...
 

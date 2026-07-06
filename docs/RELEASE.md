@@ -23,14 +23,32 @@ to a branch.
 
 ## Automated flow (primary)
 
-Push a version tag and CI does the rest:
+Cut a release with the blessed driver, run from a clean `main`:
+
+```bash
+scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
+```
+
+[`scripts/release.sh`](../scripts/release.sh) fails closed at every gate before it
+creates anything: it checks the preconditions (on `main`, clean tree, `main` up to
+date with `origin/main`), asserts the `## [X.Y.Z]` CHANGELOG section is promoted out
+of `[Unreleased]`, runs `docs-currency-lint`, requires any matching plan under
+`docs/plans/` to be marked `shipped in vX.Y.Z` (via
+[`scripts/check-plan-shipped.sh`](../scripts/check-plan-shipped.sh)), and rehearses
+the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
+(unless `--yes`) and run the single irreversible act:
 
 ```bash
 git tag vX.Y.Z
-git push origin vX.Y.Z          # or: git push --follow-tags
+git push origin vX.Y.Z
 ```
 
-The [`release` workflow](../.github/workflows/release.yml) then, for the tag:
+`--dry-run` runs every gate and the rehearsal, prints exactly what the tag/push and the
+`.work/NEXT.md` reset would do, and changes nothing in git or in `.work/NEXT.md`.
+
+The [`release` workflow](../.github/workflows/release.yml) then, for the pushed tag
+(its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan left
+un-shipped fails the release even on a hand-pushed tag):
 
 1. Cross-compiles the four `bin/ferry-<goos>-<arch>` binaries (`make build`).
 2. Runs [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh), which writes the real
@@ -127,6 +145,8 @@ build-provenance attestation above is the real signature.
 
 ## Related Documentation
 
+- [`scripts/release.sh`](../scripts/release.sh): the blessed release driver — gates, rehearses, then tags and pushes.
+- [`scripts/check-plan-shipped.sh`](../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
 - [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
 - [`.github/workflows/release.yml`](../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
 - [`install.sh`](../install.sh): the installer that fetches and verifies `checksums.txt`.
