@@ -62,6 +62,10 @@ use simply by committing their config. A directory terminal (Alacritty, kitty)
 carries its whole config tree file by file; a single-file terminal (WezTerm)
 carries its one file.
 
+Terminal configs participate in the secret store like dotfiles: a
+`{{ferry.secret …}}` placeholder is rendered on apply, a real secret is
+commit-gated on capture, and a secret-routed file is deployed `0600`.
+
 The registry is data, edited in the manifest — never in code:
 
 ```toml
