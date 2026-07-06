@@ -18,6 +18,7 @@ func scaffoldFixture(t *testing.T, git bool) (templates, repo string) {
 		"AGENTS.md":              "# {{PROJECT}}\n\nCreated {{DATE}}.\n",
 		"NEXT.md":                "# Next — {{PROJECT}}\n",
 		"DECISIONS.md":           "# Decisions — {{PROJECT}} ({{DATE}})\n",
+		"CONTEXT.md":             "# Context — {{PROJECT}}\n",
 		"ISSUES.md":              "# Issues — {{PROJECT}}\n",
 		"docs-README.md":         "# docs — map for {{PROJECT}}\n",
 		"prepare-commit-msg":     "#!/bin/sh\n# hook for {{PROJECT}}\n",
@@ -79,7 +80,7 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	// plus the dated-record directories. The tracked put files come from the
 	// shared scaffoldLayout table (the single source of truth), so this loop
 	// tracks the layout automatically.
-	want := layoutDests(false) // tracked dests: .work/NEXT.md, .work/DECISIONS.md, AGENTS.md, docs/README.md
+	want := layoutDests(false) // tracked dests: .work.local/NEXT.md, .work/DECISIONS.md, .work/CONTEXT.md, AGENTS.md, docs/README.md
 	want = append(want, ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml")
 	for _, d := range scaffoldDocsDirs {
 		want = append(want, "docs/"+d)
@@ -96,11 +97,20 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	if want := "# docs — map for " + name + "\n"; string(docsMap) != want {
 		t.Errorf("docs/README.md = %q, want %q (substituted)", docsMap, want)
 	}
-	// .work/ holds ONLY the committed memory: no scratch/logs there.
-	for _, rel := range []string{".work/scratch", ".work/logs"} {
+	// .work/ holds ONLY the committed standing-facts memory (DECISIONS.md,
+	// CONTEXT.md): no scratch/logs, and NEXT.md now lives in .work.local/.
+	for _, rel := range []string{".work/scratch", ".work/logs", ".work/NEXT.md"} {
 		if _, err := os.Lstat(filepath.Join(repo, rel)); err == nil {
 			t.Errorf("%s exists; runtime artefacts belong in .work.local/", rel)
 		}
+	}
+	// The volatile handoff note and the committed CONTEXT.md landed in their
+	// new homes (layoutDests above already asserts them; this pins the split).
+	if _, err := os.Stat(filepath.Join(repo, ".work.local", "NEXT.md")); err != nil {
+		t.Errorf(".work.local/NEXT.md missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, ".work", "CONTEXT.md")); err != nil {
+		t.Errorf(".work/CONTEXT.md missing: %v", err)
 	}
 
 	for _, link := range []string{"CLAUDE.md", "GEMINI.md"} {
@@ -407,7 +417,7 @@ func TestScaffoldPrivateMode(t *testing.T) {
 
 	// The private put files come from the shared scaffoldLayout table (the
 	// single source of truth), alongside the shared runtime dirs.
-	want := layoutDests(true) // private dests: .work.local/{NEXT,DECISIONS,ISSUES}.md
+	want := layoutDests(true) // private dests: .work.local/{NEXT,DECISIONS,CONTEXT,ISSUES}.md
 	want = append(want, ".work.local/scratch", ".work.local/logs")
 	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {

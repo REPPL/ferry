@@ -108,7 +108,7 @@ var ErrPathEscapesHome = sshguard.ErrPathEscapesHome
 //
 // Name convention (the single contract between config and this domain): the
 // canonical internal name is the BARE name (e.g. "zshrc"). The manifest is
-// authored WITH a leading dot per docs/configuration.md (`dotfiles = [".zshrc"]`),
+// authored WITH a leading dot per docs/reference/configuration.md (`dotfiles = [".zshrc"]`),
 // so TargetFor normalizes at the boundary by stripping a single leading dot.
 // Both ".zshrc" and "zshrc" therefore map to the same target:
 //

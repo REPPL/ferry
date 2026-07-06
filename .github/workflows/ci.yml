@@ -53,6 +53,33 @@ jobs:
             exit 1
           fi
 
+      # The CLI reference under docs/reference/cli is generated from the cobra
+      # command tree and committed; a stale tree means a command changed without
+      # regenerating. Regenerate and fail if the checked-in Markdown differs. The
+      # output is deterministic (no auto-gen timestamp), so run once on ubuntu.
+      - name: CLI reference is current (docs/reference/cli)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          set -euo pipefail
+          make gen-docs
+          # git status --porcelain catches a changed page (M), an added command's
+          # new page (??), and — because gen-docs clean-regenerates — a removed
+          # command's now-deleted page (D). A plain `git diff` would miss the
+          # untracked and deleted cases.
+          status="$(git status --porcelain docs/reference/cli/)"
+          if [ -n "$status" ]; then
+            echo "docs/reference/cli is stale — run 'make gen-docs' and commit the result." >&2
+            echo "$status" >&2
+            git diff -- docs/reference/cli/ >&2 || true
+            exit 1
+          fi
+
+      # Deterministic repo-convention checks: ADR numbering (no duplicate NNNN,
+      # sequential MADR names) and the .work.local/ handoff invariant.
+      - name: Consistency lint (ADR numbering, memory split)
+        if: matrix.os == 'ubuntu-latest'
+        run: scripts/consistency-lint.sh
+
       - name: Build
         run: go build ./...
 

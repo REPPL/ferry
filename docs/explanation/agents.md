@@ -30,7 +30,7 @@ The domain reads from the `agents/` directory of the config repo:
 |---|---|
 | `agents/general.md` | Rules for all tasks, everywhere (edit this) |
 | `agents/coding.md` | Rules for coding work (edit this) |
-| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `prepare-commit-msg`, `pre-commit-config.yaml` |
+| `agents/templates/` | Scaffold templates: `AGENTS.md`, `NEXT.md`, `CONTEXT.md`, `DECISIONS.md`, `ISSUES.md`, `docs-README.md`, `prepare-commit-msg`, `pre-commit-config.yaml` |
 | `agents/<source>/` | One directory per asset mapping (see below), deployed recursively to the mapping's target under `$HOME` with executable bits preserved per file. The built-in mappings read `agents/skills/`, `agents/agents/`, and `agents/hooks/` |
 
 There is no committed `combined.md`: the combined content is **derived in
@@ -207,96 +207,9 @@ secret in a captured change is blocked from the repo entirely. `~/.ssh` is
 never touched, and a captured write is refused if its repo destination resolves
 through a symlink out of the repo.
 
-## `ferry agents scaffold [--private|--attribution] <repo-dir> [name]`
+## Task recipes
 
-Sets a **project** repo up for the multi-tool pipeline. `name` defaults to the
-directory's base name. Idempotent; never overwrites an existing file.
+The domain's two one-off setup operations have their own task guides:
 
-The layout separates **committed project memory** from **local-only runtime
-artefacts**: everything under `.work/` is meant to be committed, while
-scratch output and logs always live in `.work.local/` and never reach git.
-Both modes create `.work.local/scratch/` and `.work.local/logs/` and hide the
-whole `.work.local/` directory via the checkout-local git `info/exclude` —
-`.gitignore` is never touched.
-
-Default (tracked) mode, for a repo you own:
-
-| Item | Role |
-|---|---|
-| `AGENTS.md` | Router stamped from `agents/templates/AGENTS.md`, with `{{PROJECT}}` and `{{DATE}}` substituted |
-| `CLAUDE.md`, `GEMINI.md` | Relative symlinks to `AGENTS.md` **inside the project repo** (project-tracked content — ferry does not deploy these to `$HOME`) |
-| `docs/README.md` | The documentation map, stamped from `agents/templates/docs-README.md`: the four Diátaxis directories, decisions (MADR, `NNNN-title.md`), dated research and plans, and the root-markdown allowlist |
-| `docs/decisions/`, `docs/research/`, `docs/plans/` | Dated-record directories, created up front (the Diátaxis content directories are created on first use) |
-| `.work/NEXT.md`, `.work/DECISIONS.md` | Committed session handoff and decision log (nothing else lives in `.work/`) |
-| `.work.local/scratch/`, `.work.local/logs/` | Local-only runtime artefacts, hidden via git `info/exclude` |
-| `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |
-
-`--attribution` (tracked mode only) marks a repo that **requires AI
-disclosure** — a research project, say — overriding the workspace
-no-attribution default:
-
-| Item | Role |
-|---|---|
-| `.githooks/prepare-commit-msg` | Stamped from `agents/templates/prepare-commit-msg` and made executable: appends a kernel-style `Assisted-by:` trailer to agent-authored commits only; human commits are untouched. Never `Co-Authored-By` — the human is always the author, the tool is disclosed |
-| `core.hooksPath = .githooks` | Set on the current clone when the target is a git repo; it is per-clone configuration, so every fresh clone re-runs `git config core.hooksPath .githooks` (the output says so) |
-| `## AI attribution` section | Appended to `AGENTS.md` when the heading is absent, stating the policy |
-
-`--attribution` and `--private` are mutually exclusive and the combination is
-refused: a repo you do not own is not yours to set attribution policy in.
-
-`--private` mode, for a repo you do not own — zero tracked trace:
-
-| Item | Role |
-|---|---|
-| `.work.local/NEXT.md`, `DECISIONS.md`, `ISSUES.md` | The same logs plus a private observation list, alongside the `scratch/` and `logs/` dirs |
-| git `info/exclude` entry | Hides `.work.local/` locally; never committed or pushed |
-
-Anything already sitting where a bridge symlink would go is left untouched: a
-real file is skipped with a message (merge it into `AGENTS.md` first), and a
-symlink pointing anywhere other than `AGENTS.md` is your own wiring — it is
-reported and skipped, never repointed.
-
-All three git layouts are recognised: a plain `.git` directory, and a `.git`
-file (a linked worktree or a submodule), whose `gitdir:` pointer is followed.
-In a linked worktree the exclude entry is written to the **shared** common git
-directory's `info/exclude`, which is where git reads it.
-
-## `ferry agents adopt <dir>`
-
-Migrates an existing symlink-based instruction directory (the `sync.sh` era)
-into ferry. Requires the domain to be enabled. It is non-destructive: `<dir>`
-is only ever read.
-
-1. **Find the bridges**: every symlink at a managed location — harness
-   targets, the devtree file, `~/.claude/{skills,agents,hooks}` plus their
-   immediate entries, and any symlinked **ancestor** of those — that resolves
-   into `<dir>` is identified. A **directory-level** bridge (a symlinked
-   `~/.claude` itself, a whole-directory `hooks` or skill link) aborts the
-   adopt loudly before anything is touched: replacing it would leave a real
-   directory where the backup baseline recorded a symlink, a transition the
-   backup engine cannot snapshot, so the swap would not be reversible — and
-   ferry never writes *through* such a link either. The error lists the exact
-   `rm` for each (the adopted directory keeps the real files); remove them
-   and re-run. File-level bridges proceed.
-2. **Import**: copies `<dir>`'s `general.md`, `coding.md`, `templates/`,
-   `skills/`, `agents/`, and `hooks/` into the config repo's `agents/` area.
-   An identical repo file is a quiet no-op; a differing one is skipped with a
-   message (reconcile manually) — a re-run cannot clobber repo edits. A
-   generated `combined.md` and the old `bin/` scripts are not imported. Every
-   destination passes the same symlink-refusing repo guard as any other repo
-   write. The bridge list is also written to a timestamped record under
-   ferry's state directory.
-3. **The swap, as one transaction**: within a single journalled backup-engine
-   run, each bridge symlink is removed through the backup machinery (its link
-   target is captured in the baseline and the journal) and the managed
-   regular-file copies are written in its place. If anything fails, the whole
-   run rolls back — the symlinks come back and every written copy is
-   reverted, so a half-migrated machine is not a reachable state. After
-   success, `ferry restore` (full or `ferry restore agents`) recreates the
-   original symlinks from the baseline.
-
-Afterwards, ferry prints what to delete by hand (the old sync script) and
-reminds you that other domains reconcile as usual with `ferry apply`. Set
-`devtree` in `[agents]` **before** adopting if the old setup linked a
-workspace-level `CLAUDE.md`; otherwise that one bridge is left for you to
-remove.
+- [Scaffold a project repo](../how-to/scaffold-a-repo.md) — `ferry agents scaffold`: stamp a repo with the multi-tool pipeline layout.
+- [Adopt an existing agent config](../how-to/adopt-agent-config.md) — `ferry agents adopt`: migrate a symlink-based instruction directory into ferry.

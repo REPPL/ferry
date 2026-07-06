@@ -132,7 +132,7 @@ missing refs, and reports any gate block read-only (populate the store, then re-
 
 ## What a bundle contains
 
-`ferry export` produces a portable `.zip` for an [offline move](getting-started.md#move-to-another-account-or-machine-offline).
+`ferry export` produces a portable `.zip` for an [offline move](../tutorials/getting-started.md#move-to-another-account-or-machine-offline).
 It carries the **shared layer only**: the repo's git-tracked shared files (never
 untracked, ignored, or editor-backup files). It never carries secrets, anything under
 `~/.ssh/`, or the per-machine `.local` layer.
@@ -151,5 +151,5 @@ import, which re-runs the same checks.
 
 ## Related
 
-- [Getting started](getting-started.md)
-- [SSH](ssh.md)
+- [Getting started](../tutorials/getting-started.md)
+- [SSH](../explanation/ssh.md)

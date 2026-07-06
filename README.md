@@ -60,17 +60,20 @@ ferry init <repo-url> # clone your config repo over HTTPS, set this machine up
 ferry apply           # reconcile this machine to the repo
 ```
 
-See [Getting started](docs/getting-started.md) for the full happy path.
+See [Getting started](docs/tutorials/getting-started.md) for the full happy path.
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md): zero to a working setup
-- [Configuration](docs/configuration.md): the manifest, scope, and the `.local` layer
-- [Commands](docs/commands.md): every `ferry <command>` and what it does
-- [Agents](docs/agents.md): the agents domain — one set of AI-agent instructions (CLAUDE.md, AGENTS.md, skills, hooks) carried across machines and coding CLIs
-- [SSH](docs/ssh.md): how ferry treats SSH (hands-off) and how to move keys yourself
+The documentation follows [Diátaxis](https://diataxis.fr/); the map is in
+[docs/README.md](docs/README.md).
+
+- [Getting started](docs/tutorials/getting-started.md): zero to a working setup
+- [Configuration](docs/reference/configuration.md): the manifest, scope, and the `.local` layer
+- [Commands](docs/reference/commands.md): the command overview, backed by the generated per-command [CLI reference](docs/reference/cli/ferry.md)
+- [The agents domain](docs/explanation/agents.md): one set of AI-agent instructions (CLAUDE.md, AGENTS.md, skills, hooks) carried across machines and coding CLIs — with how-tos to [scaffold a repo](docs/how-to/scaffold-a-repo.md) and [adopt existing agent config](docs/how-to/adopt-agent-config.md)
+- [SSH](docs/explanation/ssh.md): how ferry treats SSH (hands-off), and how to [move keys yourself](docs/how-to/move-ssh-keys.md)
 - [Compatibility](docs/reference/compatibility.md): which surfaces are stable, the pre-1.0 rule, and how on-disk state is versioned
-- [Releases](docs/RELEASE.md): how releases are built, checksummed, attested, and pruned
+- [Cutting a release](docs/how-to/cutting-a-release.md): how releases are built, checksummed, attested, and pruned
 
 ## Principles
 
@@ -90,4 +93,4 @@ See [Getting started](docs/getting-started.md) for the full happy path.
   root, so it works on any account, including locked-down or managed machines. It never
   edits your shell on its own.
 - **Safe with secrets**: ferry never touches `~/.ssh/`. SSH keys and other secrets are
-  handled out-of-band and never committed. See [docs/ssh.md](docs/ssh.md).
+  handled out-of-band and never committed. See [SSH](docs/explanation/ssh.md).

@@ -3,7 +3,7 @@
 Cutting a release is what enables the public `curl … | bash` install path. Until a
 release exists, that path deliberately refuses to install (fail-closed): the installer
 has no `checksums.txt` to fetch and verify against. Build-from-source works today
-without any of this: see [Getting started](getting-started.md).
+without any of this: see [Getting started](../tutorials/getting-started.md).
 
 ## Versioning
 
@@ -29,12 +29,12 @@ Cut a release with the blessed driver, run from a clean `main`:
 scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
 ```
 
-[`scripts/release.sh`](../scripts/release.sh) fails closed at every gate before it
+[`scripts/release.sh`](../../scripts/release.sh) fails closed at every gate before it
 creates anything: it checks the preconditions (on `main`, clean tree, `main` up to
 date with `origin/main`), asserts the `## [X.Y.Z]` CHANGELOG section is promoted out
 of `[Unreleased]`, runs `docs-currency-lint`, requires any matching plan under
 `docs/plans/` to be marked `shipped in vX.Y.Z` (via
-[`scripts/check-plan-shipped.sh`](../scripts/check-plan-shipped.sh)), and rehearses
+[`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
 the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
 (unless `--yes`) and run the single irreversible act:
 
@@ -44,14 +44,14 @@ git push origin vX.Y.Z
 ```
 
 `--dry-run` runs every gate and the rehearsal, prints exactly what the tag/push and the
-`.work/NEXT.md` reset would do, and changes nothing in git or in `.work/NEXT.md`.
+`.work.local/NEXT.md` reset would do, and changes nothing in git or in `.work.local/NEXT.md`.
 
-The [`release` workflow](../.github/workflows/release.yml) then, for the pushed tag
+The [`release` workflow](../../.github/workflows/release.yml) then, for the pushed tag
 (its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan left
 un-shipped fails the release even on a hand-pushed tag):
 
 1. Cross-compiles the four `bin/ferry-<goos>-<arch>` binaries (`make build`).
-2. Runs [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh), which writes the real
+2. Runs [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh), which writes the real
    SHA256 of each binary into a `bin/checksums.txt` manifest (`sha256sum` format).
 3. Attests build provenance for the four binaries **and** `checksums.txt` — a signed
    [SLSA build-provenance](https://slsa.dev/) attestation per artefact.
@@ -87,7 +87,7 @@ so it detects a binary that was not produced by this repository's release workfl
 ## Release retention
 
 Each release line keeps only its newest release. When a new `vX.Y.Z` publishes, the
-workflow runs [`scripts/prune-releases.sh`](../scripts/prune-releases.sh), which keeps
+workflow runs [`scripts/prune-releases.sh`](../../scripts/prune-releases.sh), which keeps
 the latest release of the current line (`X.Y`) plus the last release of every other
 line, and deletes the superseded releases: the GitHub Release and its binary assets.
 Git tags are immutable once pushed and are never deleted, so a pruned version's tag —
@@ -145,10 +145,10 @@ build-provenance attestation above is the real signature.
 
 ## Related Documentation
 
-- [`scripts/release.sh`](../scripts/release.sh): the blessed release driver — gates, rehearses, then tags and pushes.
-- [`scripts/check-plan-shipped.sh`](../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
-- [`scripts/gen-checksums.sh`](../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
-- [`.github/workflows/release.yml`](../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
-- [`install.sh`](../install.sh): the installer that fetches and verifies `checksums.txt`.
-- [README—Install](../README.md#install): the user-facing install command.
-- [Getting started](getting-started.md): build-from-source, which needs no release.
+- [`scripts/release.sh`](../../scripts/release.sh): the blessed release driver — gates, rehearses, then tags and pushes.
+- [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
+- [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
+- [`.github/workflows/release.yml`](../../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
+- [`install.sh`](../../install.sh): the installer that fetches and verifies `checksums.txt`.
+- [README—Install](../../README.md#install): the user-facing install command.
+- [Getting started](../tutorials/getting-started.md): build-from-source, which needs no release.

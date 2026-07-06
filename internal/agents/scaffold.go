@@ -52,12 +52,14 @@ type ScaffoldOptions struct {
 //   - CLAUDE.md and GEMINI.md as RELATIVE symlinks to AGENTS.md INSIDE the
 //     project repo (these are the project's own tracked bridges — ferry never
 //     deploys them to $HOME, so the copy-not-symlink invariant is untouched);
-//   - a committed .work/ holding ONLY NEXT.md and DECISIONS.md;
+//   - a committed .work/ holding the standing-facts memory DECISIONS.md and
+//     CONTEXT.md (NEXT.md, the volatile handoff note, lives in .work.local/);
 //   - the pre-commit template, only when the repo has none.
 //
 // --private mode — a repo you don't own, zero tracked trace:
-//   - .work.local/ only (NEXT.md, DECISIONS.md, ISSUES.md alongside the
-//     scratch/logs dirs). No AGENTS.md, no symlinks, no tracked file touched.
+//   - .work.local/ only (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md
+//     alongside the scratch/logs dirs). No AGENTS.md, no symlinks, no tracked
+//     file touched.
 func Scaffold(opts ScaffoldOptions, out io.Writer) error {
 	if opts.Private && opts.Attribution {
 		return errors.New("agents scaffold: --attribution and --private are mutually exclusive (a repo you do not own is not yours to set attribution policy in)")
@@ -189,13 +191,16 @@ func (f scaffoldFile) destFor(private bool) string {
 
 // scaffoldLayout is the single source of truth for the templated put() files,
 // in the EXACT order the scaffolds stamp them. Tracked mode walks the entries
-// with a trackedDest (NEXT, DECISIONS, AGENTS, docs/README); private mode walks
-// the entries with a privateDest (NEXT, DECISIONS, ISSUES). The mode-specific
-// steps (the CLAUDE/GEMINI symlinks, the pre-commit copy, the --attribution
-// hook, and excludeWorkLocal) are imperative and live outside this table.
+// with a trackedDest (DECISIONS + CONTEXT in the committed .work/, AGENTS,
+// docs/README, and NEXT in the private .work.local/); private mode walks the
+// entries with a privateDest (NEXT, DECISIONS, CONTEXT, ISSUES, all in
+// .work.local/). The mode-specific steps (the CLAUDE/GEMINI symlinks, the
+// pre-commit copy, the --attribution hook, and excludeWorkLocal) are
+// imperative and live outside this table.
 var scaffoldLayout = []scaffoldFile{
-	{template: "NEXT.md", mode: modeBoth, trackedDest: ".work/NEXT.md", privateDest: ".work.local/NEXT.md"},
+	{template: "NEXT.md", mode: modeBoth, trackedDest: ".work.local/NEXT.md", privateDest: ".work.local/NEXT.md"},
 	{template: "DECISIONS.md", mode: modeBoth, trackedDest: ".work/DECISIONS.md", privateDest: ".work.local/DECISIONS.md"},
+	{template: "CONTEXT.md", mode: modeBoth, trackedDest: ".work/CONTEXT.md", privateDest: ".work.local/CONTEXT.md"},
 	{template: "ISSUES.md", mode: modePrivate, privateDest: ".work.local/ISSUES.md"},
 	{template: "AGENTS.md", mode: modeTracked, trackedDest: "AGENTS.md"},
 	{template: "docs-README.md", mode: modeTracked, trackedDest: "docs/README.md"},
@@ -228,8 +233,9 @@ func putLayout(repo string, private bool, put func(templateName, dest string) er
 }
 
 // scaffoldPrivate creates the zero-tracked-trace layout: .work.local/ holds
-// the three logs alongside the runtime-artefact dirs the caller already
-// created; nothing tracked is created or modified.
+// the memory files (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md) alongside
+// the runtime-artefact dirs the caller already created; nothing tracked is
+// created or modified.
 func scaffoldPrivate(repo, name string, put func(templateName, dest string) error, out io.Writer) error {
 	if err := putLayout(repo, true, put); err != nil {
 		return err
@@ -239,12 +245,13 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 }
 
 // scaffoldTracked creates the committed layout on top of the shared
-// .work.local/ runtime dirs: a .work/ holding ONLY the committed memory
-// (NEXT.md, DECISIONS.md), the AGENTS.md router, the docs/ hierarchy with
-// its map (docs/README.md), the in-repo CLAUDE.md/GEMINI.md symlinks, and
-// the pre-commit config when absent. It never touches .gitignore — runtime
-// artefacts are excluded via .work.local/ + info/exclude, and .work/ is
-// meant to be committed whole.
+// .work.local/ runtime dirs: a .work/ holding the committed standing-facts
+// memory (DECISIONS.md, CONTEXT.md), the AGENTS.md router, the docs/
+// hierarchy with its map (docs/README.md), the in-repo CLAUDE.md/GEMINI.md
+// symlinks, and the pre-commit config when absent. The volatile handoff note
+// NEXT.md lands in .work.local/ (uncommitted) in both modes. It never touches
+// .gitignore — runtime artefacts are excluded via .work.local/ + info/exclude,
+// and .work/ is meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
 	// Docs hierarchy directories that hold dated records (the map
 	// docs/README.md is a scaffoldLayout entry). The Diátaxis content
@@ -256,9 +263,10 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		}
 	}
 
-	// The committed put files, in table order: the .work/ memory
-	// (NEXT.md, DECISIONS.md), the AGENTS.md router, and the docs map
-	// (docs/README.md, never overwriting an existing one).
+	// The put files, in table order: the volatile .work.local/NEXT.md, the
+	// committed .work/ memory (DECISIONS.md, CONTEXT.md), the AGENTS.md
+	// router, and the docs map (docs/README.md, never overwriting an
+	// existing one).
 	if err := putLayout(repo, false, put); err != nil {
 		return err
 	}

@@ -10,7 +10,7 @@ VERSION ?=
 # smaller, path-clean binary suitable for public distribution.
 LDFLAGS := -s -w$(if $(VERSION), -X github.com/REPPL/ferry/cmd.version=$(VERSION),)
 
-.PHONY: build test vet clean checksums release-prep release preflight
+.PHONY: build test vet clean checksums release-prep release preflight gen-docs
 
 # Cross-compile every supported target to bin/ferry-<goos>-<arch>.
 # Pass VERSION=vX.Y.Z to stamp the version (release builds); omit for a dev build.
@@ -25,6 +25,12 @@ build:
 
 test:
 	go test ./...
+
+# Regenerate the committed CLI reference under docs/reference/cli from the cobra
+# command tree. The generator is a standalone main package the ferry binary never
+# imports; output is deterministic (no auto-gen timestamp) so CI can diff it.
+gen-docs:
+	go run ./tools/gendocs
 
 vet:
 	go vet ./...
@@ -54,7 +60,7 @@ checksums: build
 # (.github/workflows/release.yml); this target just prepares a release-ready tree.
 release: checksums
 	@echo ""; \
-	echo "bin/checksums.txt written over bin/ferry-* (see docs/RELEASE.md)."; \
+	echo "bin/checksums.txt written over bin/ferry-* (see docs/how-to/cutting-a-release.md)."; \
 	echo "To publish: push a version tag and let CI build + checksum + release, e.g."; \
 	echo "  git commit -am 'release vX.Y.Z' && git tag vX.Y.Z && git push --follow-tags"; \
 	echo "Or, to publish manually, create a GitHub Release for the tag and upload"; \
@@ -63,7 +69,7 @@ release: checksums
 # Build + checksums, then remind the maintainer of the manual release steps.
 release-prep: checksums
 	@echo ""; \
-	echo "Next steps (see docs/RELEASE.md):"; \
+	echo "Next steps (see docs/how-to/cutting-a-release.md):"; \
 	echo "  1. Create a GitHub Release (tag vX.Y.Z)."; \
 	echo "  2. Upload the four bin/ferry-* binaries and bin/checksums.txt as assets."; \
 	echo "  3. install.sh then fetches checksums.txt from the release and verifies."

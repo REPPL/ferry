@@ -95,7 +95,12 @@ func (e *Engine) BackupAndRemove(r *run, absPath string) error {
 	if err := r.record(prior, priorContent, "remove"); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(absPath); err != nil {
+	// Route the delete THROUGH an os.Root opened on the parent, operating on the
+	// leaf basename only, so a leaf swapped to a symlink AFTER the parent-chain
+	// guard cannot redirect the unlink outside the real parent. os.Root removes the
+	// leaf entry as a symlink, never following it. This is the leaf-level defence
+	// layered on top of guardResolvedContainment above.
+	if err := removeLeafConfined(absPath); err != nil {
 		return err
 	}
 	return nil

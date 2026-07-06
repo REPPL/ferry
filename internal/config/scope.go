@@ -32,7 +32,7 @@ type Manifest struct {
 	present     map[string]bool
 }
 
-// rawManifest mirrors the on-disk TOML shape from docs/configuration.md:
+// rawManifest mirrors the on-disk TOML shape from docs/reference/configuration.md:
 //
 //	[manage]
 //	dotfiles = [".zshrc", ".gitconfig"]

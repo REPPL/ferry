@@ -7,15 +7,18 @@ directory holds. Every page is exactly one Diátaxis type — tutorial
 
 ## Pages
 
-| Page | What it covers |
-|---|---|
-| [Getting started](getting-started.md) | Zero to a working setup: install, first capture, another machine |
-| [Configuration](configuration.md) | The manifest, scope, and the `.local` layer |
-| [Commands](commands.md) | Every `ferry <command>` and what it does |
-| [Agents](agents.md) | The agents domain: instruction files, harnesses, asset mappings, `scaffold` and `adopt` |
-| [SSH](ssh.md) | Why ferry is hands-off with `~/.ssh/`, and how to move keys yourself |
-| [Cutting a release](RELEASE.md) | How releases are built, checksummed, attested, published, and pruned |
-| [Compatibility contract](reference/compatibility.md) | Which surfaces are stable, the pre-1.0 rule, and on-disk state versioning |
+| Page | Type | What it covers |
+|---|---|---|
+| [Getting started](tutorials/getting-started.md) | Tutorial | Zero to a working setup: install, first capture, another machine |
+| [Configuration](reference/configuration.md) | Reference | The manifest, scope, and the `.local` layer |
+| [Commands](reference/commands.md) | Reference | Every `ferry <command>` and what it does |
+| [Compatibility contract](reference/compatibility.md) | Reference | Which surfaces are stable, the pre-1.0 rule, and on-disk state versioning |
+| [The agents domain](explanation/agents.md) | Explanation | The repo-authoritative model: harnesses, asset mappings, apply/restore semantics |
+| [Why ferry stays out of `~/.ssh/`](explanation/ssh.md) | Explanation | The rationale and the untouchable-`~/.ssh` invariant |
+| [Scaffold a project repo](how-to/scaffold-a-repo.md) | How-to | `ferry agents scaffold`: stamp a repo with the multi-tool pipeline layout |
+| [Adopt an existing agent config](how-to/adopt-agent-config.md) | How-to | `ferry agents adopt`: migrate a symlink-based instruction directory into ferry |
+| [Move SSH keys to a new machine](how-to/move-ssh-keys.md) | How-to | Carry your SSH setup across machines yourself, out-of-band |
+| [Cutting a release](how-to/cutting-a-release.md) | How-to | How releases are built, checksummed, attested, published, and pruned |
 
 ## Directories
 

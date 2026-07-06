@@ -100,7 +100,7 @@ func reportPackageManager(out io.Writer, colour func(*color.Color, string) strin
 // Deliberately stat-only: ferry lstats only the directory and a hard-coded list
 // of well-known paths. It does NOT os.ReadDir ~/.ssh — enumerating the directory
 // (listing its filenames) is itself a form of reading it, which the hands-off
-// contract (AC-ssh-not-read / AC-ssh-untouched, docs/ssh.md) forbids. The price
+// contract (AC-ssh-not-read / AC-ssh-untouched, docs/explanation/ssh.md) forbids. The price
 // of never reading the dir: unusually-named keys are not perm-checked. That is
 // the correct trade-off — doctor's sole permitted exception is stat/lstat of
 // known paths, not directory enumeration.

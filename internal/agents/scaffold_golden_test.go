@@ -122,10 +122,11 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 		".pre-commit-config.yaml",
 		".work",
 		".work.local",
+		".work.local/NEXT.md",
 		".work.local/logs",
 		".work.local/scratch",
+		".work/CONTEXT.md",
 		".work/DECISIONS.md",
-		".work/NEXT.md",
 		"AGENTS.md",
 		"CLAUDE.md",
 		"GEMINI.md",
@@ -136,8 +137,9 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 		"docs/research",
 	}
 	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
-		"created:  <repo>/.work/NEXT.md\n" +
+		"created:  <repo>/.work.local/NEXT.md\n" +
 		"created:  <repo>/.work/DECISIONS.md\n" +
+		"created:  <repo>/.work/CONTEXT.md\n" +
 		"created:  <repo>/AGENTS.md\n" +
 		"created:  <repo>/docs/README.md\n" +
 		"linked:   CLAUDE.md -> AGENTS.md\n" +
@@ -157,6 +159,7 @@ func TestScaffoldGolden_Private(t *testing.T) {
 
 	wantPaths := []string{
 		".work.local",
+		".work.local/CONTEXT.md",
 		".work.local/DECISIONS.md",
 		".work.local/ISSUES.md",
 		".work.local/NEXT.md",
@@ -166,6 +169,7 @@ func TestScaffoldGolden_Private(t *testing.T) {
 	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
 		"created:  <repo>/.work.local/NEXT.md\n" +
 		"created:  <repo>/.work.local/DECISIONS.md\n" +
+		"created:  <repo>/.work.local/CONTEXT.md\n" +
 		"created:  <repo>/.work.local/ISSUES.md\n" +
 		"done: goldenproj (private mode — no tracked files were created or modified)\n"
 
@@ -186,10 +190,11 @@ func TestScaffoldGolden_Attribution(t *testing.T) {
 		".pre-commit-config.yaml",
 		".work",
 		".work.local",
+		".work.local/NEXT.md",
 		".work.local/logs",
 		".work.local/scratch",
+		".work/CONTEXT.md",
 		".work/DECISIONS.md",
-		".work/NEXT.md",
 		"AGENTS.md",
 		"CLAUDE.md",
 		"GEMINI.md",
@@ -200,8 +205,9 @@ func TestScaffoldGolden_Attribution(t *testing.T) {
 		"docs/research",
 	}
 	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
-		"created:  <repo>/.work/NEXT.md\n" +
+		"created:  <repo>/.work.local/NEXT.md\n" +
 		"created:  <repo>/.work/DECISIONS.md\n" +
+		"created:  <repo>/.work/CONTEXT.md\n" +
 		"created:  <repo>/AGENTS.md\n" +
 		"created:  <repo>/docs/README.md\n" +
 		"linked:   CLAUDE.md -> AGENTS.md\n" +

@@ -37,6 +37,11 @@ everywhere.`,
 	},
 }
 
+// Root returns the fully-wired root command. Subcommands are attached via the
+// init() functions across cmd/*.go, which run on import, so the returned tree is
+// complete. The doc generator (tools/gendocs) uses this to walk the command tree.
+func Root() *cobra.Command { return rootCmd }
+
 // Execute runs the root command. It is the single entry point called by main.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {

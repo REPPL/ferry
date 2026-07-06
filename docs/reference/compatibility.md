@@ -11,7 +11,7 @@ ferry has three surfaces a user or an automation depends on:
 | Surface | What it is |
 |---|---|
 | **CLI** | The commands, subcommands, flags, exit codes, and the machine-relevant wording of their output. |
-| **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](../configuration.md) and [the agents domain](../agents.md) — `[manage]`, `[agents]`, and their tables. |
+| **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](configuration.md) and [the agents domain](../explanation/agents.md) — `[manage]`, `[agents]`, and their tables. |
 | **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`): the last-applied store, the agents target record, the backup journal, and the immutable baseline. |
 
 ## The pre-1.0 rule

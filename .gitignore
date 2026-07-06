@@ -39,16 +39,13 @@ go.work.sum
 # macOS
 .DS_Store
 
-# Local-only working material (notes, drafts, plans, issues log)
-.work/
-
 # Per-machine dependency overlays (never synced; layered by `apply --deps`)
 deps/Brewfile.*.local
 
 # Per-machine scope overrides (merged over ferry.toml at apply/capture time)
 ferry.local.toml
 
-# Per-machine dotfile/domain overlay (never synced; see docs/configuration.md)
+# Per-machine dotfile/domain overlay (never synced; see docs/reference/configuration.md)
 local/
 
 # stray bare dev build (release binaries are bin/ferry-<goos>-<arch>)

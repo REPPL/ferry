@@ -11,6 +11,62 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Security
+
+- **The backup write boundary now closes the leaf-swap TOCTOU.** `apply` and
+  `restore` already re-checked the resolved parent chain at the write boundary
+  (`guardResolvedContainment`), which defeats a swapped intermediate parent. That
+  check does not stop a same-user process from swapping the *final* path
+  component to a symlink into `~/.ssh` or outside `$HOME` in the window between
+  the check and the write. Every leaf-level mutation now runs through an `os.Root`
+  opened on the target's parent directory, operating on the basename only;
+  `os.Root` refuses to traverse a final-component symlink that escapes the parent,
+  so a raced leaf swap can no longer redirect the write or remove. The parent-chain
+  guard is unchanged — this is a second, additive defence.
+
+### Added
+
+- **A generated CLI reference under `docs/reference/cli/`.** `make gen-docs` walks
+  the Cobra command tree and writes one Markdown page per command (deterministic —
+  no timestamp footer). The tree is committed so it renders on GitHub, and a CI
+  currency check clean-regenerates it and fails on any added, changed, or removed
+  command page.
+- **A `consistency-lint` gate** (`scripts/consistency-lint.sh`, wired into CI):
+  no two ADRs share an `NNNN` prefix, every ADR is named `NNNN-title.md`, and no
+  prose or config file points session handoff at `.work/NEXT.md`.
+- **Root `CONTRIBUTING.md` and `SECURITY.md`.**
+- **The abcd information-architecture documentation tree.** Docs are reorganised
+  into Diátaxis types (`tutorials/`, `how-to/`, `reference/`, `explanation/`),
+  with the decision record under `docs/decisions/` (sequential MADR ADRs; 0001
+  records the naming decision, 0002 the working-memory split).
+- **A committed `.work/` working-memory tier** holding `DECISIONS.md` (append-only
+  log) and `CONTEXT.md` (curated load-first standing facts); `ferry agents scaffold`
+  now emits `.work/CONTEXT.md` for scaffolded repos.
+
+### Breaking
+
+- **`NEXT.md` moves to the private `.work.local/` layer.** Session handoff is no
+  longer committed. `ferry agents scaffold` now emits `NEXT.md` to
+  `.work.local/NEXT.md` (both modes) and adds `.work/CONTEXT.md`. Tracked-mode
+  scaffold therefore requires a new `agents/templates/CONTEXT.md` in the config
+  repo — scaffold errors clearly if it is missing. **Migration for an existing
+  config repo:** add `agents/templates/CONTEXT.md`; for a repo you already
+  scaffolded, `mv .work/NEXT.md .work.local/NEXT.md` and add `.work/CONTEXT.md`
+  (scaffold never overwrites, so it will not do this for you).
+- **Documentation pages moved to Diátaxis paths.** External links to the old flat
+  `docs/*.md` pages (`docs/getting-started.md`, `docs/configuration.md`,
+  `docs/commands.md`, `docs/agents.md`, `docs/ssh.md`, `docs/RELEASE.md`) break;
+  the new homes are under `docs/{tutorials,how-to,reference,explanation}/` per the
+  map in `docs/README.md`.
+
+### Dependencies
+
+- `github.com/cpuguy83/go-md2man/v2` and `github.com/russross/blackfriday/v2` are
+  now indirect requires, pulled in by `github.com/spf13/cobra/doc` for the CLI
+  reference generator. The generator lives in a standalone `tools/gendocs` main
+  package that the ferry binary never imports, so neither module is linked into
+  the shipped `ferry` binary.
+
 ## [0.5.3] - 2026-07-06
 
 ### Security

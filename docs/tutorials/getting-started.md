@@ -32,7 +32,7 @@ curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 
 > **Note:** the `curl … | bash` installer fetches the release's `checksums.txt` and
 > verifies each binary against it, failing closed if it is absent. Building from source
-> (below) works today; see [RELEASE.md](RELEASE.md) for how releases are cut.
+> (below) works today; see [Cutting a release](../how-to/cutting-a-release.md) for how releases are cut.
 
 This installs **only** the `ferry` binary to `~/.local/bin`: **no admin rights
 required**, so it works on any account, including locked-down or managed machines. If
@@ -209,7 +209,7 @@ separately (a message, not the same channel as the file) and pass it to
 
 The bundle never contains secrets, anything under `~/.ssh/`, or the per-machine local
 layer (unless you pass `--include-local` on **both** export and import). SSH keys stay a
-manual copy you make yourself: see [SSH](ssh.md).
+manual copy you make yourself: see [Move SSH keys yourself](../how-to/move-ssh-keys.md).
 
 ---
 
@@ -233,5 +233,5 @@ exactly how it was before ferry touched it.
 
 ## Next
 
-- [Configuration](configuration.md): scope, the manifest, and the `.local` layer
-- [SSH](ssh.md): ferry is hands-off with `~/.ssh/`; here's how to move keys yourself
+- [Configuration](../reference/configuration.md): scope, the manifest, and the `.local` layer
+- [SSH](../explanation/ssh.md): ferry is hands-off with `~/.ssh/`; here's how to move keys yourself

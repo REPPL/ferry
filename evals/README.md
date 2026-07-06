@@ -4,8 +4,8 @@ This package drives the **real `ferry` binary** inside a sandboxed, throwaway
 `$HOME` and asserts only **observable outcomes**: files present/absent, mode bits,
 exit codes, stdout/stderr content, and absence-of-write tripwires. No eval ever
 inspects ferry's source — each is a black-box check against the documented CLI
-contract in `README.md`, `docs/getting-started.md`, `docs/configuration.md`, and
-`docs/ssh.md`, mapped to the numbered criteria in `.work/ACCEPTANCE.md`.
+contract in `README.md`, `docs/tutorials/getting-started.md`, `docs/reference/configuration.md`,
+and `docs/explanation/ssh.md`, mapped to the numbered acceptance criteria encoded in the eval names (the `AC_*` identifiers).
 
 ## Status: RED until the build lands
 
@@ -101,7 +101,7 @@ not dropped.
 
 Command-surface gating is "the command **exists and runs**" (`--help` exits 0 and
 the command appears in `ferry --help`); **help-text wording is non-gating** (logged
-as a soft signal, never a failure), per the round-3 demotion in `ACCEPTANCE.md`.
+as a soft signal, never a failure), a round-3 demotion.
 
 | File | ACs covered |
 |---|---|
@@ -122,5 +122,4 @@ as a soft signal, never a failure), per the round-3 demotion in `ACCEPTANCE.md`.
 
 ## Related documentation
 
-- [Acceptance criteria](../.work/ACCEPTANCE.md) — the numbered spec these evals trace to
-- [Configuration](../docs/configuration.md), [Getting started](../docs/getting-started.md), [SSH](../docs/ssh.md)
+- [Configuration](../docs/reference/configuration.md), [Getting started](../docs/tutorials/getting-started.md), [SSH](../docs/explanation/ssh.md)

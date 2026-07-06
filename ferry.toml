@@ -1,6 +1,6 @@
 # ferry.toml — SHARED defaults (committed).
 # The baseline scope that applies to every machine unless a gitignored
-# ferry.local.toml overrides it. See docs/configuration.md.
+# ferry.local.toml overrides it. See docs/reference/configuration.md.
 
 [manage]
 dotfiles = [".zshrc"]

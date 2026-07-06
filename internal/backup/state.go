@@ -4,6 +4,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -112,9 +113,30 @@ func restoreState(state PathState, blob []byte) error {
 	if err := guardResolvedContainment(state.Path); err != nil {
 		return err
 	}
+	// Confine every leaf mutation to the REAL parent directory via os.Root,
+	// operating on the leaf BASENAME only. os.Root refuses to traverse a leaf
+	// symlink that escapes the parent, closing the leaf-swap TOCTOU the parent
+	// guard above does not cover: after that guard passes, a same-user process can
+	// swap the leaf to a symlink into ~/.ssh or outside $HOME in the window between
+	// the remove and the re-create; routing BOTH the remove and the write through
+	// the root means such a swapped-in symlink can never redirect the mutation out
+	// of the parent (the follow-open refuses).
+	root, err := os.OpenRoot(filepath.Dir(state.Path))
+	if err != nil {
+		if state.Kind == KindAbsent && errors.Is(err, fs.ErrNotExist) {
+			// Nothing to remove and nothing to recreate: mirrors the pre-root
+			// behaviour where os.RemoveAll on a missing parent is a no-op.
+			return nil
+		}
+		return err
+	}
+	defer root.Close()
+	base := filepath.Base(state.Path)
+
 	// Remove the current occupant (file or symlink). RemoveAll on a single
-	// non-dir path behaves like Remove; ENOENT is fine.
-	if err := os.RemoveAll(state.Path); err != nil {
+	// non-dir path behaves like Remove; ENOENT is fine. A leaf symlink is unlinked
+	// as a symlink, never followed.
+	if err := root.RemoveAll(base); err != nil {
 		return err
 	}
 
@@ -122,7 +144,7 @@ func restoreState(state PathState, blob []byte) error {
 	case KindAbsent:
 		return nil // pre-ferry nothing -> leave nothing.
 	case KindSymlink:
-		if err := os.Symlink(state.Target, state.Path); err != nil {
+		if err := root.Symlink(state.Target, base); err != nil {
 			return err
 		}
 		// Stamp the LINK's OWN mtime back so a restored symlink is mtime-identical
@@ -139,11 +161,14 @@ func restoreState(state PathState, blob []byte) error {
 	case KindFile:
 		// Write with the preserved (possibly stricter than 0600) original mode.
 		// The live home file's mode is the user's, not the secret-store default.
-		if err := os.WriteFile(state.Path, blob, state.Mode.Perm()); err != nil {
+		// Confined through the root: an escaping leaf symlink is refused rather
+		// than followed, so restore never writes the baseline bytes through a
+		// swapped-in link into ~/.ssh or outside $HOME.
+		if err := root.WriteFile(base, blob, state.Mode.Perm()); err != nil {
 			return err
 		}
 		// WriteFile is subject to umask; force the exact recorded mode.
-		if err := os.Chmod(state.Path, state.Mode.Perm()); err != nil {
+		if err := root.Chmod(base, state.Mode.Perm()); err != nil {
 			return err
 		}
 		// Stamp the original modification time back so the restored file is
@@ -152,7 +177,7 @@ func restoreState(state PathState, blob []byte) error {
 		// the "leaves no trace" promise. A zero ModTime (e.g. a legacy baseline
 		// recorded before this field existed) leaves the just-written mtime.
 		if !state.ModTime.IsZero() {
-			return os.Chtimes(state.Path, state.ModTime, state.ModTime)
+			return root.Chtimes(base, state.ModTime, state.ModTime)
 		}
 		return nil
 	default:
