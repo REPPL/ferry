@@ -58,8 +58,9 @@ type Target struct {
 	// include point: there is no merge point, so the local copy (if any) replaces
 	// the shared file. An include-style domain (zsh) is built with
 	// IncludeSidecarTarget so its overlay is a sidecar instead. The apply command
-	// reads this to choose the overlay path; ApplyWholeFileOverlayDeferred
-	// implements the whole-file-replace path in this package.
+	// reads this to choose the overlay path, composing the local-vs-shared
+	// whole-file choice into the effective content it deploys via
+	// ApplyContentDeferred.
 	Overlay OverlayMode
 }
 
@@ -68,6 +69,12 @@ type Target struct {
 // preserved by the Backuper's prior-state capture, so this only governs a
 // first-ever write.
 const defaultPerm os.FileMode = 0o644
+
+// DefaultPerm is the fresh-write file mode for a plain dotfile whose home
+// destination does not yet exist (0644). Callers that drive ApplyContentDeferred
+// with in-memory content (no repo file, so no on-disk mode to preserve) pass it
+// as the first-ever-write mode, matching the file-based apply's own default.
+func DefaultPerm() os.FileMode { return defaultPerm }
 
 // RepoSubdir is the repo subdirectory that holds dotfile sources.
 const RepoSubdir = "dotfiles"
@@ -78,13 +85,17 @@ const RepoSubdir = "dotfiles"
 // makes a Target under ~/.ssh/ impossible to construct: apply/capture/status all
 // route through TargetFor, so a manifest declaring `.ssh/config` or
 // `.ssh/id_ed25519` is refused here, before any read/back-up/write can happen.
-var ErrForbiddenSSHPath = errors.New("dotfile: refusing a target under ~/.ssh (ferry never touches ~/.ssh)")
+// It aliases sshguard.ErrForbiddenSSHPath so the lexical and resolved guards
+// share one sentinel identity across the dotfile and backup boundaries.
+var ErrForbiddenSSHPath = sshguard.ErrForbiddenSSHPath
 
 // ErrPathEscapesHome is returned by TargetFor when a declared dotfile name does
 // not resolve to a path strictly within $HOME — an absolute path, or one that
 // climbs out via `..`. A managed dotfile must live inside $HOME; anything else
-// is a path-traversal attempt and is refused before a Target is produced.
-var ErrPathEscapesHome = errors.New("dotfile: dotfile name escapes $HOME")
+// is a path-traversal attempt and is refused before a Target is produced. It
+// aliases sshguard.ErrPathEscapesHome so the lexical and resolved guards share
+// one sentinel identity across the dotfile and backup boundaries.
+var ErrPathEscapesHome = sshguard.ErrPathEscapesHome
 
 // TargetFor builds the repo<->home mapping for a single dotfile name, given the
 // repo root and the home directory. It is the SECURITY BOUNDARY for the
@@ -124,6 +135,14 @@ func TargetFor(repoRoot, home, name string) (Target, error) {
 	// then validate the CLEANED path so `..` and absolute names cannot escape.
 	homeDest := filepath.Join(home, "."+bare)
 	if err := ValidateHomeTarget(home, homeDest); err != nil {
+		return Target{}, err
+	}
+	// Beyond the LEXICAL guard, re-run the symlink-RESOLVING containment check:
+	// a nested name (e.g. ".config/foo") sits under intermediate directories, and
+	// a symlinked intermediate (~/.config -> outside $HOME, or routed into ~/.ssh)
+	// would let a lexically-valid write land through the link. NestedTarget does
+	// this too; a flat dotfile whose only parent is $HOME short-circuits cleanly.
+	if err := validateHomeTargetResolved(home, homeDest); err != nil {
 		return Target{}, err
 	}
 
@@ -214,126 +233,15 @@ func ValidateHomeTarget(home, dest string) error {
 	return nil
 }
 
-// maxTargetSymlinkHops bounds symlink resolution in the nested-target walk so
-// a cyclic chain (a -> b -> a) cannot loop forever; exceeding it fails closed.
-const maxTargetSymlinkHops = 40
-
-// validateHomeTargetResolved enforces the containment rules on a nested home
-// target WITH symlinks resolved: every EXISTING component between $HOME and
-// dest's PARENT directory is walked, and a symlinked component must resolve
-// to a location that is still strictly within $HOME and not at/under ~/.ssh —
-// otherwise a write to the lexically-valid dest would land through the link
-// outside $HOME (ErrPathEscapesHome) or inside ~/.ssh (ErrForbiddenSSHPath).
-//
-// The LEAF itself is deliberately NOT resolved: a symlink at the destination
-// is a distinct, observable state the write path refuses on its own
-// (hashFile/ClassifyContent return UnexpectedKindError, and atomic writes
-// replace-not-follow), and adopt must still be able to BUILD a Target for a
-// bridge symlink in order to enumerate and migrate it.
-//
-// The walk is LEXICAL in the ~/.ssh-paranoid style of the rest of ferry: each
-// component is Lstat'd (never following the component itself), a symlink's
-// target TEXT is read with os.Readlink (no follow) and resolved by pure path
-// arithmetic, and NOTHING at/under ~/.ssh is ever Lstat'd, Readlink'd, or
-// EvalSymlink'd — the moment path math lands a component there, the walk
-// refuses by string compare alone. Only $HOME itself (a trusted ancestor
-// strictly above ~/.ssh) is EvalSymlink'd, so an absolute link target in
-// resolved form (e.g. macOS /var -> /private/var) compares on the same real
-// filesystem. A not-yet-existing tail (fresh machine) is fine: there is no
-// symlink left to traverse.
+// validateHomeTargetResolved is the dotfile boundary's alias for the shared
+// symlink-RESOLVING containment guard (internal/sshguard.ResolvedContainment):
+// beyond the LEXICAL ValidateHomeTarget, it walks the EXISTING components
+// between $HOME and dest's PARENT and refuses any that resolve outside $HOME
+// (ErrPathEscapesHome) or at/under ~/.ssh (ErrForbiddenSSHPath). The SAME guard
+// runs at the backup write/restore boundaries, so a symlinked intermediate
+// parent cannot redirect a write no matter which path reaches it.
 func validateHomeTargetResolved(home, dest string) error {
-	cleanHome := filepath.Clean(home)
-	resolvedHome := cleanHome
-	if r, err := filepath.EvalSymlinks(cleanHome); err == nil {
-		resolvedHome = r
-	}
-
-	// inHome/underSSH compare against BOTH the raw and resolved $HOME so a
-	// link target written in either form is judged correctly.
-	inHome := func(p string) bool {
-		return strictlyUnder(cleanHome, p) || strictlyUnder(resolvedHome, p)
-	}
-	// underSSH folds case on the ~/.ssh segment, consistent with the lexical
-	// guard: on a case-insensitive filesystem a component resolving to ~/.SSH
-	// is the same directory as ~/.ssh, so it must be refused too.
-	underSSH := func(p string) bool {
-		return sshguard.UnderHomeSSH(cleanHome, p) || sshguard.UnderHomeSSH(resolvedHome, p)
-	}
-
-	// Walk the PARENT chain only (see the leaf note above). A parent equal to
-	// $HOME has no intermediate components to validate.
-	parent := filepath.Dir(filepath.Clean(dest))
-	if parent == cleanHome {
-		return nil
-	}
-	rel, err := filepath.Rel(cleanHome, parent)
-	if err != nil {
-		return ErrPathEscapesHome
-	}
-	segs := strings.Split(rel, string(filepath.Separator))
-	cur := resolvedHome
-	hops := 0
-	for _, seg := range segs {
-		if seg == "" || seg == "." {
-			continue
-		}
-		next := filepath.Join(cur, seg)
-		// Never Lstat at/under ~/.ssh: conclude by string compare alone.
-		if underSSH(next) {
-			return ErrForbiddenSSHPath
-		}
-		// Resolve this component through its WHOLE symlink chain (a link to a
-		// link must not slip through via the kernel's own resolution on the
-		// next Lstat), validating every hop.
-		for {
-			fi, lerr := os.Lstat(next)
-			if lerr != nil {
-				if errors.Is(lerr, fs.ErrNotExist) {
-					// A not-yet-existing tail: no symlink left to traverse. The
-					// remaining components are pure lexical joins, already
-					// validated lexically.
-					return nil
-				}
-				// ELOOP / permission / anything else: fail closed.
-				return lerr
-			}
-			if fi.Mode()&fs.ModeSymlink == 0 {
-				break
-			}
-			hops++
-			if hops > maxTargetSymlinkHops {
-				return ErrPathEscapesHome // fail closed on a pathological chain
-			}
-			targetTxt, rerr := os.Readlink(next)
-			if rerr != nil {
-				return rerr
-			}
-			if !filepath.IsAbs(targetTxt) {
-				targetTxt = filepath.Join(filepath.Dir(next), targetTxt)
-			}
-			targetTxt = filepath.Clean(targetTxt)
-			if underSSH(targetTxt) {
-				return ErrForbiddenSSHPath
-			}
-			if !inHome(targetTxt) {
-				return ErrPathEscapesHome
-			}
-			next = targetTxt
-		}
-		// Continue the walk from the fully resolved (in-$HOME) component.
-		cur = next
-	}
-	return nil
-}
-
-// strictlyUnder reports whether p is a strict descendant of base (not base
-// itself), by pure path arithmetic. Both must be clean absolute paths.
-func strictlyUnder(base, p string) bool {
-	rel, err := filepath.Rel(base, p)
-	if err != nil {
-		return false
-	}
-	return rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return sshguard.ResolvedContainment(home, dest)
 }
 
 // hashBytes returns the lowercase hex sha256 of content. This is the canonical

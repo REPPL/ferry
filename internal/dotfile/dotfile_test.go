@@ -2,6 +2,7 @@ package dotfile
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -100,15 +101,32 @@ func (h *harness) readHome(name string) string {
 	return string(data)
 }
 
-// applyEager runs the crash-safe deferred apply and commits last-applied
-// immediately, reproducing the persist-on-success behaviour the state-machine
-// tests below assert. Production code never persists eagerly: it composes
-// ApplyDeferred with a post-journal CommitLastApplied, so a deployed byte
-// snapshot can only reach the store THROUGH CommitLastApplied's secret-routed
-// hash-only gate. Routing this helper the same way keeps the tests exercising the
-// one real persistence path.
+// applyEager drives the shared apply core from a repo FILE and commits
+// last-applied immediately, reproducing the persist-on-success behaviour the
+// state-machine tests below assert. It reads the repo source once (refusing a
+// missing or non-regular source, as the removed file-based entry did), then hands
+// the bytes to the same in-memory core (applyContent) the production apply path
+// reaches via ApplyContentDeferred, and commits through CommitLastApplied's
+// secret-routed hash-only gate — the one real persistence path. Production never
+// persists eagerly (it defers the commit until after the journal commit); folding
+// the read + deferred apply + commit here keeps these file-based tests exercising
+// that core without a production file-based apply entry.
 func applyEager(t Target, store *Store, b Backuper, force, dryRun bool) (Result, error) {
-	res, err := ApplyDeferred(t, store, b, force, dryRun)
+	fi, err := os.Lstat(t.Repo)
+	if errors.Is(err, os.ErrNotExist) {
+		return Result{}, fmt.Errorf("dotfile: repo source missing for %q (%s)", t.Name, t.Repo)
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	if !fi.Mode().IsRegular() {
+		return Result{}, &UnexpectedKindError{Path: t.Repo, Mode: fi.Mode()}
+	}
+	content, err := os.ReadFile(t.Repo)
+	if err != nil {
+		return Result{}, err
+	}
+	res, err := applyContent(t, content, defaultPerm, store, b, force, dryRun)
 	if err != nil {
 		return res, err
 	}
@@ -119,18 +137,24 @@ func applyEager(t Target, store *Store, b Backuper, force, dryRun bool) (Result,
 }
 
 // applyWholeFileOverlayEager is applyEager for the whole-file overlay path: it
-// runs ApplyWholeFileOverlayDeferred (local-wins source selection) then commits
-// last-applied, so the overlay tests exercise the same secret-safe deferred +
-// CommitLastApplied path production uses.
+// enforces the whole-file-replace contract and resolves the local-wins source (a
+// present per-machine copy at localSource replaces the shared source), then runs
+// the same read + deferred apply + commit as applyEager. Production makes this
+// local-vs-shared choice during planning and deploys via ApplyContentDeferred;
+// mirroring it here keeps the overlay tests exercising the shared apply core.
 func applyWholeFileOverlayEager(t Target, localSource string, store *Store, b Backuper, force, dryRun bool) (Result, error) {
-	res, err := ApplyWholeFileOverlayDeferred(t, localSource, store, b, force, dryRun)
-	if err != nil {
-		return res, err
+	if t.Overlay != OverlayWholeFileReplace {
+		return Result{}, fmt.Errorf("dotfile: whole-file overlay apply called on %q with overlay mode %q, want %q",
+			t.Name, t.Overlay, OverlayWholeFileReplace)
 	}
-	if err := CommitLastApplied([]Result{res}, store); err != nil {
-		return res, err
+	if localSource != "" {
+		if _, err := os.Lstat(localSource); err == nil {
+			t.Repo = localSource
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return Result{}, err
+		}
 	}
-	return res, nil
+	return applyEager(t, store, b, force, dryRun)
 }
 
 // --- copy-not-symlink ---
@@ -745,43 +769,6 @@ func TestStorePersists(t *testing.T) {
 	}
 }
 
-// --- deferred last-applied: write happens, but last-applied is NOT persisted
-//     until CommitLastApplied (Codex#3 ordering fix) ---
-
-func TestApplyDeferredDoesNotPersistUntilCommit(t *testing.T) {
-	h := newHarness(t)
-	h.writeRepo("zshrc", "v1\n")
-	tgt := h.target("zshrc")
-
-	res, err := ApplyDeferred(tgt, h.store, h.b, false, false)
-	if err != nil {
-		t.Fatalf("apply deferred: %v", err)
-	}
-	if res.Action != ActionCreated {
-		t.Fatalf("action=%q, want created", res.Action)
-	}
-	// The file WAS written (the journal would commit it)...
-	if got := h.readHome("zshrc"); got != "v1\n" {
-		t.Fatalf("home = %q, want v1 (deferred apply still writes the file)", got)
-	}
-	// ...but last-applied is NOT yet recorded (would be ahead of an uncommitted
-	// journal).
-	if _, ok := h.store.LastApplied("zshrc"); ok {
-		t.Fatal("ApplyDeferred persisted last-applied before commit")
-	}
-	if res.PendingHash == "" {
-		t.Fatal("ApplyDeferred did not record a PendingHash to commit")
-	}
-
-	// Caller commits last-applied AFTER the journal commit.
-	if err := CommitLastApplied([]Result{res}, h.store); err != nil {
-		t.Fatalf("commit last-applied: %v", err)
-	}
-	if hsh, ok := h.store.LastApplied("zshrc"); !ok || hsh != res.PendingHash {
-		t.Fatalf("after commit last-applied = %q ok=%v, want %q", hsh, ok, res.PendingHash)
-	}
-}
-
 // CommitLastApplied ignores results with no pending hash (noop/skip/conflict),
 // so passing the full slice is safe.
 func TestCommitLastAppliedIgnoresNonWrites(t *testing.T) {
@@ -890,105 +877,6 @@ func TestApplyWholeFileOverlayRefusesIncludeSidecar(t *testing.T) {
 	}
 	if got := h.readHome("zshrc"); got != "export A=1\n" {
 		t.Fatalf("zsh shared not deployed: %q", got)
-	}
-}
-
-// --- deferred whole-file overlay: write happens, but last-applied is NOT
-//     persisted until CommitLastApplied (Codex#3 ordering fix, overlay path) ---
-
-// The deferred overlay writes the LOCAL copy (local wins) but does not persist
-// last-applied until CommitLastApplied.
-func TestApplyWholeFileOverlayDeferredLocalPresentDefersLastApplied(t *testing.T) {
-	h := newHarness(t)
-	h.writeRepo("gitconfig", "[user]\n\tname = shared\n")
-	local := h.writeLocal("git", "gitconfig", "[user]\n\tname = local\n")
-	tgt := h.target("gitconfig")
-
-	res, err := ApplyWholeFileOverlayDeferred(tgt, local, h.store, h.b, false, false)
-	if err != nil {
-		t.Fatalf("apply overlay deferred: %v", err)
-	}
-	if res.Action != ActionCreated {
-		t.Fatalf("action = %q, want created", res.Action)
-	}
-	// The file WAS written with the LOCAL copy (the journal would commit it)...
-	if got := h.readHome("gitconfig"); got != "[user]\n\tname = local\n" {
-		t.Fatalf("home = %q, want the LOCAL copy deployed", got)
-	}
-	// ...but last-applied is NOT yet recorded.
-	if _, ok := h.store.LastApplied("gitconfig"); ok {
-		t.Fatal("deferred overlay persisted last-applied before commit")
-	}
-	if res.PendingHash == "" {
-		t.Fatal("deferred overlay did not record a PendingHash to commit")
-	}
-
-	// Caller commits last-applied AFTER the journal commit.
-	if err := CommitLastApplied([]Result{res}, h.store); err != nil {
-		t.Fatalf("commit last-applied: %v", err)
-	}
-	if hsh, ok := h.store.LastApplied("gitconfig"); !ok || hsh != res.PendingHash {
-		t.Fatalf("after commit last-applied = %q ok=%v, want %q", hsh, ok, res.PendingHash)
-	}
-}
-
-// With no local copy, the deferred overlay deploys SHARED, still deferring.
-func TestApplyWholeFileOverlayDeferredAbsentDeploysShared(t *testing.T) {
-	h := newHarness(t)
-	h.writeRepo("gitconfig", "[user]\n\tname = shared\n")
-	tgt := h.target("gitconfig")
-
-	missing := LocalOverlayPath(h.repoRoot, "git", "gitconfig")
-	res, err := ApplyWholeFileOverlayDeferred(tgt, missing, h.store, h.b, false, false)
-	if err != nil {
-		t.Fatalf("apply overlay deferred: %v", err)
-	}
-	if got := h.readHome("gitconfig"); got != "[user]\n\tname = shared\n" {
-		t.Fatalf("home = %q, want SHARED content (no local copy)", got)
-	}
-	if _, ok := h.store.LastApplied("gitconfig"); ok {
-		t.Fatal("deferred overlay persisted last-applied before commit")
-	}
-	if res.PendingHash == "" {
-		t.Fatal("deferred overlay did not record a PendingHash to commit")
-	}
-}
-
-// The deferred overlay REFUSES an include-sidecar target, same as the eager one.
-func TestApplyWholeFileOverlayDeferredRefusesIncludeSidecar(t *testing.T) {
-	h := newHarness(t)
-	h.writeRepo("zshrc", "export A=1\n")
-	tgt, err := IncludeSidecarTarget(h.repoRoot, h.home, "zshrc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ApplyWholeFileOverlayDeferred(tgt, "", h.store, h.b, false, false); err == nil {
-		t.Fatal("ApplyWholeFileOverlayDeferred must refuse an include-sidecar target")
-	}
-}
-
-// Dry-run defers AND writes nothing.
-func TestApplyWholeFileOverlayDeferredDryRunWritesNothing(t *testing.T) {
-	h := newHarness(t)
-	h.writeRepo("gitconfig", "[user]\n\tname = shared\n")
-	local := h.writeLocal("git", "gitconfig", "[user]\n\tname = local\n")
-	tgt := h.target("gitconfig")
-
-	res, err := ApplyWholeFileOverlayDeferred(tgt, local, h.store, h.b, false, true)
-	if err != nil {
-		t.Fatalf("apply overlay deferred dry-run: %v", err)
-	}
-	if res.Action != ActionCreated {
-		t.Fatalf("action = %q, want created (planned)", res.Action)
-	}
-	if _, err := os.Stat(filepath.Join(h.home, ".gitconfig")); !os.IsNotExist(err) {
-		t.Fatal("dry-run wrote the home file")
-	}
-	if res.PendingHash != "" {
-		t.Fatalf("dry-run recorded a PendingHash %q", res.PendingHash)
-	}
-	if _, ok := h.store.LastApplied("gitconfig"); ok {
-		t.Fatal("dry-run persisted last-applied")
 	}
 }
 

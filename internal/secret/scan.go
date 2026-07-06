@@ -80,15 +80,39 @@ var (
 	wireGuardKey = regexp.MustCompile(`(?im)^\s*(PrivateKey|PresharedKey)\s*=\s*\S`)
 
 	// secretAssignment matches assignments whose KEY names a credential:
-	// password / passwd / secret / api_key / apikey / token / access_key /
-	// secret_key / client_secret. It accepts shell (KEY=val, export KEY=val),
-	// TOML/ini (key = "val"), and YAML-ish (key: val) shapes. The value must be
-	// non-trivially long and not an obvious placeholder (see isLikelySecretValue)
-	// to avoid flagging empty or templated assignments.
+	// password / passwd / secret / secret_key / api_key / apikey / access_key /
+	// client_secret / token / auth_token. It accepts shell (KEY=val, export
+	// KEY=val), TOML/ini (key = "val"), and YAML-ish (key: val) shapes. The value
+	// must be non-trivially long and not an obvious placeholder (see
+	// isLikelySecretValue) to avoid flagging empty or templated assignments.
+	//
+	// The keyword is matched as a SEPARATOR-BOUNDED segment of the key, not only
+	// its first token, so DB_PASSWORD, DATABASE_PASSWORD, MY_API_KEY,
+	// REDIS_PASSWORD and GITHUB_TOKEN all match: `(?:[A-Za-z0-9]+[._-])*` allows
+	// leading `WORD_`/`WORD.`/`WORD-` segments before the keyword and
+	// `(?:[._-][A-Za-z0-9]+)*` allows trailing `_WORD` segments after it. The
+	// keyword must still start at line-start or after `export ` (no whitespace in
+	// the prefix), so prose like `# password rotation notes` never matches.
 	secretAssignment = regexp.MustCompile(`(?i)(?:^|export\s+)` +
-		`(password|passwd|secret|secret_key|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|token|auth[_-]?token)` +
+		`(?:[A-Za-z0-9]+[._-])*` +
+		`(password|passwd|secret|secret[_-]?key|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|token|auth[_-]?token)` +
+		`(?:[._-][A-Za-z0-9]+)*` +
 		`\s*[:=]\s*` +
 		`["']?([^"'\s]+)["']?`)
+
+	// urlCredential matches a password embedded in a URL's userinfo, i.e.
+	// `scheme://[user][:pass]@host` (DATABASE_URL=postgres://user:pass@host,
+	// REDIS_URL=redis://:pw@host). These bypass secretAssignment (the key name is
+	// ..._URL, not a credential keyword) and the entropy heuristic (the tokenizer
+	// splits the URL on ':' and the userinfo password is short and low-entropy),
+	// so they need their own detector. Only the userinfo PASSWORD is captured
+	// (group 1); it is gated by isNonPlaceholderSecret so a plain URL (no `:pass@`),
+	// an empty password, a placeholder or an interpolation is NOT flagged. Unlike
+	// the assignment path there is NO minimum-length floor: the `scheme://user:X@host`
+	// structure is itself the signal that X is a credential, so even a 2-char DB
+	// password (redis://:pw@host) blocks. A URL with a user but no password
+	// (rsync://mirror@host) captures an empty group and is likewise not flagged.
+	urlCredential = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/@\s:]*(?::([^/@\s]*))?@`)
 )
 
 // entropyThreshold is the Shannon-entropy floor (bits per character) for the
@@ -218,6 +242,24 @@ func scanLine(text string, lineNo int) Findings {
 		}
 	}
 
+	// URL userinfo password (scheme://[user][:pass]@host). Only the captured
+	// password gates the finding, via the shared placeholder/interpolation rules
+	// (isNonPlaceholderSecret) but WITHOUT the assignment path's length floor: the
+	// scheme://user:X@host structure is itself the signal that X is a credential,
+	// so a short DB/cache password still blocks. A bare URL (empty capture) is
+	// never flagged. The detail never echoes the password.
+	if m := urlCredential.FindStringSubmatch(text); m != nil {
+		if isNonPlaceholderSecret(m[1]) {
+			out = append(out, Finding{
+				Rule:       "url-credential",
+				Confidence: High,
+				Line:       lineNo,
+				Detail:     "credential in URL userinfo",
+			})
+			return out
+		}
+	}
+
 	// Entropy heuristic: scan opaque tokens on the line. This is the only
 	// detector that can misfire on real config, so it is the most conservative.
 	for _, tok := range candidateTokens(text) {
@@ -237,14 +279,32 @@ func scanLine(text string, lineNo int) Findings {
 	return out
 }
 
-// isLikelySecretValue decides whether the RHS of a credential assignment is a
-// real value worth flagging, as opposed to an empty/placeholder/templated one.
-// We require a minimum length and reject obvious placeholders so that lines like
-// `password = ""` or `api_key = "${API_KEY}"` or a ferry placeholder do not
-// trip the gate. Anything that survives is treated as a real secret regardless
-// of entropy — a short literal password is still a secret.
+// isLikelySecretValue decides whether the RHS of a credential ASSIGNMENT
+// (KEY=val) is a real value worth flagging, as opposed to an
+// empty/placeholder/templated one. It layers a minimum-length floor on top of
+// the shared placeholder/interpolation check: for a bare `key = value`
+// assignment the key name is only weak evidence, so a too-short value is treated
+// as noise (a config flag, a version) rather than a secret. Lines like
+// `password = ""` or `api_key = "${API_KEY}"` or a ferry placeholder do not trip
+// the gate. Anything that survives is treated as a real secret regardless of
+// entropy — a short literal password is still a secret.
 func isLikelySecretValue(val string) bool {
 	if len(val) < 6 {
+		return false
+	}
+	return isNonPlaceholderSecret(val)
+}
+
+// isNonPlaceholderSecret is the shared credential-value gate: it reports whether
+// val is a real, literal secret as opposed to an empty/interpolated/placeholder
+// one. It rejects empty values, shell/env interpolation (`${...}`, `$...`),
+// ferry's own `{{...}}` placeholder, and obvious placeholder words. It carries NO
+// length floor — that is the assignment path's concern (isLikelySecretValue). The
+// URL-userinfo path uses this directly, because the `scheme://user:X@host`
+// structure is itself the signal that X is a credential, so even a 2-char
+// userinfo password must block.
+func isNonPlaceholderSecret(val string) bool {
+	if val == "" {
 		return false
 	}
 	// Reject shell/env interpolation and ferry's own placeholder: these carry no

@@ -5,13 +5,16 @@ import (
 	"path/filepath"
 )
 
-// atomicWrite writes data to path via a temp file in the SAME directory then an
+// AtomicWrite writes data to path via a temp file in the SAME directory then an
 // atomic rename. The same-dir temp guarantees the rename stays on one
 // filesystem (rename across filesystems is not atomic and may even fail). A
 // crash before the rename leaves the original file untouched; after it, the new
 // content is fully present. The temp file is fsync'd before rename so the bytes
-// are durable, and the temp is cleaned up on any error.
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
+// are durable, and the temp is cleaned up on any error. It is the canonical
+// crash-safe single-file write for the whole codebase; callers outside this
+// package (cmd's deps-record and capture writers) use it too rather than
+// reinventing temp+rename.
+func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".ferry-tmp-*")
 	if err != nil {

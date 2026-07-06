@@ -50,8 +50,9 @@
 // ~/.zshrc sources ~/.zshrc.local) where the overlay is a separate sidecar file;
 // OverlayWholeFileReplace (the TargetFor default) for a generic dotfile with no
 // include point (e.g. .gitconfig) where the per-machine copy in local/<domain>/
-// is deployed INSTEAD OF the shared content. ApplyWholeFileOverlayDeferred
-// implements that whole-file path here; sidecar materialization stays the
+// is deployed INSTEAD OF the shared content. The apply command composes that
+// local-vs-shared choice into the effective content and deploys it through the
+// shared apply core (ApplyContentDeferred); sidecar materialization stays the
 // command's job.
 //
 // This package is pure logic: only the standard library, plus a small Backuper

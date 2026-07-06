@@ -34,6 +34,17 @@ func (e *Engine) BackupAndWrite(r *run, absPath string, newContent []byte, mode 
 		return &NotAbsoluteError{Path: absPath}
 	}
 
+	// Re-validate the RESOLVED parent chain at the write boundary FIRST, before
+	// any baseline capture or journal record, so a same-user process that
+	// swapped an intermediate parent to a symlink AFTER plan time cannot redirect
+	// the read+write outside $HOME or into ~/.ssh. Guarding first means a refused
+	// write ingests nothing into the immutable baseline and records no journal
+	// entry (which rollback could never replay through the same refusal). Fails
+	// closed on refusal; a not-under-$HOME path (test root) is a no-op.
+	if err := guardResolvedContainment(absPath); err != nil {
+		return err
+	}
+
 	// (1a) Immutable baseline — captured from the CURRENT on-disk state, so it
 	// must run before we mutate. No-op if a baseline already exists.
 	if err := e.ensureBaseline(absPath); err != nil {
@@ -53,7 +64,7 @@ func (e *Engine) BackupAndWrite(r *run, absPath string, newContent []byte, mode 
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return err
 	}
-	return atomicWrite(absPath, newContent, mode)
+	return AtomicWrite(absPath, newContent, mode)
 }
 
 // BackupAndRemove transactionally removes absPath, recording its prior state so
@@ -65,6 +76,14 @@ func (e *Engine) BackupAndRemove(r *run, absPath string) error {
 	}
 	if !filepath.IsAbs(absPath) {
 		return &NotAbsoluteError{Path: absPath}
+	}
+	// Re-validate the RESOLVED parent chain BEFORE reading or deleting, symmetric
+	// with BackupAndWrite and restoreState: a same-user process that swapped an
+	// intermediate parent to a symlink (e.g. into ~/.ssh or outside $HOME) after
+	// plan time would otherwise make captureState READ and os.RemoveAll DELETE
+	// through the link. Fails closed; a not-under-$HOME path (test root) is a no-op.
+	if err := guardResolvedContainment(absPath); err != nil {
+		return err
 	}
 	if err := e.ensureBaseline(absPath); err != nil {
 		return err

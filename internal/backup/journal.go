@@ -111,7 +111,7 @@ func (r *run) flush() error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(r.dir, "manifest.json"), data, filePerm)
+	return AtomicWrite(filepath.Join(r.dir, "manifest.json"), data, filePerm)
 }
 
 // Commit marks the run complete by writing the COMPLETE marker last (after all

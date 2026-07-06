@@ -1,0 +1,8 @@
+# Ferry contains no live secrets. Entries here suppress gitleaks false
+# positives on fake credential fixtures used to test the secret scanner.
+#
+# scan_test.go carries deliberately credential-shaped literals so the
+# scanner's own detection can be exercised; gitleaks' generic-api-key rule
+# matches one such fixture. The fixture value is fake (FAKE-prefixed at HEAD),
+# but the addition remains in this branch's history for the commit below.
+e7d844148163c15e9262e908e15b9f836361c8ea:internal/secret/scan_test.go:generic-api-key:131

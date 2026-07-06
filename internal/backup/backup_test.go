@@ -501,7 +501,7 @@ func TestBackupAndWriteRejectsRelativePath(t *testing.T) {
 func TestAtomicWriteSurvivesAndIsExact(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "f")
-	if err := atomicWrite(path, []byte("hello"), 0o600); err != nil {
+	if err := AtomicWrite(path, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(path)
@@ -512,7 +512,7 @@ func TestAtomicWriteSurvivesAndIsExact(t *testing.T) {
 		t.Errorf("mode = %o, want 0600", got)
 	}
 	// Rewrite atomically; old content fully replaced, no temp leftovers.
-	if err := atomicWrite(path, []byte("world!!"), 0o600); err != nil {
+	if err := AtomicWrite(path, []byte("world!!"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = os.ReadFile(path)

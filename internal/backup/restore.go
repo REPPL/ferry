@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,13 +41,38 @@ func (e *Engine) ScopedRestore(absPaths []string) (snapshotID string, err error)
 
 // restorePaths snapshots then reverts the given paths to baseline.
 func (e *Engine) restorePaths(absPaths []string) (string, error) {
-	snapID, err := e.snapshotCurrent(absPaths)
+	// Deterministic order keeps restore predictable and testable.
+	sort.Strings(absPaths)
+	// Guard the resolved parent chain of every REAL path BEFORE the pre-restore
+	// snapshot READS it. snapshotCurrent -> captureForSnapshot -> captureState uses
+	// os.Lstat+os.ReadFile, which FOLLOW intermediate parent symlinks: a parent
+	// swapped to a symlink into ~/.ssh (or outside $HOME) since the baseline was
+	// captured would otherwise make the snapshot read and persist a private key
+	// BEFORE restoreState's own write-boundary guard fires. Refuse such a path up
+	// front — never reading or capturing through it — so restore is no weaker than
+	// apply, which guards before its baseline read. Refusals join the existing skip
+	// list; the remaining safe paths still snapshot and restore. Resource paths are
+	// synthetic (no filesystem chain) and are snapshotted/restored via their hooks.
+	var refused []error
+	var safe []string
+	for _, p := range absPaths {
+		if !isResourcePath(p) {
+			if err := guardResolvedContainment(p); err != nil {
+				if isContainmentRefusal(err) {
+					refused = append(refused, fmt.Errorf("restore refused for %s: %w", p, err))
+					continue
+				}
+				return "", err
+			}
+		}
+		safe = append(safe, p)
+	}
+
+	snapID, err := e.snapshotCurrent(safe)
 	if err != nil {
 		return "", err
 	}
-	// Deterministic order keeps restore predictable and testable.
-	sort.Strings(absPaths)
-	for _, p := range absPaths {
+	for _, p := range safe {
 		state, ok, err := e.Baseline(p)
 		if err != nil {
 			return snapID, err
@@ -62,8 +88,20 @@ func (e *Engine) restorePaths(absPaths []string) (string, error) {
 			}
 		}
 		if err := e.applyState(state, blob); err != nil {
+			// A resolved-containment refusal means the path's parent now resolves
+			// outside $HOME or into ~/.ssh (e.g. a parent swapped to a symlink
+			// since the baseline was captured). SKIP this entry and surface the
+			// error rather than write through the redirected path; the rest of
+			// the restore still proceeds. Any other error aborts as before.
+			if isContainmentRefusal(err) {
+				refused = append(refused, fmt.Errorf("restore refused for %s: %w", p, err))
+				continue
+			}
 			return snapID, err
 		}
+	}
+	if len(refused) > 0 {
+		return snapID, errors.Join(refused...)
 	}
 	return snapID, nil
 }

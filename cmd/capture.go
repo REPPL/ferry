@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/deps"
 	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/platform"
@@ -1418,7 +1419,11 @@ func writeRepoFile(repoRoot, path string, content []byte) error {
 	if err := os.MkdirAll(filepath.Dir(safe), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(safe, content, 0o644)
+	// Atomic temp+rename: this is the single write path for every capture route,
+	// including gitignored local/ overlays that git cannot restore. A crash mid-write
+	// with a plain os.WriteFile could truncate the file, destroying content with no
+	// version-control fallback. AtomicWrite leaves the prior file intact on crash.
+	return backup.AtomicWrite(safe, content, 0o644)
 }
 
 // relTo renders a repo-relative path for reporting (best effort).

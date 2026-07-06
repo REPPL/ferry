@@ -52,7 +52,7 @@ func (e *Engine) snapshotCurrent(absPaths []string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if err := atomicWrite(filepath.Join(dir, "manifest.json"), data, filePerm); err != nil {
+	if err := AtomicWrite(filepath.Join(dir, "manifest.json"), data, filePerm); err != nil {
 		return "", err
 	}
 	return id, nil

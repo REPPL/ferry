@@ -105,6 +105,13 @@ func (e *UnsupportedKindError) Error() string {
 // at path first, so a file->symlink or symlink->file transition restores
 // cleanly, and an absent prior state leaves nothing behind.
 func restoreState(state PathState, blob []byte) error {
+	// Re-validate the RESOLVED parent chain BEFORE mutating: a parent swapped to
+	// a symlink since the baseline was captured (e.g. between apply and restore)
+	// would otherwise redirect the RemoveAll+write below outside $HOME or into
+	// ~/.ssh. Fails closed on refusal; a not-under-$HOME path is a no-op.
+	if err := guardResolvedContainment(state.Path); err != nil {
+		return err
+	}
 	// Remove the current occupant (file or symlink). RemoveAll on a single
 	// non-dir path behaves like Remove; ENOENT is fine.
 	if err := os.RemoveAll(state.Path); err != nil {

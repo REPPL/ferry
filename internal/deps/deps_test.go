@@ -324,12 +324,14 @@ func TestInstallApt_AlreadyInstalledNotRecorded(t *testing.T) {
 type aptStateRunner struct {
 	before, after map[string]string
 	installed     bool
+	installArgs   []string // argv of the apt-get install invocation, once seen
 }
 
 func (a *aptStateRunner) Run(args ...string) (string, error) {
 	j := strings.Join(args, " ")
 	if strings.Contains(j, "apt-get install") {
 		a.installed = true
+		a.installArgs = append([]string(nil), args...)
 		return "", nil
 	}
 	if strings.Contains(j, "dpkg-query") {
@@ -427,6 +429,142 @@ func TestInstallApt_InstallsListAndRecords(t *testing.T) {
 	want := []string{"direnv", "zoxide", "zsh"}
 	if !reflect.DeepEqual(res.RecordedInstalledSet(), want) {
 		t.Errorf("apt RecordedInstalledSet: got %v want %v", res.RecordedInstalledSet(), want)
+	}
+}
+
+// TestParseAptLines_RefusesArgumentInjection checks the trust-boundary fix: a
+// repo-supplied apt.txt line that starts with "-" is an apt-get OPTION, not a
+// package. parseAptLines must refuse the whole manifest with an error naming the
+// offending line — otherwise `-oDPkg::Pre-Invoke::=touch /tmp/x` runs as root
+// under `sudo ferry apply --deps`.
+func TestParseAptLines_RefusesArgumentInjection(t *testing.T) {
+	dir := t.TempDir()
+	apt := filepath.Join(dir, "apt.txt")
+	const evil = "-oDPkg::Pre-Invoke::=touch /tmp/x"
+	writeFile(t, apt, "zsh\n"+evil+"\n")
+
+	_, err := ParseManifest(apt, platform.ManagerApt)
+	if err == nil {
+		t.Fatalf("ParseManifest accepted an apt option-injection line; want refusal")
+	}
+	if !strings.Contains(err.Error(), evil) {
+		t.Errorf("refusal error does not name the offending line: %v", err)
+	}
+}
+
+// TestParseAptLines_RefusesDisallowedChars checks that entries carrying
+// characters outside the apt name charset (spaces, "=", "/", ...) are refused,
+// so a name cannot smuggle shell/option payloads even without a leading dash.
+func TestParseAptLines_RefusesDisallowedChars(t *testing.T) {
+	dir := t.TempDir()
+	for _, bad := range []string{"zsh htop", "pkg=1.0", "a/b", "$(touch x)"} {
+		apt := filepath.Join(dir, "apt.txt")
+		writeFile(t, apt, bad+"\n")
+		if _, err := ParseManifest(apt, platform.ManagerApt); err == nil {
+			t.Errorf("ParseManifest accepted disallowed entry %q; want refusal", bad)
+		}
+	}
+}
+
+// TestParseAptLines_RefusesRemoveModifier checks that a trailing "-" is refused:
+// apt-get treats a trailing "-" on a positional package specifier as its REMOVE
+// modifier, parsed during package resolution (not option parsing), so the `--`
+// separator gives no protection. A repo-supplied line such as `ufw-` would run
+// `apt-get install -y -- ufw-` and REMOVE ufw as root under `sudo ferry apply
+// --deps` — the exact trust boundary this fix closes. A leading "~" or "." is
+// likewise refused because apt would read it as a pattern/regex selector.
+func TestParseAptLines_RefusesRemoveModifier(t *testing.T) {
+	dir := t.TempDir()
+	for _, bad := range []string{"ufw-", "apparmor-", "passwd-", "~ndaemon", ".foo"} {
+		apt := filepath.Join(dir, "apt.txt")
+		writeFile(t, apt, bad+"\n")
+		if _, err := ParseManifest(apt, platform.ManagerApt); err == nil {
+			t.Errorf("ParseManifest accepted apt specifier-modifier entry %q; want refusal", bad)
+		}
+	}
+}
+
+// TestValidateAptRemoveName_RefusesInstallModifier checks the uninstall rail
+// additionally refuses a trailing "+": apt-get treats it as the INSTALL modifier
+// during package resolution (not option parsing), so `apt-get remove -y --
+// openssh-server+` would INSTALL openssh-server as root. Every rule the install
+// rail enforces (leading "-", trailing "-", bad charset) must also hold here.
+func TestValidateAptRemoveName_RefusesInstallModifier(t *testing.T) {
+	for _, bad := range []string{"openssh-server+", "evilpkg+", "g++", "ufw-", "-oX", "~ndaemon"} {
+		if err := ValidateAptRemoveName(bad); err == nil {
+			t.Errorf("ValidateAptRemoveName accepted %q; want refusal", bad)
+		}
+	}
+}
+
+// TestValidateAptRemoveName_AllowsPlainNames checks the legitimate uninstall path
+// is preserved: plain names (including those with an interior "+") still pass.
+func TestValidateAptRemoveName_AllowsPlainNames(t *testing.T) {
+	for _, ok := range []string{"ripgrep", "python3.11", "libfoo-dev", "foo:amd64", "libstdc++6"} {
+		if err := ValidateAptRemoveName(ok); err != nil {
+			t.Errorf("ValidateAptRemoveName refused legitimate name %q: %v", ok, err)
+		}
+	}
+}
+
+// TestValidateAptName_AllowsTrailingInstallModifierOnInstallRail pins the
+// remove-only nature of the "+" reject: `g++` (name ends in "+") MUST stay
+// installable, so ValidateAptName — the install-rail validator — keeps it.
+func TestValidateAptName_AllowsTrailingInstallModifierOnInstallRail(t *testing.T) {
+	if err := ValidateAptName("g++"); err != nil {
+		t.Errorf("ValidateAptName refused g++ on the install rail: %v", err)
+	}
+}
+
+// TestParseAptLines_AllowsValidNames checks the legitimate path still parses:
+// real package names, versioned/epoch forms, and inline comments survive.
+func TestParseAptLines_AllowsValidNames(t *testing.T) {
+	dir := t.TempDir()
+	apt := filepath.Join(dir, "apt.txt")
+	writeFile(t, apt, "zsh\ng++\nlibfoo-dev\npython3.11\nfoo:amd64 # arch\n")
+	got, err := ParseManifest(apt, platform.ManagerApt)
+	if err != nil {
+		t.Fatalf("ParseManifest refused valid names: %v", err)
+	}
+	want := []string{"zsh", "g++", "libfoo-dev", "python3.11", "foo:amd64"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseManifest: got %v want %v", got, want)
+	}
+}
+
+// TestInstallApt_ArgvHasEndOfOptionsSeparator checks the apt-get install argv
+// carries `--` immediately before the package list, so any package name is
+// treated as a package even if the name validation were ever bypassed.
+func TestInstallApt_ArgvHasEndOfOptionsSeparator(t *testing.T) {
+	dir := t.TempDir()
+	apt := filepath.Join(dir, "apt.txt")
+	writeFile(t, apt, "zsh\nzoxide\n")
+	m := Manifest{Manager: platform.ManagerApt, GOOS: "linux", Shared: apt}
+
+	r := &aptStateRunner{before: map[string]string{}, after: map[string]string{}}
+	if _, err := install(m, r); err != nil {
+		t.Fatalf("install apt: %v", err)
+	}
+	if !r.installed {
+		t.Fatalf("apt-get install was not invoked")
+	}
+	// argv: apt-get install -y -- zsh zoxide
+	want := []string{"apt-get", "install", "-y", "--", "zsh", "zoxide"}
+	if !reflect.DeepEqual(r.installArgs, want) {
+		t.Fatalf("apt-get install argv: got %v want %v", r.installArgs, want)
+	}
+	// `--` must come immediately BEFORE the first package.
+	sep, first := -1, -1
+	for i, a := range r.installArgs {
+		if a == "--" && sep == -1 {
+			sep = i
+		}
+		if a == "zsh" {
+			first = i
+		}
+	}
+	if sep == -1 || sep != first-1 {
+		t.Errorf("`--` not immediately before the package list: sep=%d first=%d argv=%v", sep, first, r.installArgs)
 	}
 }
 

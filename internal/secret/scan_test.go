@@ -102,17 +102,82 @@ func TestScanText_NoFalsePositives(t *testing.T) {
 		`bindkey '^R' history-incremental-search-backward`,
 		`export HOMEBREW_PREFIX=/opt/homebrew`,
 		`zstyle ':completion:*' menu select`,
-		`password = ""`,                         // empty value
-		`api_key = "${API_KEY}"`,                // env interpolation
-		`secret = "{{ferry.secret \"x.y\"}}"`,   // ferry placeholder
-		`token = changeme`,                      // placeholder word
-		`color = "#1a2b3c4d"`,                   // short hex-ish, under length gate
-		`path = /usr/local/share/some/deep/dir`, // path, not a secret
+		`password = ""`,                            // empty value
+		`api_key = "${API_KEY}"`,                   // env interpolation
+		`secret = "{{ferry.secret \"x.y\"}}"`,      // ferry placeholder
+		`token = changeme`,                         // placeholder word
+		`color = "#1a2b3c4d"`,                      // short hex-ish, under length gate
+		`path = /usr/local/share/some/deep/dir`,    // path, not a secret
+		`PASSWORD=`,                                // empty value, credential-named key
+		`# password rotation notes`,                // comment, not an assignment
+		`EDITOR=vim`,                               // non-credential name, normal value
+		`npm.token = {{ferry.secret "npm.token"}}`, // ferry placeholder value
+		`HOMEPAGE_URL=https://example.com`,         // bare URL, no userinfo
 	}
 	for _, line := range clean {
 		fs := ScanText(line)
 		if fs.HasHigh() {
 			t.Errorf("FALSE POSITIVE: %q flagged: %+v", line, fs)
+		}
+	}
+}
+
+// TestScanText_CredentialKeywordNotFirstToken covers WS2(a): the credential
+// keyword may be a separator-bounded segment of the KEY, not only its first
+// token. DB_PASSWORD, MY_API_KEY, REDIS_PASSWORD, GITHUB_TOKEN etc. must block.
+func TestScanText_CredentialKeywordNotFirstToken(t *testing.T) {
+	cases := []string{
+		`export DB_PASSWORD=hunter2seasons`,
+		`MY_API_KEY=FAKEabc123def456`,
+		`REDIS_PASSWORD=myredispass99`,
+		`redis_password: myredispass99`,
+		`DATABASE_PASSWORD=supersecretvalue`,
+		`GITHUB_TOKEN=ghp_FAKE0000aaaa1111bbbb`,
+	}
+	for _, c := range cases {
+		fs := ScanText(c)
+		if !fs.HasHigh() {
+			t.Errorf("expected high finding for %q, got %+v", c, fs)
+		}
+	}
+}
+
+// TestScanText_URLUserinfoCredential covers WS2(b): a password embedded in a
+// URL's userinfo (scheme://[user][:pass]@host) must block even though the
+// password is low-entropy and the token is split apart by the entropy
+// tokenizer. A URL with no :pass@ userinfo must NOT be flagged.
+func TestScanText_URLUserinfoCredential(t *testing.T) {
+	block := []string{
+		`DATABASE_URL=postgres://user:hunter2password@host:5432/db`,
+		`REDIS_URL=redis://:s3cr3tpw@cache:6379/0`,
+		// Short userinfo passwords: the scheme://user:X@host structure is itself
+		// the signal that X is a credential, so even a 2-char password must block
+		// (no minimum-length floor on the URL path). This is the commit's headline
+		// example.
+		`REDIS_URL=redis://:pw@host`,
+		`redis://:pass@host`,
+	}
+	for _, c := range block {
+		fs := ScanText(c)
+		if !fs.HasHigh() {
+			t.Errorf("expected high finding for URL userinfo credential %q, got %+v", c, fs)
+		}
+	}
+	// A bare URL with no userinfo password must NOT over-block, and its captured
+	// password must never leak into the detail.
+	pass := []string{
+		`HOMEPAGE_URL=https://example.com`,         // no userinfo at all
+		`RSYNC_SRC=rsync://mirror@example.com/pkg`, // user, but no password
+	}
+	for _, c := range pass {
+		fs := ScanText(c)
+		if fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: URL without userinfo password %q flagged: %+v", c, fs)
+		}
+	}
+	for _, f := range ScanText(`DATABASE_URL=postgres://user:hunter2password@host:5432/db`) {
+		if strings.Contains(f.Detail, "hunter2password") {
+			t.Errorf("finding detail leaked the URL password: %q", f.Detail)
 		}
 	}
 }

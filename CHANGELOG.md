@@ -11,6 +11,131 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Security
+
+- **`restore --packages` can no longer be steered into running attacker-chosen
+  `apt-get` options as root through a tampered installed-package record.** The
+  uninstall rail is now symmetric with the install rail: every entry read from
+  `~/.local/state/ferry/deps-installed.txt` is re-validated as a plain apt
+  package name before it reaches `apt-get remove` (an entry starting with `-`,
+  such as `-oDPkg::Pre-Invoke::=touch /tmp/x`, or ending in `-`, apt's REMOVE
+  modifier, aborts the whole uninstall with the record left intact), and both
+  the `apt-get remove` and `brew uninstall` invocations now place `--` before
+  the package list so nothing after it can be read as an option. This runs as
+  root under `sudo ferry restore --packages`; the state file is `0700` and
+  symlink-hardened, so exploitation requires tampering with local ferry state,
+  but the boundary is now closed either way. Legitimate recorded names are
+  unaffected.
+- **`restore --packages` also rejects a trailing `+` on a recorded apt entry,
+  apt's INSTALL modifier.** Like the trailing `-` REMOVE modifier, a trailing
+  `+` is applied during package resolution, so `--` gives no protection: a
+  tampered entry such as `openssh-server+` would have run `apt-get remove -y --
+  openssh-server+` and INSTALLED the package as root instead of removing it. The
+  uninstall rail now refuses a trailing `+` and aborts with the record intact.
+  The `+` reject is remove-rail-only — `g++` stays installable on the install
+  rail; the trade-off is that `g++` cannot be uninstalled through `restore
+  --packages` and must be removed manually.
+- **A malicious `apt.txt` in a cloned config repo can no longer inject
+  `apt-get` options that run as root under `sudo ferry apply --deps`.** The apt
+  manifest parser now validates every entry as a package name: an entry that
+  starts with `-` (which `apt-get` would read as an option, e.g.
+  `-oDPkg::Pre-Invoke::=touch /tmp/x`) or carries any character outside the apt
+  name charset (letters, digits, `+ - . : ~`) is refused with an error naming
+  the offending line, and the install invocation now places `--` before the
+  package list so anything after it is treated as a package, never an option.
+  Legitimate names, versioned/epoch forms, and inline comments are unaffected.
+  The `brew` path is not susceptible to this class: `brew bundle` reads a
+  manifest FILE and package names never reach the command line.
+- **A malicious `apt.txt` can no longer smuggle an `apt-get` package-specifier
+  modifier that removes or pattern-matches packages as root.** `apt-get` applies
+  a trailing `-` on a positional argument as a REMOVE directive during package
+  resolution — so `--` (which ends only OPTION parsing) gives no protection, and
+  an entry such as `ufw-` or `apparmor-` would have run `apt-get install -y --
+  ufw-` and removed that package under `sudo ferry apply --deps`. A leading `~`
+  or `.` likewise let `apt` do pattern/regex matching and select unintended
+  packages. The apt manifest parser now anchors every entry to the Debian
+  package-name shape: it must start with an ASCII letter or digit and must not
+  end with `-`. Legitimate names such as `g++`, `python3.11`, `foo:amd64`,
+  `libfoo-dev`, and `zsh` are unaffected.
+- **The secret scanner now flags a credential keyword anywhere in a
+  separator-bounded key, not only as its first token.** Keys such as
+  `DB_PASSWORD`, `DATABASE_PASSWORD`, `MY_API_KEY`, `REDIS_PASSWORD` and
+  `GITHUB_TOKEN` are matched (with `WORD_` prefixes and `_WORD` suffixes allowed
+  around the keyword), so a short or low-entropy value that previously slipped
+  past both the name match and the entropy backstop is now caught before it can
+  reach the config repo. The keyword must still begin at line-start or after
+  `export `, so prose such as `# password rotation notes` is not flagged.
+- **The secret scanner now detects a password embedded in a URL's userinfo.** A
+  value like `DATABASE_URL=postgres://user:pass@host` or
+  `REDIS_URL=redis://:pw@host` is flagged on the captured userinfo password,
+  which the credential-name and entropy heuristics both missed. The password is
+  gated only by the shared empty/placeholder/interpolation exclusions, with no
+  minimum-length floor — the `scheme://user:pass@host` structure is itself the
+  signal that the value is a credential, so even a short DB/cache password
+  (`redis://:pw@host`) is caught. An ordinary URL with no userinfo password —
+  `HOMEPAGE_URL=https://example.com` — is not flagged.
+
+- **A symlinked intermediate parent can no longer redirect a managed write
+  outside `$HOME` or into `~/.ssh`.** The deploy-target boundary now runs the
+  same symlink-resolving containment check for a flat or nested dotfile name
+  that it already ran for other nested targets: a manifest entry such as
+  `.config/foo` whose `~/.config` is a symlink escaping `$HOME` (or resolving
+  into `~/.ssh`) is refused before any back-up or write, closing a gap where the
+  lexical-only check would have written through the link.
+- **`ferry restore` re-validates each path's parent chain before it reads or
+  writes it.** If an intermediate parent was swapped to a symlink after a
+  baseline was captured (for example between `apply` and `restore`), restore now
+  refuses that entry — before the pre-restore snapshot reads it, and again before
+  the write-back — instead of reading through the redirected path (which could
+  capture a `~/.ssh` key or an out-of-`$HOME` file into the snapshot store) or
+  deleting and rewriting through it. The refusal is surfaced and the rest of the
+  restore still proceeds, so restore is now no weaker than `apply`, which already
+  guards before its baseline read.
+- **A symlinked intermediate parent can no longer redirect a managed delete
+  outside `$HOME` or into `~/.ssh`.** `BackupAndRemove` — reached in production
+  via `ferry agents adopt` — now runs the same symlink-resolving containment
+  check before it reads the prior state or deletes. A same-user process swapping
+  an intermediate parent to a symlink into `~/.ssh` (or outside `$HOME`) after
+  plan time can no longer make ferry read a key into the baseline and then unlink
+  it through the link; the delete is refused, closing the last open mutation
+  boundary.
+- **A secret-routed dotfile's rendered plaintext is no longer staged to a
+  `$TMPDIR` temp file during `ferry apply`.** Deploying a dotfile whose source
+  referenced the secret store — whether an include-style file (e.g. `.zshrc`) or
+  a whole-file-replace dotfile (e.g. `.gitconfig` carrying a `{{ferry.secret}}`
+  token) — previously wrote the already-substituted plaintext to a `/tmp` file so
+  the file-based apply path could read it back; a crash between staging and
+  cleanup left the secret at rest in `/tmp`. Every target's effective bytes are
+  now applied in memory via the same shared apply core the agents domain uses, so
+  the rendered secret never touches disk outside its intended `$HOME`
+  destination. Behaviour is otherwise unchanged (the same effective content, the
+  same crash-safe deferred last-applied ordering).
+
+### Fixed
+
+- **`~/.local/state/ferry/deps-installed.txt` is now written atomically.** The
+  cumulative record of packages ferry installed — which `restore --packages`
+  reads to know exactly what to uninstall — was rewritten with a plain
+  truncating write; a crash mid-write could leave a partial record, silently
+  dropping earlier packages from a later uninstall. It is now written via a
+  same-directory temp file and an atomic rename, so a crash leaves the prior
+  record fully intact.
+- **`ferry capture` writes every repo file atomically.** The single write path
+  all capture routes share used a plain truncating write; a crash mid-write could
+  truncate a gitignored `local/` overlay that git cannot restore. It now uses the
+  same temp-file-plus-rename as the rest of the codebase, so a crash leaves the
+  previous file untouched.
+
+- **The transactional writer re-checks its resolved parent chain before any
+  back-up read or delete.** `BackupAndWrite` now re-validates containment first —
+  before capturing the baseline and recording the journal entry — closing a
+  narrow window in which a same-user process swapping a parent to a symlink
+  between plan time and write time could have redirected the write. Guarding
+  first also means a refused write ingests nothing into the immutable baseline
+  and records no journal entry that rollback could never replay. Behaviour is
+  unchanged for the ordinary path (an in-`$HOME` real or symlinked-in-`$HOME`
+  parent still succeeds).
+
 ## [0.5.1] - 2026-07-06
 
 ### Security

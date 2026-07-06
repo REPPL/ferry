@@ -353,13 +353,32 @@ func uninstallPackages(runner deps.CommandRunner, mgr platform.PackageManager, p
 		if len(names) == 0 {
 			return nil
 		}
-		args := append([]string{"brew", "uninstall"}, names...)
+		// `--` ends brew's option parsing: everything after it is a package name,
+		// never an option — so a recorded name beginning with "-" cannot be read as
+		// a brew flag when this runs under sudo.
+		args := append([]string{"brew", "uninstall", "--"}, names...)
 		if out, err := runner.Run(args...); err != nil {
 			return fmt.Errorf("brew uninstall: %w (%s)", err, strings.TrimSpace(out))
 		}
 		return nil
 	case platform.ManagerApt:
-		args := append([]string{"apt-get", "remove", "-y"}, pkgs...)
+		// deps-installed.txt is ferry-written and 0700/symlink-hardened, but this
+		// runs apt-get as root under `sudo ferry restore --packages`, so every
+		// recorded entry is re-validated as a plain apt package name before it
+		// reaches argv. This closes the same argument-injection boundary as the
+		// install rail, plus the trailing-"+" INSTALL modifier specific to this
+		// rail: a tampered entry such as `-oDPkg::Pre-Invoke::=touch /tmp/x` (a
+		// leading "-" apt reads as an option), `ufw-` (a trailing "-" apt reads as
+		// its REMOVE modifier), or `openssh-server+` (a trailing "+" apt reads as its
+		// INSTALL modifier, which would INSTALL the package on the remove rail) is
+		// refused, aborting the whole uninstall with the record left intact. The `--`
+		// separator is defence in depth on top.
+		for _, p := range pkgs {
+			if err := deps.ValidateAptRemoveName(p); err != nil {
+				return err
+			}
+		}
+		args := append([]string{"apt-get", "remove", "-y", "--"}, pkgs...)
 		if out, err := runner.Run(args...); err != nil {
 			return fmt.Errorf("apt-get remove: %w (%s)", err, strings.TrimSpace(out))
 		}

@@ -366,7 +366,8 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 //     per-machine sidecar wins), and materialise the sidecar (~/.zshrc.local).
 //   - generic dotfiles (whole-file replace, e.g. .gitconfig): deploy the LOCAL
 //     copy (local/<domain>/<bare>) INSTEAD OF shared when one exists (local wins),
-//     else the shared content — both routed through ApplyWholeFileOverlayDeferred.
+//     else the shared content — the chosen bytes are composed into the effective
+//     content and deployed via the shared apply core (dotfile.ApplyContentDeferred).
 //
 // TargetFor / IncludeSidecarTarget are the ~/.ssh + path-traversal SECURITY
 // BOUNDARY: on ErrForbiddenSSHPath / ErrPathEscapesHome (or any error) the dotfile
@@ -1015,40 +1016,23 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 // applyTarget materialises one dotfile/overlay through the dotfile domain using
 // the DEFERRED apply: it writes the file (backed up first, atomically) but does
 // NOT persist last-applied — the recorded hash rides on Result.PendingHash for the
-// caller to commit via CommitLastApplied AFTER the journal commit. We stage the
-// effective (composed + secret-rendered) content into a temp file and point
-// ApplyDeferred at it, so the real three-way classify, conflict refusal, and
-// atomic backup-write are reused verbatim — even when the effective content
-// differs from the raw repo file (zsh source-last, rendered secrets).
+// caller to commit via CommitLastApplied AFTER the journal commit. Every target —
+// whole-file-replace (generic, e.g. .gitconfig) and include-style (zsh sidecar)
+// alike — deploys the effective bytes IN MEMORY via the shared apply core the
+// agents domain uses, so no temp file is ever staged and a crash cannot leave the
+// ALREADY-RENDERED plaintext of a secret-routed dotfile behind in $TMPDIR.
+// it.content is the effective source: the local-wins decision (whole-file overlay)
+// and zsh source-last composition are already baked in during planning, and any
+// {{ferry.secret}} tokens are already rendered, so behaviour is preserved without
+// re-selecting a source at write time.
 func applyTarget(it *planItem, store *dotfile.Store, b dotfile.Backuper, force bool) (dotfile.Result, error) {
-	staged, cleanup, err := stageContent(it.content)
-	if err != nil {
-		return dotfile.Result{}, err
-	}
-	defer cleanup()
-
 	t := it.target
-	t.Repo = staged
 
-	// A whole-file-replace dotfile (generic, e.g. .gitconfig) deploys through the
-	// dedicated whole-file overlay path. The local-wins decision and secret render
-	// already produced it.content during planning (so the staged bytes are the
-	// effective source); we pass "" as the local source here because that choice is
-	// baked into the staged content. ApplyWholeFileOverlayDeferred refuses a
-	// non-whole-file (zsh sidecar) target, so it can never silently replace an
-	// include-style file. We use the DEFERRED variant so last-applied is persisted
-	// (via CommitLastApplied) only AFTER run.Commit(), giving whole-file dotfiles
-	// the same crash-safety as the zsh sidecar — last-applied can never advance
-	// ahead of a rolled-back file.
-	if t.Overlay == dotfile.OverlayWholeFileReplace {
-		res, err := dotfile.ApplyWholeFileOverlayDeferred(t, "", store, b, force, false)
-		if err != nil {
-			return dotfile.Result{}, err
-		}
-		return res, nil
-	}
-
-	res, err := dotfile.ApplyDeferred(t, store, b, force, false)
+	// DEFERRED semantics (last-applied via CommitLastApplied post-commit) keep
+	// last-applied from advancing ahead of a rolled-back file. DefaultPerm governs
+	// only a first-ever write — an existing home destination's mode is preserved by
+	// the shared core.
+	res, err := dotfile.ApplyContentDeferred(t, it.content, dotfile.DefaultPerm(), store, b, force)
 	if err != nil {
 		return dotfile.Result{}, err
 	}
@@ -1535,27 +1519,6 @@ func renderSecrets(store *secret.Store, content []byte) (rendered []byte, missin
 	return []byte(res.Rendered), nil, false, nil
 }
 
-// stageContent writes effective content to a temp file so dotfile.Apply (which
-// reads its Target.Repo) materialises exactly these bytes. Returns the path and
-// a cleanup func.
-func stageContent(content []byte) (path string, cleanup func(), err error) {
-	f, err := os.CreateTemp("", "ferry-apply-*")
-	if err != nil {
-		return "", func() {}, err
-	}
-	name := f.Name()
-	if _, err := f.Write(content); err != nil {
-		f.Close()
-		os.Remove(name)
-		return "", func() {}, err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(name)
-		return "", func() {}, err
-	}
-	return name, func() { os.Remove(name) }, nil
-}
-
 // persistInstalledSet records the packages ferry has installed under ferry's
 // state dir, so `restore --packages` can later uninstall ONLY these. It is
 // CUMULATIVE: the existing recorded set is read and UNIONed with this run's newly
@@ -1605,7 +1568,12 @@ func persistInstalledSet(installed []string) error {
 	if len(union) > 0 {
 		data = append(data, '\n')
 	}
-	return os.WriteFile(path, data, 0o600)
+	// Atomic temp+rename: this file is the CUMULATIVE record restore --packages
+	// reads to know exactly what ferry installed. A crash mid-write with a plain
+	// os.WriteFile could truncate it, silently dropping earlier packages from the
+	// uninstall set. AtomicWrite leaves the prior record intact on crash and swaps
+	// in the full new content only on success.
+	return backup.AtomicWrite(path, data, 0o600)
 }
 
 func isDarwin() bool { return platform.IsDarwin() }

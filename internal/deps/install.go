@@ -191,7 +191,12 @@ func installApt(m Manifest, runner CommandRunner) (InstallResult, error) {
 
 	before, beforeOK := aptInstalledSet(runner, pkgs)
 
-	args := append([]string{aptGetBin, "install", "-y"}, pkgs...)
+	// `--` ends apt-get option parsing: everything after it is treated as a
+	// package name, never an option. Combined with parseAptLines rejecting any
+	// entry that starts with "-", this stops a repo-supplied apt.txt line such as
+	// `-oDPkg::Pre-Invoke::=touch /tmp/x` from being read as an apt option and
+	// executed as root under `sudo ferry apply --deps`.
+	args := append([]string{aptGetBin, "install", "-y", "--"}, pkgs...)
 	if _, err := runner.Run(args...); err != nil {
 		return res, fmt.Errorf("deps: %s: %w", joinArgs(args), err)
 	}

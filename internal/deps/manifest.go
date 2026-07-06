@@ -120,7 +120,7 @@ func parseManifestFile(path string, mgr platform.PackageManager) ([]string, erro
 	}
 	switch mgr {
 	case platform.ManagerApt:
-		return parseAptLines(string(data)), nil
+		return parseAptLines(string(data))
 	default:
 		// brew (and any future bundle-style manager): keep each meaningful
 		// Brewfile line verbatim (brew/cask/tap/mas/font ...) so the entry set is
@@ -148,7 +148,15 @@ func parseBrewfileLines(s string) []string {
 
 // parseAptLines returns the package names in an apt.txt: one package per line,
 // blank lines and # comments ignored, inline trailing comments stripped.
-func parseAptLines(s string) []string {
+//
+// Every surviving entry is validated as a package NAME (validateAptName): an
+// entry that starts with "-" or carries a character outside the apt name charset
+// is REFUSED with an error that names the offending line. This is a trust
+// boundary — apt.txt comes from a cloned config repo, and `ferry apply --deps`
+// runs apt-get as root. Without this, a line like `-oDPkg::Pre-Invoke::=touch
+// /tmp/x` would reach apt-get as an option and execute as root. Rejecting the
+// whole manifest (rather than silently dropping the line) fails closed.
+func parseAptLines(s string) ([]string, error) {
 	var out []string
 	for _, raw := range strings.Split(s, "\n") {
 		line := strings.TrimSpace(raw)
@@ -158,9 +166,91 @@ func parseAptLines(s string) []string {
 		if i := strings.IndexByte(line, '#'); i >= 0 {
 			line = strings.TrimSpace(line[:i])
 		}
-		if line != "" {
-			out = append(out, line)
+		if line == "" {
+			continue
+		}
+		if err := ValidateAptName(line); err != nil {
+			return nil, err
+		}
+		out = append(out, line)
+	}
+	return out, nil
+}
+
+// ValidateAptName refuses an apt package-name entry that is not a plain package
+// name. It guards two apt boundaries that both run apt-get as root: the cloned
+// config repo's apt.txt on install (parseAptLines), and the ferry-written
+// deps-installed.txt on `restore --packages` uninstall.
+//
+// Every character must be in the apt package-name charset: ASCII letters,
+// digits, and "+", "-", ".", ":", "~" (the characters apt permits in package
+// names, epochs, and versions). Anything else — spaces, "=", "/", shell
+// metacharacters — is refused. On top of the charset, the entry is anchored to
+// the Debian package-name shape:
+//
+//   - It must START with an ASCII alphanumeric. A leading "-" reads as an
+//     apt-get option, not a package; a leading "~" or "." lets apt do
+//     pattern/regex matching and select unintended packages.
+//   - It must NOT END with "-". apt-get treats a trailing "-" on a positional
+//     package specifier as its REMOVE modifier, parsed during package
+//     resolution rather than option parsing — so the "--" separator gives no
+//     protection, and an entry such as `ufw-` would run `apt-get install -y --
+//     ufw-` and REMOVE ufw as root under `sudo ferry apply --deps`.
+//
+// This still admits g++, python3.11, foo:amd64, libfoo-dev, and zsh. The error
+// names the offending line so the user can fix the manifest.
+func ValidateAptName(name string) error {
+	if name == "" {
+		return fmt.Errorf("deps: refusing empty apt manifest entry")
+	}
+	for _, r := range name {
+		if !isAptNameRune(r) {
+			return fmt.Errorf("deps: refusing apt manifest entry %q: character %q is not allowed in a package name (allowed: letters, digits, and + - . : ~)", name, string(r))
 		}
 	}
-	return out
+	if first := name[0]; !(first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' || first >= '0' && first <= '9') {
+		return fmt.Errorf("deps: refusing apt manifest entry %q: a package name must start with a letter or digit (a leading %q, %q, or %q is read by apt-get as an option or a pattern selector, not a package)", name, "-", "~", ".")
+	}
+	if strings.HasSuffix(name, "-") {
+		return fmt.Errorf("deps: refusing apt manifest entry %q: a trailing %q is apt-get's REMOVE modifier, not part of a package name", name, "-")
+	}
+	return nil
+}
+
+// ValidateAptRemoveName validates an entry for the apt UNINSTALL rail
+// (`restore --packages`, which runs `apt-get remove` as root). It applies every
+// ValidateAptName rule and additionally refuses a trailing "+", apt-get's INSTALL
+// modifier. Like the trailing "-" REMOVE modifier, a trailing "+" is parsed
+// during package resolution rather than option parsing, so the "--" separator
+// gives no protection: a tampered deps-installed.txt entry such as
+// `openssh-server+` would run `apt-get remove -y -- openssh-server+` and INSTALL
+// openssh-server as root instead of removing it.
+//
+// This reject is remove-rail-only. On the install rail a trailing "+" is a no-op
+// (the package is being installed anyway) and `g++` — a real package whose name
+// ends in "+" — must stay installable, so ValidateAptName keeps it. The cost is
+// that `g++` cannot be uninstalled through `restore --packages`: apt would
+// resolve `g++` as a package (full-token-first) rather than a modifier, but
+// ferry cannot distinguish that from a tampered `pkg+` without querying dpkg, so
+// it fails closed and leaves the record intact. Uninstall g++ manually if needed.
+func ValidateAptRemoveName(name string) error {
+	if err := ValidateAptName(name); err != nil {
+		return err
+	}
+	if strings.HasSuffix(name, "+") {
+		return fmt.Errorf("deps: refusing apt uninstall entry %q: a trailing %q is apt-get's INSTALL modifier, not part of a package name", name, "+")
+	}
+	return nil
+}
+
+// isAptNameRune reports whether r may appear in an apt package-name entry.
+func isAptNameRune(r rune) bool {
+	switch {
+	case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		return true
+	case r == '+' || r == '-' || r == '.' || r == ':' || r == '~':
+		return true
+	default:
+		return false
+	}
 }
