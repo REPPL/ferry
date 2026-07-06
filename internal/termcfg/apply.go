@@ -33,5 +33,10 @@ func ApplyItem(it Item, store *dotfile.Store, b dotfile.Backuper, force bool) (d
 	if it.Exec {
 		perm = execPerm
 	}
-	return dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, b, force)
+	// A secret-routed target's Content is already-rendered plaintext credentials.
+	// Declare the routing to the apply core (it.SecretRouted): it strips group/other
+	// access from the written mode — even when preserving an existing file's mode —
+	// so the credential is never world-/group-readable (0644 -> 0600, an executable
+	// 0755 -> 0700, keeping the exec bit), and records only the content hash.
+	return dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, b, force, it.SecretRouted)
 }

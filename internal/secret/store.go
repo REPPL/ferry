@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 
@@ -42,15 +43,42 @@ func DetectPlaceholders(content string) []string {
 	return refs
 }
 
+// domainPart is the permitted charset for a domain: alphanumerics, '_' and '-'
+// only. It forbids '.', '/', whitespace and every other separator, so a domain
+// can never carry a path-traversal segment (../, an absolute path, a nested
+// directory) into domainFile — the domain becomes a bare <domain>.toml filename
+// inside the flat store root and nothing else (F6).
+var domainPart = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// keyPart is the permitted charset for a key. Unlike the domain, a key is NEVER
+// a path component: it is only ever a flat map index (m[key]) inside a single
+// domain file, so it may itself contain '.' — a reference like
+// {{ferry.secret "aws.access.key"}} splits to domain "aws", key "access.key",
+// which round-trips through the TOML store. The charset still forbids '/' and
+// whitespace so a malformed reference is rejected cleanly rather than silently
+// stored under a surprising key.
+var keyPart = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // splitRef splits a "domain.key" reference into its domain (first segment) and
-// key (the remainder, which may contain further dots). It errors on a malformed
-// reference (no dot, or an empty domain/key).
+// key (the remainder, which may itself contain dots). It errors on a malformed
+// reference (no dot, an empty domain/key) or one whose domain falls outside
+// domainPart's charset or whose key falls outside keyPart's. The domain check is
+// the path-traversal guard (aa/../../etc/x would otherwise escape the store root
+// through domainFile); the key check only rejects path separators and
+// whitespace, since the key is a flat map index and never a path component.
 func splitRef(ref string) (domain, key string, err error) {
 	i := strings.IndexByte(ref, '.')
 	if i <= 0 || i >= len(ref)-1 {
 		return "", "", fmt.Errorf("secret reference %q must be of the form domain.key", ref)
 	}
-	return ref[:i], ref[i+1:], nil
+	domain, key = ref[:i], ref[i+1:]
+	if !domainPart.MatchString(domain) {
+		return "", "", fmt.Errorf("secret reference %q: domain must match [A-Za-z0-9_-]+", ref)
+	}
+	if !keyPart.MatchString(key) {
+		return "", "", fmt.Errorf("secret reference %q: key must match [A-Za-z0-9_.-]+", ref)
+	}
+	return domain, key, nil
 }
 
 // Store is the out-of-repo secret store rooted at a directory (the real store is
@@ -91,6 +119,13 @@ func (s *Store) Put(ref, value string) error {
 	domain, key, err := splitRef(ref)
 	if err != nil {
 		return err
+	}
+	// Reject a non-UTF-8 value BEFORE it reaches the TOML encoder. Put writes the
+	// out-of-repo store directly (there is no repo copy to re-scan), and the TOML
+	// encoder rejects invalid UTF-8 only opaquely mid-write; catching it here
+	// fails cleanly and never leaves a partially-written domain file.
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("secret value for %q is not valid UTF-8", ref)
 	}
 	// Symlink-harden the store dir BEFORE creating or writing it: a blocked secret
 	// must NEVER land in a store that has been symlinked into the repo worktree (or

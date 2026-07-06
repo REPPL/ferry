@@ -62,6 +62,20 @@ func runSync(c *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// STEP 1b (F8): re-check the EFFECTIVE PUSH URL after insteadOf/pushInsteadOf
+	// rewriting. The check above validated the CONFIGURED fetch URL, but a hostile
+	// `.git/config` can carry a `[url "ext::…"] pushInsteadOf` that rewrites ONLY
+	// the push URL — invisible to the fetch-url check. Resolve the URL git would
+	// ACTUALLY push to and refuse it unless it is HTTPS too, so a rewritten
+	// ext::/file:// push target never reaches `git push`.
+	pushURL, err := syncEffectivePushURL(repo)
+	if err != nil {
+		return err
+	}
+	if err := checkOriginScheme(pushURL); err != nil {
+		return err
+	}
+
 	// STEP 2.5: refuse to run on a repo ALREADY mid-operation. The rollback path
 	// unconditionally `rebase --abort`s and `reset --hard`s; if the user was already
 	// mid-rebase/merge/cherry-pick/revert (or has an unmerged index), running sync
@@ -80,8 +94,12 @@ func runSync(c *cobra.Command, _ []string) error {
 	defer snap.cleanup()
 
 	// STEP 4a: fetch the remote into origin/<branch> from the CLEAN tracked worktree
-	// the snapshot leaves (the tracked stash was popped into a held commit).
-	if o, ferr := gitSync(repo, "fetch", "origin"); ferr != nil {
+	// the snapshot leaves (the tracked stash was popped into a held commit). F10:
+	// disable submodule and tag fanout — `--no-recurse-submodules` +
+	// `-c fetch.recurseSubmodules=no` stop a hostile `.gitmodules`/config from
+	// pulling and running submodule code, and `--no-tags` stops tag-ref fanout.
+	// ferry manages a SINGLE branch, so annotated tags are intentionally not synced.
+	if o, ferr := gitSync(repo, "-c", "fetch.recurseSubmodules=no", "fetch", "--no-recurse-submodules", "--no-tags", "origin"); ferr != nil {
 		return rollback(snap, repo, fmt.Errorf("sync: `git fetch origin` failed: %s", ghcli.Redact(strings.TrimSpace(o))))
 	}
 
@@ -212,6 +230,19 @@ func syncOriginURL(repo string) (string, error) {
 	return strings.TrimSpace(o), nil
 }
 
+// syncEffectivePushURL returns the URL git would ACTUALLY push origin to, AFTER
+// insteadOf/pushInsteadOf rewriting (`git remote get-url --push origin`). This is
+// what STEP 1b re-validates: the configured origin can look https while a
+// pushInsteadOf rewrites the push target to an ext::/file:// URL. Runs through the
+// hardened helper. A missing/empty push URL is a hard failure (never push blind).
+func syncEffectivePushURL(repo string) (string, error) {
+	o, ok := gitSyncOK(repo, "remote", "get-url", "--push", "origin")
+	if !ok || strings.TrimSpace(o) == "" {
+		return "", fmt.Errorf("sync: could not resolve the effective push URL for `origin` — refusing to push")
+	}
+	return strings.TrimSpace(o), nil
+}
+
 // refuseInProgressGitOp refuses to run sync when the repo is ALREADY in the middle
 // of a git operation (rebase / merge / cherry-pick / revert) or has an unmerged
 // index. Sync's rollback path unconditionally aborts a rebase and hard-resets, so
@@ -308,25 +339,68 @@ func isLocalPathOrigin(origin string) bool {
 	return strings.HasPrefix(origin, "/") || strings.HasPrefix(origin, ".") || strings.HasPrefix(origin, "~") || !strings.Contains(origin, ":")
 }
 
-// gitSync runs a git subprocess rooted at repo with the NO-SSH, NO-PROMPT posture
-// the plan pins: GIT_TERMINAL_PROMPT=0 (git never prompts for credentials) AND
-// GIT_SSH_COMMAND=/bin/false (so even a stray ssh path can't read ~/.ssh). It
-// ALSO neutralizes hooks (`-c core.hooksPath=/dev/null`) so no commit/rebase/push
-// hook can run arbitrary code (incl. reading ~/.ssh) or bypass the gate. It returns
-// combined output + error. This is the ONLY way sync spawns git.
-func gitSync(repo string, args ...string) (string, error) {
-	// -c core.hooksPath=/dev/null goes in the git GLOBAL-options slot (before the
-	// subcommand) so it applies to every operation and cannot be overridden by
-	// repo/user config-driven hooks.
-	full := append([]string{"-C", repo, "-c", "core.hooksPath=/dev/null"}, args...)
-	cmd := exec.Command("git", full...)
-	cmd.Env = append(os.Environ(),
+// hardenedGitConfigArgs returns the git GLOBAL `-c` options that make a git
+// subprocess safe to run against an UNTRUSTED repo (a cloned or wired config repo
+// is untrusted input): no hooks, no fsmonitor, the `ext` transport DENIED, and the
+// `file` transport allowed ONLY for a direct user action. Together these
+// neutralize a hostile `.git/config`:
+//   - `core.hooksPath=/dev/null` — no commit/rebase/push/fetch hook can run
+//     arbitrary code (incl. reading ~/.ssh) or bypass the secret gate;
+//   - `core.fsmonitor=false` — a `core.fsmonitor = <cmd>` cannot spawn a command
+//     when git scans the worktree (e.g. `git status` during sync's backup);
+//   - `protocol.ext.allow=never` — a `url.<x>.insteadOf = ext::sh -c …` rewrite
+//     produces an `ext::` URL that git then REFUSES, so no command runs (this is
+//     the insteadOf neutralization: the rewrite is inert because its transport is
+//     denied). The push side additionally re-checks the effective push URL scheme;
+//   - `protocol.file.allow=user` — a legitimate command-line `file://` / local
+//     clone still works (user action), and a SUBMODULE-/recursive-driven file fetch
+//     (GIT_PROTOCOL_FROM_USER=0) is refused. A top-level fetch whose URL was
+//     rewritten to `file://` via a hostile `insteadOf` stays user-initiated and is
+//     still allowed — but `file` is an object read with NO code execution (unlike
+//     `ext`, denied outright), so it is not an exec vector; the attacker already
+//     controls the repo it would read. These are GLOBAL options (before the
+//     subcommand) so repo/user config cannot override them.
+func hardenedGitConfigArgs() []string {
+	return []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false",
+		"-c", "protocol.ext.allow=never",
+		"-c", "protocol.file.allow=user",
+	}
+}
+
+// hardenedGitEnv is the NO-SSH, NO-PROMPT environment for every ferry-spawned git:
+// GIT_TERMINAL_PROMPT=0 (git never prompts for credentials) and
+// GIT_SSH_COMMAND=/bin/false (a stray ssh path can never read ~/.ssh);
+// GIT_PAGER=cat keeps output non-interactive.
+func hardenedGitEnv() []string {
+	return append(os.Environ(),
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_SSH_COMMAND=/bin/false",
 		"GIT_PAGER=cat",
 	)
+}
+
+// runHardenedGit spawns git with the untrusted-transport hardening applied
+// (hardenedGitConfigArgs in the global-options slot + hardenedGitEnv). It is the
+// ONE untrusted-transport helper the plan pins: `clone` (no repo yet), the wired-
+// repo `rev-parse` probe (isGitWorkTree), sync's in-repo git (gitSync), and
+// init-side git (runGitIn) all route through it. It does NOT add `-C`: the caller
+// supplies `-C <repo>` for in-repo commands, while `clone` runs without one.
+// gh.GitPush is deliberately NOT routed here — it keeps its own credential-helper
+// path (a different trust context). Returns combined output + error.
+func runHardenedGit(args ...string) (string, error) {
+	full := append(hardenedGitConfigArgs(), args...)
+	cmd := exec.Command("git", full...)
+	cmd.Env = hardenedGitEnv()
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// gitSync runs an in-repo git subprocess rooted at repo through the hardened
+// untrusted-transport helper. This is the ONLY way sync spawns git.
+func gitSync(repo string, args ...string) (string, error) {
+	return runHardenedGit(append([]string{"-C", repo}, args...)...)
 }
 
 // gitSyncPush pushes a SINGLE explicit ref with every config-driven fanout disabled:

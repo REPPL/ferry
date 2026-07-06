@@ -11,6 +11,85 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Security
+
+- **The capture secret-gate now blocks several credential shapes that previously
+  reached the shared repo.** Indented credential assignments are scanned (the
+  gate no longer requires the key at column zero); named provider tokens are
+  recognised by their prefix regardless of the surrounding key name (AWS access
+  keys, GitHub tokens and fine-grained PATs, Google API keys, Slack tokens,
+  OpenAI `sk-`/`sk-proj-` keys, and Stripe live keys); an AWS-style secret whose
+  base64 body contains slashes is no longer mistaken for a filesystem path;
+  structural credential fields (`private_key_id`, `pat`, `bearer`) and the
+  quoted-JSON key form (`"api_key": "…"`) are caught; a credential value carried
+  on continuation lines (a YAML block scalar or a heredoc body) is associated
+  with its key; and a long hexadecimal value is flagged when its key names a
+  credential. Ordinary content that merely resembles a secret — a git SHA, an
+  MD5 or SHA-256 digest, a dash-stripped UUID, a `sk-button` CSS class, and
+  filesystem paths — is deliberately left unblocked.
+- **The out-of-repo secret store rejects a path-traversal reference.** A secret
+  reference's domain and key must now match `[A-Za-z0-9_-]+`, so a crafted
+  placeholder can no longer read or write a file outside the flat store root, and
+  a non-UTF-8 secret value is refused before it can corrupt a domain file.
+- **A private-key span extracted from shell config no longer swallows a ferry
+  placeholder.** The PEM-span widener that both the capture and the zsh plugin
+  paths use now stops before a `{{ferry.secret …}}` line, so a placeholder can
+  never be stored inside a secret value and left literal in the deployed file.
+- **A cloned or wired config repo is now treated as untrusted git input.** Every
+  git command ferry runs against it — the clone, the working-tree probe, and the
+  fetch/rebase/push of `ferry sync` — disables repository hooks and the
+  filesystem monitor, denies the `ext` transport, and restricts the `file`
+  transport to explicit user actions. A hostile `.git/config` can therefore no
+  longer run a command through a hook, through `core.fsmonitor`, or through a
+  `url.<…>.insteadOf = ext::…` URL rewrite. The clone additionally refuses a
+  source beginning with `-` and passes the source after `--` so it can never be
+  read as a git option, `ferry sync` re-checks the URL it would actually push to
+  after any `insteadOf`/`pushInsteadOf` rewrite and still refuses anything but
+  HTTPS, and its fetch disables submodule and tag fanout. The GitHub push keeps
+  its own credential-helper path.
+- **A Brewfile from a cloned repo is gated before Homebrew runs it.**
+  `ferry apply --deps` now refuses a `Brewfile` directive outside a strict
+  allow-list (`brew`, `cask`, `mas`, `tap`, `vscode`, `whalebrew` with plain
+  name-shaped arguments), rejecting a URL or custom-tap argument, a local-path
+  formula, a Ruby string-interpolation expression (`#{...}`) that Homebrew would
+  evaluate, and an `args:`/postflight block that could run install-time code. The
+  gate is fail-closed: a hand-edited Brewfile that uses an inline comment or a
+  single-quoted directive is rejected, but ferry's own `brew bundle dump` output
+  is unaffected — the allow-list is a superset of what `brew bundle dump` emits,
+  so capturing and re-applying ferry's own manifest still round-trips.
+- **The apt package rail resolves its binaries by trusted absolute path.**
+  `apt-get` and `dpkg-query`, which run as root under `sudo ferry apply --deps`,
+  are now resolved through a sanitised system path rather than the inherited
+  `PATH`, so a `sudo` configured without `secure_path` cannot let a poisoned
+  `PATH` entry hijack them; the `dpkg-query` probe also carries a `--`
+  end-of-options separator.
+- **Terminal configs render `{{ferry.secret …}}` placeholders like dotfiles, and
+  a secret-bearing deployed file is no longer world-readable.** A terminal config
+  under `terminals/` now goes through the same render-or-skip pipeline as a
+  dotfile: a referenced secret that is present is substituted before the file is
+  deployed, and a referenced secret that is missing skips the whole target rather
+  than writing a literal placeholder into the live terminal config. Any deployed
+  file whose bytes were rendered from the secret store — a dotfile or a terminal
+  config — has group and other access stripped from its mode (`0600`, or `0700`
+  for an executable), so the plaintext credential is not readable by other
+  accounts on the machine. This holds whether the file is being created OR an
+  existing one is being updated in place: adopting a world-readable `0644`
+  `~/.wezterm.lua` or `~/.gitconfig` whose repo source is secret-routed tightens
+  it rather than preserving the readable mode. The clamp is forward-only — it
+  applies on the next write of an already-deployed file, not retroactively to a
+  file ferry does not rewrite this run. The apply core is the single
+  enforcement point for this and for keeping the plaintext out of ferry's
+  last-applied snapshot, so no caller can bypass either. A real secret committed
+  under `terminals/` is caught by the same push gate as any other managed file.
+- **`ferry restore` now serialises against a concurrent `ferry apply`.** A revert
+  (file/domain restore, `--packages` uninstall, or `--purge-without-recovery`)
+  takes the same exclusive apply lock that `apply` does, held for the whole
+  operation and released on every exit path. A restore attempted while an apply is
+  in progress now fails closed with a clear message instead of racing it and
+  interleaving writes to the same managed paths. A genuine no-op restore (nothing
+  recorded, no `--packages`/`--purge`) still reports "nothing to restore" without
+  taking the lock or creating an empty state store.
+
 ### Changed
 
 - Internal, no output change: the `agents scaffold` file layout is now a single

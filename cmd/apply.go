@@ -272,7 +272,7 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 	// untouched). Distinct from the macOS `terminal`/`iterm2` preference domains
 	// below.
 	if ctx.Scope.IsManaged("terminals") {
-		titems, twarn, terr := planTerminals(ctx, home, lastApplied)
+		titems, twarn, terr := planTerminals(ctx, home, secretStore, lastApplied)
 		if terr != nil {
 			return nil, nil, terr
 		}
@@ -912,6 +912,13 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
 			continue
 		case kindTerminal:
+			// A missing referenced secret SKIPPED rendering during planning (never
+			// deploy a literal {{ferry.secret}} to the terminal's live config); report
+			// it exactly like a skipped secret-routed dotfile and move on.
+			if it.skip {
+				fmt.Fprintf(out, "  %-22s skipped (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
+				continue
+			}
 			// Config-file terminal targets deploy their overlay-or-shared Content
 			// through the same Backuper/journal as dotfiles (termcfg.ApplyItem).
 			// Unlike dotfiles, though, capture has NO config-file terminal pass
@@ -920,11 +927,12 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			// capture candidate: the guidance points at updating the repo source or
 			// `ferry apply --force`, never `ferry capture`.
 			res, err := termcfg.ApplyItem(termcfg.Item{
-				Key:     it.target.Name,
-				Label:   it.domain,
-				Target:  it.target,
-				Content: it.content,
-				Exec:    it.execBit,
+				Key:          it.target.Name,
+				Label:        it.domain,
+				Target:       it.target,
+				Content:      it.content,
+				Exec:         it.execBit,
+				SecretRouted: it.secretRouted,
 			}, lastApplied, b, force)
 			if err != nil {
 				var conflict *dotfile.ConflictError
@@ -944,6 +952,9 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "  %-22s skipped (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain)
 				continue
 			}
+			// res.SecretRouted was already stamped by the apply core (via ApplyItem)
+			// from the plan's secret-routing flag, so CommitLastApplied records only
+			// this terminal target's hash, never the plaintext bytes.
 			deferred = append(deferred, res)
 			it.action = string(res.Action)
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
@@ -974,10 +985,9 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			if res.ForcedEmptyOverSubstantial {
 				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
 			}
-			// A secret-routed target's deployed bytes hold substituted secret values;
-			// flag the result so CommitLastApplied records only its hash, never the
-			// plaintext bytes (secret-at-rest boundary).
-			res.SecretRouted = it.secretRouted
+			// res.SecretRouted was already stamped by the apply core (via applyTarget ->
+			// ApplyContentDeferred) from the plan's secret-routing flag, so
+			// CommitLastApplied records only this target's hash, never the plaintext bytes.
 			deferred = append(deferred, res)
 			it.action = string(res.Action)
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
@@ -1029,10 +1039,13 @@ func applyTarget(it *planItem, store *dotfile.Store, b dotfile.Backuper, force b
 	t := it.target
 
 	// DEFERRED semantics (last-applied via CommitLastApplied post-commit) keep
-	// last-applied from advancing ahead of a rolled-back file. DefaultPerm governs
-	// only a first-ever write — an existing home destination's mode is preserved by
-	// the shared core.
-	res, err := dotfile.ApplyContentDeferred(t, it.content, dotfile.DefaultPerm(), store, b, force)
+	// last-applied from advancing ahead of a rolled-back file. freshPerm governs only
+	// a first-ever write — an existing home destination's mode is preserved by the
+	// shared core. Secret routing is declared to the core (it.secretRouted): for such
+	// a target the core strips group/other from the written mode (0600), even on an
+	// update to an existing file, so the rendered plaintext credential is never
+	// group-/world-readable, and it records only the content hash.
+	res, err := dotfile.ApplyContentDeferred(t, it.content, dotfile.DefaultPerm(), store, b, force, it.secretRouted)
 	if err != nil {
 		return dotfile.Result{}, err
 	}
@@ -1138,6 +1151,12 @@ func printPlan(out io.Writer, plan []planItem) {
 				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
 			}
 		case kindTerminal:
+			// A missing referenced secret blocks this terminal target (render-or-SKIP);
+			// surface it, exactly like a blocked dotfile, rather than a state line.
+			if it.skip {
+				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
+				continue
+			}
 			// Config-file terminal targets share the dotfile states but, unlike
 			// dotfiles, capture has NO config-file terminal pass, so a drift/conflict
 			// is NOT a capture candidate: the guidance points at updating the repo

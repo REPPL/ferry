@@ -7,6 +7,17 @@ import (
 	"strings"
 )
 
+// credKeyword is the shared alternation of credential-naming key words, composed
+// once and reused by every keyword-anchored detector (secretAssignment, the
+// credential-key predicate that gates the hex rule, and the block-scalar/heredoc
+// openers) so the keyword list never forks. It covers the base credential words
+// plus the STRUCTURAL field names (F5) that carry secrets under non-obvious keys:
+// private_key_id (GCP service-account), pat (personal access token), bearer.
+// refresh_token is already covered by the `token` word via the key-prefix chain.
+const credKeyword = `(password|passwd|secret|secret[_-]?key|api[_-]?key|apikey|` +
+	`access[_-]?key|client[_-]?secret|token|auth[_-]?token|` +
+	`private[_-]?key[_-]?id|bearer|pat)`
+
 // Confidence ranks how sure a finding is. Only High findings block repo routing
 // (see gate.go); Medium is reserved for future, less-certain heuristics and is
 // not currently emitted by the conservative ruleset.
@@ -91,14 +102,72 @@ var (
 	// REDIS_PASSWORD and GITHUB_TOKEN all match: `(?:[A-Za-z0-9]+[._-])*` allows
 	// leading `WORD_`/`WORD.`/`WORD-` segments before the keyword and
 	// `(?:[._-][A-Za-z0-9]+)*` allows trailing `_WORD` segments after it. The
-	// keyword must still start at line-start or after `export ` (no whitespace in
-	// the prefix), so prose like `# password rotation notes` never matches.
-	secretAssignment = regexp.MustCompile(`(?i)(?:^|export\s+)` +
+	// keyword must still start at line-start (leading whitespace tolerated — F1
+	// indented assignments) or after `export ` (no OTHER whitespace in the
+	// prefix), so prose like `# password rotation notes` never matches. An
+	// optional quote on both sides of the key admits the QUOTED-JSON key form
+	// (`"api_key": "value"`) so structural JSON secrets are scanned (F5).
+	secretAssignment = regexp.MustCompile(`(?i)(?:^\s*|export\s+)` +
+		`["']?` +
 		`(?:[A-Za-z0-9]+[._-])*` +
-		`(password|passwd|secret|secret[_-]?key|api[_-]?key|apikey|access[_-]?key|client[_-]?secret|token|auth[_-]?token)` +
+		credKeyword +
 		`(?:[._-][A-Za-z0-9]+)*` +
+		`["']?` +
 		`\s*[:=]\s*` +
 		`["']?([^"'\s]+)["']?`)
+
+	// credentialKey matches ONLY the KEY portion of a credential assignment
+	// (line-start/after-export, optional quotes, credKeyword as a
+	// separator-bounded segment) with NO value shape. It is the "does this line's
+	// key name a credential?" predicate that gates the keyword-only hex rule and
+	// the block-scalar/heredoc association: a bare 32+ hex value or a continuation
+	// value counts as a secret only under such a key.
+	credentialKey = regexp.MustCompile(`(?i)(?:^\s*|export\s+)` +
+		`["']?` +
+		`(?:[A-Za-z0-9]+[._-])*` +
+		credKeyword +
+		`(?:[._-][A-Za-z0-9]+)*` +
+		`["']?`)
+
+	// namedToken matches CONSTANT-SHAPE provider tokens by their fixed prefix
+	// (F2). A match is a near-certain secret regardless of the key name or
+	// entropy, so it anchors the high-confidence gate. Case is SIGNIFICANT
+	// (AKIA/AIza/ghp_ differ in case) so there is no (?i). Each alternative pins
+	// enough trailing length to clear ordinary identifiers — OpenAI keys require
+	// 20+ chars after `sk-`, so a CSS class like `sk-button` never matches.
+	namedToken = regexp.MustCompile(
+		`(?:AKIA|ASIA|AGPA|AIDA)[A-Z0-9]{16}` + // AWS access-key id
+			`|gh[posr]_[A-Za-z0-9]{20,}` + // GitHub token (ghp_/gho_/ghs_/ghr_)
+			`|github_pat_[A-Za-z0-9_]{20,}` + // GitHub fine-grained PAT
+			`|AIza[0-9A-Za-z_-]{35}` + // GCP API key
+			`|xox[baprs]-[A-Za-z0-9-]{10,}` + // Slack token
+			`|sk-proj-[A-Za-z0-9_-]{20,}` + // OpenAI project key
+			`|sk-[A-Za-z0-9]{20,}` + // OpenAI secret key
+			`|sk_live_[A-Za-z0-9]{16,}` + // Stripe live secret key
+			`|rk_live_[A-Za-z0-9]{16,}`) // Stripe restricted live key
+
+	// blockScalarOpener matches a credential-keyed YAML block-scalar opener
+	// (`api_key: |` / `secret: >-`) whose value lives on the following, more
+	// indented lines (F4). Only credential-keyed openers qualify, so a
+	// `description: |` prose block never triggers.
+	blockScalarOpener = regexp.MustCompile(`(?i)^\s*` +
+		`["']?` +
+		`(?:[A-Za-z0-9]+[._-])*` +
+		credKeyword +
+		`(?:[._-][A-Za-z0-9]+)*` +
+		`["']?` +
+		`\s*:\s*[|>][+-]?[0-9]*\s*$`)
+
+	// heredocMarker captures a heredoc delimiter (`<<EOF`, `<<-'EOF'`, `<<~"EOF"`).
+	// Combined with credentialKey it associates the heredoc BODY (up to the
+	// delimiter line) with a credential key (F4).
+	heredocMarker = regexp.MustCompile(`<<[-~]?\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
+
+	// hexSecret matches a long pure-hexadecimal value. It is a secret ONLY when
+	// the line's key names a credential (credentialKey): a BARE 32+ hex string is
+	// by design a git SHA / MD5 / stripped UUID (all below the entropy floor), so
+	// it must never block on its own (F3, adversarial A-1).
+	hexSecret = regexp.MustCompile(`^[0-9a-fA-F]{32,}$`)
 
 	// urlCredential matches a password embedded in a URL's userinfo, i.e.
 	// `scheme://[user][:pass]@host` (DATABASE_URL=postgres://user:pass@host,
@@ -190,8 +259,85 @@ func ScanText(content string) Findings {
 		line := strings.TrimRight(raw, "\r")
 		lineNo := i + 1
 		out = append(out, scanLine(line, lineNo)...)
+
+		// F4: a credential-keyed line can carry its value on CONTINUATION lines a
+		// per-line scan misses — a heredoc body (up to the delimiter) or a YAML
+		// block scalar (the following, more-indented lines). Associate those with
+		// the key here, gated on the same non-placeholder rule as the assignment
+		// path so an interpolated/templated body is not flagged.
+		if credentialKey.MatchString(line) {
+			if m := heredocMarker.FindStringSubmatch(line); m != nil {
+				out = append(out, scanHeredocBody(lines, i, m[1])...)
+				continue
+			}
+		}
+		if blockScalarOpener.MatchString(line) {
+			out = append(out, scanBlockScalarBody(lines, i)...)
+		}
 	}
 	return out
+}
+
+// scanHeredocBody flags the non-placeholder lines of a heredoc body that opens
+// on lines[openIdx] with delimiter delim, up to (not including) the delimiter
+// line. lines are the RAW split lines; \r is trimmed per line.
+func scanHeredocBody(lines []string, openIdx int, delim string) Findings {
+	var out Findings
+	for j := openIdx + 1; j < len(lines); j++ {
+		body := strings.TrimRight(lines[j], "\r")
+		if strings.TrimSpace(body) == delim {
+			break
+		}
+		if v := strings.TrimSpace(body); v != "" && isNonPlaceholderSecret(v) {
+			out = append(out, Finding{
+				Rule:       "secret-heredoc",
+				Confidence: High,
+				Line:       j + 1,
+				Detail:     "credential heredoc value",
+			})
+		}
+	}
+	return out
+}
+
+// scanBlockScalarBody flags the non-placeholder lines of a YAML block-scalar
+// body that opens on lines[openIdx], i.e. the following non-blank lines indented
+// deeper than the opener, stopping at the first line indented at or below it.
+func scanBlockScalarBody(lines []string, openIdx int) Findings {
+	var out Findings
+	base := leadingIndent(lines[openIdx])
+	for j := openIdx + 1; j < len(lines); j++ {
+		body := strings.TrimRight(lines[j], "\r")
+		if strings.TrimSpace(body) == "" {
+			continue
+		}
+		if leadingIndent(lines[j]) <= base {
+			break
+		}
+		if v := strings.TrimSpace(body); isNonPlaceholderSecret(v) {
+			out = append(out, Finding{
+				Rule:       "secret-block-scalar",
+				Confidence: High,
+				Line:       j + 1,
+				Detail:     "credential block-scalar value",
+			})
+		}
+	}
+	return out
+}
+
+// leadingIndent counts the leading space/tab characters of a line (tab counts as
+// one column — comparison is relative, so a consistent width is all that matters).
+func leadingIndent(s string) int {
+	n := 0
+	for _, r := range s {
+		if r == ' ' || r == '\t' {
+			n++
+			continue
+		}
+		break
+	}
+	return n
 }
 
 // ScanValue scans a single opaque value as a whole (no line splitting) and
@@ -229,6 +375,19 @@ func scanLine(text string, lineNo int) Findings {
 		return out
 	}
 
+	// Named provider tokens (AWS/GitHub/GCP/Slack/OpenAI/Stripe): a fixed-prefix
+	// match is near-certain regardless of the key name, so it is checked before
+	// the assignment/entropy heuristics. The detail never echoes the token.
+	if namedToken.MatchString(text) {
+		out = append(out, Finding{
+			Rule:       "named-token",
+			Confidence: High,
+			Line:       lineNo,
+			Detail:     "named provider token",
+		})
+		return out
+	}
+
 	if m := secretAssignment.FindStringSubmatch(text); m != nil {
 		key, val := m[1], m[2]
 		if isLikelySecretValue(val) {
@@ -257,6 +416,24 @@ func scanLine(text string, lineNo int) Findings {
 				Detail:     "credential in URL userinfo",
 			})
 			return out
+		}
+	}
+
+	// Keyword-gated hex (F3): a long pure-hex value is a secret ONLY when the
+	// line's KEY names a credential. Bare 32+ hex is deliberately NOT flagged
+	// (git SHA / MD5 / stripped UUID); the entropy path also skips pure hex, so
+	// this credentialKey gate is the ONLY route by which hex blocks.
+	if credentialKey.MatchString(text) {
+		for _, tok := range candidateTokens(text) {
+			if hexSecret.MatchString(tok) {
+				out = append(out, Finding{
+					Rule:       "hex-secret",
+					Confidence: High,
+					Line:       lineNo,
+					Detail:     "credential-keyword hex value",
+				})
+				return out
+			}
 		}
 	}
 
@@ -349,19 +526,84 @@ func looksLikeHighEntropySecret(tok string) bool {
 	if len(tok) < minEntropyTokenLen {
 		return false
 	}
-	// Paths and URLs are long but not secrets. A '/' early on, or a URL scheme,
-	// rules the token out. (Slashes appear in base64, but a real base64 secret
-	// is dominated by alnum, not separated like a path.)
+	// Paths and URLs are long but not secrets. A URL scheme, or a path-SHAPED
+	// token, rules it out. Crucially this is a path-SHAPE test — NOT a slash
+	// COUNT and NOT a split of the candidate on '/': an AWS secret key
+	// (base64 with 1-2 interior slashes) must keep whole-token entropy scoring
+	// and still block (F1, adversarial A-2).
 	if strings.Contains(tok, "://") {
 		return false
 	}
-	if strings.Count(tok, "/") >= 2 || strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, "~/") {
+	if looksLikePath(tok) {
+		return false
+	}
+	// Pure hex is handled ONLY by the keyword-gated hex rule; the entropy path
+	// never flags it, so a bare git SHA / MD5 / SHA256 / stripped UUID is not a
+	// false positive (F3, adversarial A-1).
+	if isHex(tok) {
 		return false
 	}
 	if !isSecretShaped(tok) {
 		return false
 	}
 	return shannonEntropy(tok) >= entropyThreshold
+}
+
+// looksLikePath reports whether a token has FILESYSTEM-PATH shape rather than
+// opaque key material: a leading /, ~/, ./ or ../, or an interior '/'-separated
+// component that reads like a path segment (a lowercase word or a dotted
+// filename). Base64 secrets with interior slashes are NOT path-shaped: their
+// segments carry uppercase+digits, not lowercase words, so they fall through to
+// entropy scoring.
+func looksLikePath(tok string) bool {
+	if strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, "~/") ||
+		strings.HasPrefix(tok, "./") || strings.HasPrefix(tok, "../") {
+		return true
+	}
+	if !strings.Contains(tok, "/") {
+		return false
+	}
+	for _, seg := range strings.Split(tok, "/") {
+		if isPathishSegment(seg) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathishSegment matches a lowercase-word / dotted-filename path component
+// (usr, local, site-packages, init.el). A mixed-case+digit base64 chunk does NOT
+// match, so an AWS-secret segment is never mistaken for a path segment.
+var pathishSegment = regexp.MustCompile(`^[a-z0-9]+(?:[._-][a-z0-9]+)*$`)
+
+func isPathishSegment(seg string) bool {
+	if seg == "" {
+		return false
+	}
+	// Must contain a letter (a pure-number segment is not evidence of a path).
+	hasLetter := false
+	for _, r := range seg {
+		if r >= 'a' && r <= 'z' {
+			hasLetter = true
+			break
+		}
+	}
+	return hasLetter && pathishSegment.MatchString(seg)
+}
+
+// isHex reports whether the token is entirely hexadecimal digits.
+func isHex(tok string) bool {
+	if tok == "" {
+		return false
+	}
+	for _, r := range tok {
+		switch {
+		case r >= '0' && r <= '9', r >= 'a' && r <= 'f', r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // isSecretShaped reports whether the token's character set looks like opaque key

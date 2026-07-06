@@ -192,9 +192,6 @@ type secretSpan struct {
 // with NO spaces around '=' — the shape whose RHS is swappable in place.
 var assignmentLineRe = regexp.MustCompile(`^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.+)$`)
 
-// pemEndRe matches a PEM END line, closing the BEGIN..END secret span.
-var pemEndRe = regexp.MustCompile(`(?i)END(?:\s+[A-Z0-9]+)*\s+PRIVATE\s+KEY`)
-
 // secretSpansInBlock finds every secret span in a block via ferry's REAL gate
 // detection (secret.ScanText) and extracts span-grained values: an
 // assignment-shaped line yields its RHS keyed by the sanitized var name; PEM
@@ -217,13 +214,10 @@ func secretSpansInBlock(b plugin.Block) []secretSpan {
 		line := lines[f.Line-1]
 		absLine := b.Start + f.Line - 1
 		if f.Rule == "pem-private-key" {
-			end := f.Line
-			for j := f.Line; j <= len(lines); j++ {
-				end = j
-				if pemEndRe.MatchString(lines[j-1]) {
-					break
-				}
-			}
+			// One shared widener (secret.WidenPEMSpan) gives the zsh path the
+			// placeholder-STOP it previously lacked: a re-derived PEM span never
+			// swallows a {{ferry.secret}} line (adversarial A-4).
+			end := secret.WidenPEMSpan(lines, f.Line)
 			for j := f.Line; j <= end; j++ {
 				covered[j] = true
 			}

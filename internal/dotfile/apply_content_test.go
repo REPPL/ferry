@@ -112,7 +112,7 @@ func TestApplyContentDeferredSharesTheApplyCore(t *testing.T) {
 			if st.pre != nil {
 				st.pre(t, home, store)
 			}
-			res, err := ApplyContentDeferred(target, []byte(st.content), 0o644, store, b, st.force)
+			res, err := ApplyContentDeferred(target, []byte(st.content), 0o644, store, b, st.force, false)
 			switch st.wantErrAs {
 			case "conflict":
 				var conflict *ConflictError
@@ -165,7 +165,7 @@ func TestApplyContentDeferredFreshPerm(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := ApplyContentDeferred(hook, []byte("#!/bin/sh\n"), 0o755, store, b, false)
+	res, err := ApplyContentDeferred(hook, []byte("#!/bin/sh\n"), 0o755, store, b, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestApplyContentDeferredFreshPerm(t *testing.T) {
 	if err := os.Chmod(hook.Home, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if res, err = ApplyContentDeferred(hook, []byte("#!/bin/sh\nset -e\n"), 0o755, store, b, false); err != nil {
+	if res, err = ApplyContentDeferred(hook, []byte("#!/bin/sh\nset -e\n"), 0o755, store, b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	_ = res
@@ -194,5 +194,62 @@ func TestApplyContentDeferredFreshPerm(t *testing.T) {
 	}
 	if fi.Mode().Perm() != 0o700 {
 		t.Errorf("update mode = %v, want the preserved 0700", fi.Mode().Perm())
+	}
+}
+
+// TestApplyContentDeferredSecretClampsPreservedMode is the regression for the
+// secret-at-rest leak on the UPDATE/adoption path: an existing world-readable
+// 0644 file whose repo source becomes secret-routed must NOT keep 0644 (which
+// would preserve the existing mode and write the rendered plaintext credential
+// group-/world-readable). Secret routing overrides mode preservation and clamps
+// group/other off, so the deployed file lands 0600. Fresh-write coverage alone
+// misses this: the bug lives entirely in the preserve-existing-mode branch.
+func TestApplyContentDeferredSecretClampsPreservedMode(t *testing.T) {
+	home := t.TempDir()
+	store, err := OpenStoreAt(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &contentBackuper{}
+
+	target := Target{Name: "gitconfig", Home: filepath.Join(home, ".gitconfig")}
+
+	// A plain, non-secret first apply establishes the managed file at the ordinary
+	// world-readable 0644 and records last-applied, so a later repo change is a
+	// clean repo-ahead UPDATE (the preserve-existing-mode branch), not a conflict.
+	res, err := ApplyContentDeferred(target, []byte("[user]\n\tname = Ada\n"), 0o644, store, b, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := CommitLastApplied([]Result{res}, store); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(target.Home); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o644 {
+		t.Fatalf("first write mode = %v, want 0644 (the world-readable starting point)", fi.Mode().Perm())
+	}
+
+	// The repo source now renders a secret. The existing file's 0644 mode would be
+	// PRESERVED on a plain update — secret routing must clamp it to 0600.
+	res2, err := ApplyContentDeferred(target, []byte("[user]\n\ttoken = RENDERED-SECRET\n"), 0o644, store, b, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Action != ActionUpdated {
+		t.Fatalf("action = %q, want %q (repo-ahead update over the existing file)", res2.Action, ActionUpdated)
+	}
+	if !res2.SecretRouted {
+		t.Fatal("apply core did not stamp res.SecretRouted for a secret-routed update")
+	}
+	if err := CommitLastApplied([]Result{res2}, store); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(target.Home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0o600 {
+		t.Errorf("secret update mode = %v, want 0600 (group/other stripped despite an existing 0644 file)", fi.Mode().Perm())
 	}
 }

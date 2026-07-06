@@ -60,8 +60,9 @@ type Result struct {
 	// secrets, and ferry's last-applied state file is a non-secret bookkeeping
 	// file, so snapshotting them would be a secret-at-rest leak. The hash alone
 	// still advances the sync point and drives drift/baseline detection. The apply
-	// command sets this from the plan (the raw source referenced the secret store);
-	// it is false for every non-secret target, which keeps its full byte snapshot.
+	// core stamps this from the secretRouted argument the plan supplies (the raw
+	// source referenced the secret store); it is false for every non-secret target,
+	// which keeps its full byte snapshot.
 	SecretRouted bool
 
 	// ForcedEmptyOverSubstantial is set when --force pushed an empty/near-empty
@@ -178,8 +179,17 @@ func isSubstantial(content []byte) bool { return significantBytes(content) >= su
 // dotfile); pass 0o644 for plain files or 0o755 for scripts that must stay
 // runnable. last-applied is never persisted directly: the hash rides on
 // Result.PendingHash for the caller's post-journal CommitLastApplied.
-func ApplyContentDeferred(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force bool) (Result, error) {
-	return applyContent(t, content, freshPerm, store, b, force, false)
+//
+// secretRouted marks a target whose bytes were rendered from the secret store
+// (they hold plaintext credentials). The apply core OWNS the two secret-at-rest
+// invariants for such a target so no caller can forget either: it strips
+// group/other access from the written file mode — even when preserving an
+// EXISTING destination's mode (tightening is always owner-safe, so a
+// pre-existing 0644 file adopted with secret content still lands 0600, never
+// group-/world-readable) — and it stamps Result.SecretRouted so CommitLastApplied
+// records only the content hash, never the plaintext bytes.
+func ApplyContentDeferred(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, secretRouted bool) (Result, error) {
+	return applyContent(t, content, freshPerm, store, b, force, false, secretRouted)
 }
 
 // applyContent is the ONE shared apply core: the three-way decision table over
@@ -187,12 +197,15 @@ func ApplyContentDeferred(t Target, content []byte, freshPerm os.FileMode, store
 // data-loss guard, and the Backuper-mediated write. ApplyContentDeferred is its
 // public entry; every domain (dotfiles, termcfg, agents) funnels here, so the
 // paths can never diverge.
-func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, dryRun bool) (Result, error) {
+func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, dryRun, secretRouted bool) (Result, error) {
 	st, err := ClassifyContent(t, content, store)
 	if err != nil {
 		return Result{}, err
 	}
-	res := Result{Target: t, State: st.State}
+	// Stamp the secret-at-rest flag on EVERY result the core returns (not just a
+	// write), so no caller has to remember to set it and CommitLastApplied's
+	// hash-only path can never be bypassed by a forgotten assignment.
+	res := Result{Target: t, State: st.State, SecretRouted: secretRouted}
 
 	// A conflict is overridable by force; otherwise refuse.
 	if st.State == StateConflict && !force {
@@ -231,7 +244,7 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 				res.Action = action
 				return res, nil
 			}
-			if err := writeContent(t, content, st.RepoHash, freshPerm, b, &res); err != nil {
+			if err := writeContent(t, content, st.RepoHash, freshPerm, secretRouted, b, &res); err != nil {
 				return Result{}, err
 			}
 			res.Action = action
@@ -259,7 +272,7 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 			res.Action = action
 			return res, nil
 		}
-		if err := writeContent(t, content, st.RepoHash, freshPerm, b, &res); err != nil {
+		if err := writeContent(t, content, st.RepoHash, freshPerm, secretRouted, b, &res); err != nil {
 			return Result{}, err
 		}
 		res.Action = action
@@ -419,17 +432,28 @@ func guardEmptyOverSubstantial(t Target, desired []byte, force, dryRun bool, res
 // Backuper and records the new last-applied hash on res for the caller's
 // post-journal CommitLastApplied. The bytes written are the SAME bytes
 // ClassifyContent hashed (repoHash), so last-applied can never record a lie. An
-// existing regular destination keeps its mode; a fresh write takes freshPerm.
+// existing regular destination keeps its mode and a fresh write takes freshPerm,
+// except a secret-routed target always has group/other stripped (see below).
 // last-applied is never persisted here: the hash rides on res.PendingHash and the
 // deployed bytes on res.PendingContent, so a crash between the write and the
 // journal commit can never leave last-applied ahead of a rolled-back file.
-func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMode, b Backuper, res *Result) error {
+//
+// secretRouted forces group/other access off the FINAL mode — whether fresh or
+// inherited from an existing file — so a secret target's plaintext is never
+// written group-/world-readable (0644 -> 0600, an executable 0755 -> 0700). This
+// is the single enforcement point for the secret-at-rest perm invariant;
+// tightening is always owner-safe, so clamping a preserved mode never breaks the
+// owner's own access.
+func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMode, secretRouted bool, b Backuper, res *Result) error {
 	if b == nil {
 		return errors.New("dotfile: nil Backuper")
 	}
 	perm := freshPerm
 	if fi, err := os.Lstat(t.Home); err == nil && fi.Mode().IsRegular() {
 		perm = fi.Mode().Perm() // preserve an existing destination's mode
+	}
+	if secretRouted {
+		perm &^= 0o077 // strip group/other: a rendered secret is never group-/world-readable
 	}
 
 	if err := b.BackupAndWrite(t.Home, content, perm); err != nil {

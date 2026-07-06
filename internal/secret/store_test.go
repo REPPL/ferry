@@ -198,3 +198,71 @@ func mustPut(t *testing.T, s *Store, ref, val string) {
 		t.Fatalf("Put(%q): %v", ref, err)
 	}
 }
+
+// TestSplitRef_TraversalRejected covers F6: a domain/key charset guard
+// (^[A-Za-z0-9_-]+$) must reject a path-traversal reference so the store can
+// never read or write a file outside its flat root.
+func TestSplitRef_TraversalRejected(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "secrets-local")
+	s := OpenAt(root)
+
+	// A traversal ref must error on both Put and Get, and must NOT create any
+	// file outside the store root.
+	traversals := []string{
+		`aa/../../../etc/x.key`,
+		`../../etc.passwd`,
+		`ok./nested`,
+		`sp ace.key`,
+	}
+	for _, ref := range traversals {
+		if err := s.Put(ref, "FAKEsecretvalue"); err == nil {
+			t.Errorf("Put(%q): expected charset/traversal rejection, got nil", ref)
+		}
+		if _, _, err := s.Get(ref); err == nil {
+			t.Errorf("Get(%q): expected charset/traversal rejection, got nil", ref)
+		}
+	}
+
+	// The parent of the store root must be untouched (no escaped file written).
+	parent := filepath.Dir(root)
+	ents, _ := os.ReadDir(parent)
+	for _, e := range ents {
+		if e.Name() != "secrets-local" {
+			t.Errorf("traversal escaped the store root: unexpected %q in %s", e.Name(), parent)
+		}
+	}
+}
+
+// TestSplitRef_DottedKeyRoundTrips covers the documented feature that a key may
+// itself contain dots (only the first segment is the domain). A reference like
+// "aws.access.key" must Put/Get cleanly — the key is a flat map index, never a
+// path component, so dots in it are legal and must not be rejected by the
+// path-traversal charset guard (which applies to the domain only).
+func TestSplitRef_DottedKeyRoundTrips(t *testing.T) {
+	s := OpenAt(t.TempDir())
+	const ref, val = "aws.access.key", "FAKEsecretvalue"
+	if err := s.Put(ref, val); err != nil {
+		t.Fatalf("Put(%q): unexpected error: %v", ref, err)
+	}
+	got, ok, err := s.Get(ref)
+	if err != nil {
+		t.Fatalf("Get(%q): unexpected error: %v", ref, err)
+	}
+	if !ok || got != val {
+		t.Errorf("Get(%q) = (%q, %v); want (%q, true)", ref, got, ok, val)
+	}
+}
+
+// TestStore_RejectsNonUTF8 covers the store-hardening item: Put must reject a
+// non-UTF-8 value BEFORE it reaches the TOML encoder (which would otherwise error
+// opaquely or corrupt the store).
+func TestStore_RejectsNonUTF8(t *testing.T) {
+	s := OpenAt(t.TempDir())
+	if err := s.Put("app.token", "valid\xffinvalid"); err == nil {
+		t.Errorf("expected non-UTF-8 value to be rejected")
+	}
+	// A valid value under the same domain still works afterwards.
+	if err := s.Put("app.token", "goodvalue"); err != nil {
+		t.Errorf("valid Put after rejected one failed: %v", err)
+	}
+}

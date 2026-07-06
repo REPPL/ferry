@@ -39,5 +39,7 @@ func ApplyItem(it Item, store *dotfile.Store, b dotfile.Backuper, force bool) (d
 	if it.Exec {
 		perm = hookPerm
 	}
-	return dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, b, force)
+	// Agents instruction files never carry secret-store placeholders, so secretRouted
+	// is always false: their full byte snapshot is recorded and no mode clamp applies.
+	return dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, b, force, false)
 }

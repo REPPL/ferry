@@ -125,6 +125,50 @@ func TestScanCommitRangeBlocksSecretShapedPath(t *testing.T) {
 	}
 }
 
+// fn-4.5 / F24: a REAL secret literally dropped into terminals/ (not a
+// {{ferry.secret}} placeholder) is commit-gated by the SAME whole-repo,
+// path-agnostic worktree scan that gates a dotfile secret — never pushed
+// un-gated. An ordinary terminal config in the same directory is a false-positive
+// fixture: it must NOT be blocked, so the gate does not flood real config.
+func TestScanWorktreeBlocksRealSecretInTerminals(t *testing.T) {
+	repo := r3Repo(t)
+	// An ordinary terminal config: plausible, no credential — must stay unblocked.
+	cleanCfg := filepath.Join(repo, "terminals", "wezterm.lua")
+	if err := os.MkdirAll(filepath.Dir(cleanCfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cleanCfg, []byte("return { font_size = 12, color_scheme = \"Dracula\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, repo, "add", "-A") // stage so the scan enumerates the file, not the untracked dir
+	if _, found, err := scanWorktreeForSecret(repo); err != nil {
+		t.Fatalf("scanWorktreeForSecret errored on a clean terminal config: %v", err)
+	} else if found {
+		t.Fatalf("an ordinary terminal config was wrongly blocked (false positive)")
+	}
+
+	// Now drop a REAL AWS access key into a terminals/ config: the same content gate
+	// that blocks a dotfile secret must block this before any commit/push.
+	secretCfg := filepath.Join(repo, "terminals", "kitty", "kitty.conf")
+	if err := os.MkdirAll(filepath.Dir(secretCfg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretCfg, []byte("env AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	testGit(t, repo, "add", "-A")
+	path, found, err := scanWorktreeForSecret(repo)
+	if err != nil {
+		t.Fatalf("scanWorktreeForSecret errored: %v", err)
+	}
+	if !found {
+		t.Fatalf("a real secret dropped in terminals/ was NOT commit-gated — it would be pushed un-gated")
+	}
+	if filepath.ToSlash(path) != "terminals/kitty/kitty.conf" {
+		t.Errorf("blocked path = %q, want terminals/kitty/kitty.conf", path)
+	}
+}
+
 // MAJOR: backupOutOfBand must FAIL CLOSED when a file it must back up cannot be read —
 // the snapshot aborts rather than proceeding with an incomplete (un-restorable) backup.
 func TestBackupOutOfBandFailsClosedOnUnreadableFile(t *testing.T) {

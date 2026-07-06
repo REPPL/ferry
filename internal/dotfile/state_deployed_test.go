@@ -29,7 +29,7 @@ func TestApplyRecordsAndRereadsDeployedBaseline(t *testing.T) {
 
 	// A brand-new target is created; the deferred path carries the deployed bytes
 	// on the Result but writes NOTHING to the store yet.
-	res, err := ApplyContentDeferred(target, content, 0o644, store, b, false)
+	res, err := ApplyContentDeferred(target, content, 0o644, store, b, false, false)
 	if err != nil {
 		t.Fatalf("ApplyContentDeferred: %v", err)
 	}
@@ -110,15 +110,18 @@ func TestSecretRoutedTargetRecordsHashOnly(t *testing.T) {
 
 	b := &contentBackuper{}
 
-	secretRes, err := ApplyContentDeferred(secretTarget, secretContent, 0o644, store, b, false)
+	// Declare the secret routing to the apply core (last arg); it stamps
+	// res.SecretRouted so CommitLastApplied takes the hash-only path — no caller
+	// assignment required.
+	secretRes, err := ApplyContentDeferred(secretTarget, secretContent, 0o644, store, b, false, true)
 	if err != nil {
 		t.Fatalf("ApplyContentDeferred (secret): %v", err)
 	}
-	// The apply command flags a secret-routed deploy; here we do the same so
-	// CommitLastApplied takes the hash-only path for it.
-	secretRes.SecretRouted = true
+	if !secretRes.SecretRouted {
+		t.Fatal("apply core did not stamp res.SecretRouted for a secret-routed target")
+	}
 
-	plainRes, err := ApplyContentDeferred(plainTarget, plainContent, 0o644, store, b, false)
+	plainRes, err := ApplyContentDeferred(plainTarget, plainContent, 0o644, store, b, false, false)
 	if err != nil {
 		t.Fatalf("ApplyContentDeferred (plain): %v", err)
 	}

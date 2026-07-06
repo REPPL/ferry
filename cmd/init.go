@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -15,6 +14,7 @@ import (
 
 	"github.com/REPPL/ferry/internal/config"
 	"github.com/REPPL/ferry/internal/dotfile"
+	"github.com/REPPL/ferry/internal/ghcli"
 	"github.com/REPPL/ferry/internal/paths"
 	"github.com/REPPL/ferry/internal/plugin"
 )
@@ -269,14 +269,14 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	}
 
 	fmt.Fprintf(out, "cloning %s -> %s\n", source, dest)
-	// git clone handles https://, file:// and bare local paths uniformly. The
-	// resulting working tree (NOT bare) is what we record. We deliberately do not
-	// touch ~/.ssh: an HTTPS/file clone of a public repo needs no SSH material.
-	cmd := exec.Command("git", "clone", source, dest)
-	cmd.Stdout = out
-	cmd.Stderr = out
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("could not clone the config repo from %s: %w — check the URL is correct and reachable over HTTPS (ferry does not use SSH)", source, err)
+	// git clone handles https://, file:// and bare local paths uniformly, through
+	// the ONE untrusted-transport helper: hooks/fsmonitor off, ext denied, file
+	// allowed for this user-initiated clone. `-- <source>` stops a leading-dash
+	// source being read as an option (F7; checkCloneSource also rejects one up
+	// front). The resulting working tree (NOT bare) is what we record. We
+	// deliberately do not touch ~/.ssh: an HTTPS/file clone needs no SSH material.
+	if cloneOut, err := runHardenedGit("clone", "--", source, dest); err != nil {
+		return "", fmt.Errorf("could not clone the config repo from %s: %w — check the URL is correct and reachable over HTTPS (ferry does not use SSH)\n%s", source, err, ghcli.Redact(strings.TrimSpace(cloneOut)))
 	}
 	return dest, nil
 }
@@ -571,6 +571,13 @@ func checkCloneSource(source string) error {
 		return fmt.Errorf("ferry clones over HTTPS only; SSH/git remotes are out of scope — use an https:// URL (got %q)", source)
 	}
 
+	// A leading '-' source would be read by git as an OPTION, not a repository
+	// (e.g. `--upload-pack=touch /tmp/x`, `-oProxyCommand=…`). Refuse it up front
+	// (F7); the clone itself also uses `-- <source>` as belt-and-braces.
+	if strings.HasPrefix(source, "-") {
+		return fmt.Errorf("refusing a clone source that begins with '-' (%q): it would be read as a git option, not a repository", source)
+	}
+
 	// Explicit "scheme://..." URL: accept https/file, reject everything else
 	// (ssh, git, http, ...). Scheme compared lowercased so case variants are caught.
 	if scheme, ok := urlScheme(source); ok {
@@ -671,11 +678,14 @@ func hasURLScheme(source string) bool {
 }
 
 // isGitWorkTree reports whether dir is the root of a git working tree (so it can be
-// wired directly rather than re-cloned).
+// wired directly rather than re-cloned). dir is a user-supplied path that may be an
+// EXISTING (untrusted) repo, so the rev-parse runs through the hardened helper:
+// hooks/fsmonitor off + ext denied, so a hostile `.git/config` cannot run code when
+// ferry probes the wired repo (F18/B-6). This is also why no unhardened repo-local
+// git touches a freshly-cloned or wired repo before it is hardened.
 func isGitWorkTree(dir string) bool {
-	cmd := exec.Command("git", "-C", dir, "rev-parse", "--is-inside-work-tree")
-	out, err := cmd.CombinedOutput()
-	return err == nil && strings.TrimSpace(string(out)) == "true"
+	out, err := runHardenedGit("-C", dir, "rev-parse", "--is-inside-work-tree")
+	return err == nil && strings.TrimSpace(out) == "true"
 }
 
 // existingConfiguredRepo returns the repo path from an already-present config.toml
@@ -824,11 +834,12 @@ func ensureLocalManifest(out io.Writer, repo string) error {
 	return nil
 }
 
-// runGitIn runs a git command rooted at dir and returns combined output.
+// runGitIn runs an init-side git command rooted at dir through the hardened
+// untrusted-transport helper (hooks/fsmonitor off, ext denied) and returns
+// combined output. init/import seed and commit inside a ferry-created tree, but a
+// wired repo's `.git/config` is untrusted, so all init-side git is hardened (F18).
 func runGitIn(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return runHardenedGit(append([]string{"-C", dir}, args...)...)
 }
 
 // freeCloneDest returns dest if it is absent or an empty dir; otherwise it appends

@@ -31,10 +31,17 @@ type Item struct {
 	// dotfile.NestedTarget, so ~/.ssh and $HOME-escapes are impossible).
 	Target dotfile.Target
 	// Content is the exact bytes to materialise (the per-machine overlay when one
-	// exists, else the shared repo source).
+	// exists, else the shared repo source), with any {{ferry.secret ...}}
+	// placeholders already rendered by the caller.
 	Content []byte
 	// Exec preserves the repo source's executable bit on a first-ever write.
 	Exec bool
+	// SecretRouted marks a target whose Content was rendered from the secret store
+	// (a {{ferry.secret ...}} placeholder was substituted). Such a file carries
+	// plaintext credentials, so ApplyItem materialises it 0600 (never
+	// group-/world-readable) and the apply command records only its hash — never the
+	// bytes — in the last-applied snapshot, exactly like a secret-routed dotfile.
+	SecretRouted bool
 }
 
 // PlanInput carries the planner's inputs. Guard validates a repo-side path

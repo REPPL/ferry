@@ -1,0 +1,23 @@
+# gitleaks configuration for ferry.
+#
+# ferry stores no live secrets. Its secret-scanner, git-transport, and
+# zsh-analysis tests necessarily embed fake, credential-shaped fixtures (AWS
+# keys, PEM blocks, Slack/Stripe/GitHub tokens) so the scanner's own detection
+# can be exercised. Allowlist those specific test files by path so gitleaks does
+# not flag the fixtures — every default rule stays active, and any non-test file
+# (or a test file outside this list) is still scanned in full.
+
+[extend]
+# Keep ALL of gitleaks' built-in rules; this file only adds an allowlist.
+useDefault = true
+
+[allowlist]
+description = "Fake credential fixtures in ferry's security tests"
+paths = [
+  # The secret package's tests are entirely about credential-shaped fixtures.
+  '''internal/secret/.*_test\.go$''',
+  # A PEM/private-key fixture for the zsh secret-span analyser.
+  '''internal/plugin/zsh/analyze_test\.go$''',
+  # A fake AWS key fixture in the untrusted-git-transport tests.
+  '''cmd/sync_round3_test\.go$''',
+]

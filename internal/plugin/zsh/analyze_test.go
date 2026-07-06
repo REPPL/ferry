@@ -687,3 +687,29 @@ func TestExpandPathSSHCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+// TestSecretSpanPEMPlaceholderStop covers the PEM-widener placeholder-stop the
+// zsh path previously lacked (adversarial A-4): when a PEM run already carries a
+// ferry placeholder on a later line, the widened span must STOP before it —
+// never swallow a {{ferry.secret}} line into the stored value (which apply's
+// single non-recursive render pass would then leave literal).
+func TestSecretSpanPEMPlaceholderStop(t *testing.T) {
+	content := "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+		"c3ludGhldGljVW5pdEtleUJvZHlMaW5lWlpaWlpaWlpaWlpaWlpaWlpaWlpa\n" +
+		"{{ferry.secret \"zsh.secret_9\"}}\n" +
+		"-----END OPENSSH PRIVATE KEY-----\n"
+	b := plugin.Block{Raw: []byte(content), Start: 1}
+	spans := secretSpansInBlock(b)
+	if len(spans) == 0 {
+		t.Fatalf("expected a PEM secret span, got none")
+	}
+	sp := spans[0]
+	if strings.Contains(sp.value, "{{ferry.secret") {
+		t.Errorf("PEM span swallowed a placeholder line:\n%q", sp.value)
+	}
+	// The span must end on the line BEFORE the placeholder (line 2), not widen
+	// across it to the END marker on line 4.
+	if sp.endLine != 2 {
+		t.Errorf("PEM span endLine = %d, want 2 (stops before the placeholder)", sp.endLine)
+	}
+}

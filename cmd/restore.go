@@ -42,7 +42,7 @@ func init() {
 // removes ferry's own dirs INCLUDING the backup store AFTER a successful restore
 // (opt-in; the default keeps the backup store intact because deleting the only
 // backup makes the restore permanently un-undoable — the single irreversible op).
-func runRestore(c *cobra.Command, args []string) error {
+func runRestore(c *cobra.Command, args []string) (retErr error) {
 	doPackages, _ := c.Flags().GetBool("packages")
 	yes, _ := c.Flags().GetBool("yes")
 	purge, _ := c.Flags().GetBool("purge-without-recovery")
@@ -76,6 +76,42 @@ func runRestore(c *cobra.Command, args []string) error {
 	baselineExists, err := hasAnyBaseline()
 	if err != nil {
 		return fmt.Errorf("check for ferry baseline: %w", err)
+	}
+
+	// Serialise the entire revert against a concurrent `ferry apply` by taking the
+	// SAME exclusive apply lock, held (via the deferred Unlock) for every mutating
+	// step below: file/domain restore, --packages uninstall, and --purge. Without
+	// it a restore could interleave its writes with an in-flight apply mutating the
+	// same managed paths. We acquire it ONLY when there is work to do so a genuine
+	// no-op restore (never applied, no --packages, no --purge) still prints its
+	// "nothing to restore" message without creating an empty state store — the
+	// no-create-state invariant hasAnyBaseline is deliberately built to preserve.
+	if baselineExists || doPackages || purge {
+		eng, engErr := ctx.Engine()
+		if engErr != nil {
+			return engErr
+		}
+		lock, lockErr := eng.Lock()
+		if lockErr != nil {
+			var held *backup.ErrLockHeld
+			if errors.As(lockErr, &held) {
+				return fmt.Errorf("another ferry apply is in progress (pid %d); try again later", held.OwnerPID)
+			}
+			return fmt.Errorf("acquire apply lock: %w", lockErr)
+		}
+		// Release on every return path. A FAILED unlock must not read as success: if
+		// restore is otherwise succeeding, surface the unlock error (a stale lock would
+		// block the next apply); if we are already returning an error, keep it and warn.
+		// Mirrors applyPlan's deferred unlock so restore serialises exactly as apply does.
+		defer func() {
+			if uErr := lock.Unlock(); uErr != nil {
+				if retErr == nil {
+					retErr = fmt.Errorf("release apply lock: %w (the lock may be stale; remove it before the next apply)", uErr)
+				} else {
+					fmt.Fprintf(out, "warning: failed to release apply lock: %v; the lock may be stale and block the next apply\n", uErr)
+				}
+			}
+		}()
 	}
 
 	if baselineExists {

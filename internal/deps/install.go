@@ -18,9 +18,10 @@ var ErrNoPackageManager = errors.New("no package manager present")
 // binary on macOS and Linuxbrew; apt installs go through apt-get (scriptable,
 // no TTY assumptions), which is what we record/diff against.
 const (
-	brewBin    = "brew"
-	aptGetBin  = "apt-get"
-	aptListBin = "apt"
+	brewBin      = "brew"
+	aptGetBin    = "apt-get"
+	aptListBin   = "apt"
+	dpkgQueryBin = "dpkg-query"
 )
 
 // InstallResult is the outcome of a gated Install: the manifest that was
@@ -98,6 +99,20 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 	bundleFiles, err := m.bundleFiles()
 	if err != nil {
 		return res, err
+	}
+
+	// Gate every Brewfile through the allow-list (ValidateBrewfileDirective, via
+	// ParseManifest) BEFORE any `brew bundle` runs. A cloned/wired config repo's
+	// Brewfile is UNTRUSTED input and `brew bundle --file=` instance_evals it as
+	// Ruby, so an unvetted directive (arbitrary Ruby, a postinstall: block, a
+	// custom-tap URL) is root-of-user RCE. ALL files are validated up front so a
+	// hostile .local overlay can never execute after the shared file's packages
+	// were already installed: one bad directive aborts the whole install before
+	// brew is invoked at all.
+	for _, file := range bundleFiles {
+		if _, err := ParseManifest(file, platform.ManagerBrew); err != nil {
+			return res, err
+		}
 	}
 
 	// Shared manifest first, then the per-machine overlay LAST (local wins / is
@@ -219,7 +234,11 @@ func installApt(m Manifest, runner CommandRunner) (InstallResult, error) {
 func aptInstalledSet(runner CommandRunner, pkgs []string) (set map[string]struct{}, ok bool) {
 	set = map[string]struct{}{}
 	for _, pkg := range pkgs {
-		out, err := runner.Run("dpkg-query", "-W", "-f=${Status}", pkg)
+		// `--` ends dpkg-query option parsing (F19, defense-parity with the install
+		// rail): a package name can never be read as a dpkg-query option even before
+		// ValidateAptName runs. dpkg-query is resolved through the sanitized root rail
+		// (see runner.ExecRunner.Run) since this probe runs under `sudo ferry`.
+		out, err := runner.Run(dpkgQueryBin, "-W", "-f=${Status}", "--", pkg)
 		if err != nil {
 			// Not-installed packages make dpkg-query exit non-zero; treat that as
 			// "absent" only when the output confirms it (empty / no "installed").

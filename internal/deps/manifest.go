@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -125,25 +126,200 @@ func parseManifestFile(path string, mgr platform.PackageManager) ([]string, erro
 		// brew (and any future bundle-style manager): keep each meaningful
 		// Brewfile line verbatim (brew/cask/tap/mas/font ...) so the entry set is
 		// the real manifest content the installed-set diff is checked against.
-		return parseBrewfileLines(string(data)), nil
+		return parseBrewfileLines(string(data))
 	}
 }
 
 // parseBrewfileLines returns the non-blank, non-comment lines of a Brewfile,
-// trimmed of surrounding whitespace. We do NOT decode the Ruby DSL — the entry
-// is the directive line as written (e.g. `brew "zoxide"`, `cask "iterm2"`),
+// trimmed of surrounding whitespace, AFTER gating each directive through the
+// allow-list (ValidateBrewfileDirective). We do NOT decode the Ruby DSL — the
+// entry is the directive line as written (e.g. `brew "zoxide"`, `cask "iterm2"`),
 // which is exactly what we diff the installed set against and what brew bundle
-// itself consumes.
-func parseBrewfileLines(s string) []string {
+// itself consumes. A cloned config repo's Brewfile is UNTRUSTED input and
+// `brew bundle --file=` runs install-time code, so any directive outside the
+// allow-list (a URL/custom-tap arg, a local-path formula, an args:/postflight
+// block, or an arbitrary Ruby directive) REFUSES the whole manifest — fail
+// closed, mirroring parseAptLines.
+func parseBrewfileLines(s string) ([]string, error) {
 	var out []string
 	for _, raw := range strings.Split(s, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+		if err := ValidateBrewfileDirective(line); err != nil {
+			return nil, err
+		}
 		out = append(out, line)
 	}
-	return out
+	return out, nil
+}
+
+// allowedBrewDirectives is the Brewfile directive allow-list ferry will hand to
+// `brew bundle`. It is a SUPERSET of what `brew bundle dump` emits
+// (brew/cask/mas/tap/vscode) so a capture->apply round-trip of ferry's own dump
+// always passes; whalebrew is included per the dump-superset contract. Any other
+// first token — arbitrary Ruby (`system`, `if`), a `cask_args` global, or a
+// third-party bundle plugin's directive (`npm`, `uv`) — is refused.
+var allowedBrewDirectives = map[string]bool{
+	"brew": true, "cask": true, "mas": true, "tap": true, "vscode": true, "whalebrew": true,
+}
+
+// dangerousBrewOptions are Brewfile option keys that run arbitrary install-time
+// code (or fetch/build from an attacker source). Their presence anywhere on a
+// directive line refuses it. `brew "x", link: false` and `mas "x", id: N` — the
+// benign options `brew bundle dump` emits — are deliberately NOT in this list.
+var dangerousBrewOptions = []string{"args:", "postinstall:", "preinstall:", "postflight", "preflight", "requires:", "require "}
+
+// ValidateBrewfileDirective enforces the Brewfile allow-list on ONE already-
+// trimmed, non-blank, non-comment directive line. It refuses, with an error that
+// names the offending line, anything a cloned repo could weaponise:
+//
+//   - a first token outside allowedBrewDirectives (arbitrary Ruby / plugin dirs);
+//   - a URL argument ("://") — a custom-tap URL or remote formula;
+//   - a code-execution option (dangerousBrewOptions: args:/postflight/…);
+//   - a first argument that is not a quoted, name-shaped token (a local-path
+//     formula like `brew "./x.rb"` / `brew "~/x"` / `brew "../x"`).
+//
+// mas is special-cased: its first argument is a free-text app NAME (spaces and
+// punctuation are normal) and the numeric `id:` is what drives the install, so
+// the name is not charset-checked but a numeric `id:` is REQUIRED. tap must be
+// exactly `user/repo` (two segments), never a three-segment or URL form.
+func ValidateBrewfileDirective(line string) error {
+	kw, rest := splitFirstField(line)
+	if !allowedBrewDirectives[kw] {
+		return fmt.Errorf("deps: refusing Brewfile directive %q (line %q): only brew/cask/mas/tap/vscode/whalebrew are allowed — a cloned repo's Brewfile is untrusted and `brew bundle` runs install-time code", kw, line)
+	}
+	if strings.Contains(rest, "://") {
+		return fmt.Errorf("deps: refusing Brewfile line %q: a URL argument (custom tap or remote formula) can pull and run attacker code", line)
+	}
+	for _, bad := range dangerousBrewOptions {
+		if strings.Contains(rest, bad) {
+			return fmt.Errorf("deps: refusing Brewfile line %q: the %q option can run arbitrary install-time code", line, strings.TrimSpace(bad))
+		}
+	}
+	if kw == "mas" {
+		if !masEntryRe.MatchString(rest) || hasRubyInterpolation(rest) {
+			return fmt.Errorf("deps: refusing Brewfile line %q: a `mas` entry must be `mas \"Name\", id: <number>` with no Ruby `#{...}` interpolation in the name", line)
+		}
+		return nil
+	}
+	name, tail, ok := firstQuotedArg(rest)
+	if !ok {
+		return fmt.Errorf("deps: refusing Brewfile line %q: expected a quoted name argument", line)
+	}
+	if hasRubyInterpolation(name) {
+		return fmt.Errorf("deps: refusing Brewfile line %q: the quoted name contains Ruby `#{...}` interpolation, which `brew bundle` evaluates as code", line)
+	}
+	if !isBrewNameShaped(name) {
+		return fmt.Errorf("deps: refusing Brewfile line %q: %q is not a plain package/tap name (a local path or odd characters are not allowed)", line, name)
+	}
+	if kw == "tap" && strings.Count(name, "/") != 1 {
+		return fmt.Errorf("deps: refusing Brewfile line %q: a tap must be exactly `user/repo`", line)
+	}
+	// END-ANCHOR the directive: after the quoted name, the ONLY thing allowed is a
+	// benign `, key: <literal>` option list. Without this, arbitrary Ruby riding
+	// after a valid `keyword "name"` prefix (`brew "git"; system "id"`,
+	// `cask "x" and system(…)`, `brew "git" if system(…)`, `brew "git".tap{ … }`)
+	// would pass the first-token/first-arg checks and then be instance_eval'd by
+	// `brew bundle`. Only true/false, an integer, a symbol, or a quoted string are
+	// accepted as option values — none can execute code.
+	if !benignBrewOptionTail(tail) {
+		return fmt.Errorf("deps: refusing Brewfile line %q: trailing content after the quoted name is not a plain `, option: value` list — arbitrary Ruby would be run by `brew bundle`", line)
+	}
+	return nil
+}
+
+// brewOptionTailRe matches the text AFTER a directive's quoted name: either empty
+// or a sequence of `, key: <literal>` pairs (link: false, restart_service: :changed,
+// id: 123). Option VALUES are restricted to code-free literals — true/false, an
+// integer, a :symbol, or a double-quoted string — so no method call, block, or
+// statement separator can survive. dangerousBrewOptions (args:/postinstall:/…) are
+// rejected by an earlier substring check; this anchor additionally refuses any
+// UNKNOWN trailing tokens (`; system …`, ` if …`, ` and …`, `.tap{ … }`).
+var brewOptionTailRe = regexp.MustCompile(`^(\s*,\s*[A-Za-z_]+:\s*(true|false|[0-9]+|:[A-Za-z_]+|"[^"]*"))*\s*$`)
+
+// benignBrewOptionTail reports whether tail is empty or ONLY a benign option list.
+// A double-quoted option VALUE that carries Ruby `#{...}` interpolation is refused
+// even though its shape matches brewOptionTailRe: `brew bundle` evaluates it as code.
+func benignBrewOptionTail(tail string) bool {
+	return brewOptionTailRe.MatchString(tail) && !hasRubyInterpolation(tail)
+}
+
+// hasRubyInterpolation reports whether an accepted double-quoted Brewfile literal
+// carries a Ruby string-interpolation marker. `brew bundle --file=` evaluates the
+// whole Brewfile as Ruby, and a DOUBLE-quoted string interpolates at evaluation time
+// in three forms: `#{expr}` (an arbitrary expression — RCE, e.g. `#{system('id')}`),
+// `#@ivar`/`#@@cvar`, and `#$global`. Any accepted `"..."` literal carrying one of
+// these would inject Ruby, so every accept-point of a double-quoted literal (option
+// value, mas app name, brew/cask/tap/vscode name) rejects it via this check. A plain
+// `#` not followed by `{`, `@`, or `$` is inert and left alone, so a legitimate name
+// such as "C# Tools" is unaffected.
+func hasRubyInterpolation(s string) bool {
+	for i := 0; i+1 < len(s); i++ {
+		if s[i] == '#' {
+			switch s[i+1] {
+			case '{', '@', '$':
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// masEntryRe matches a `mas "<app name>", id: <digits>` entry (the app name is
+// free text; the numeric id is what drives the install).
+var masEntryRe = regexp.MustCompile(`^"[^"]*",\s*id:\s*[0-9]+\s*$`)
+
+// splitFirstField splits a line into its first whitespace-delimited token and the
+// trimmed remainder.
+func splitFirstField(line string) (first, rest string) {
+	if i := strings.IndexAny(line, " \t"); i >= 0 {
+		return line[:i], strings.TrimSpace(line[i+1:])
+	}
+	return line, ""
+}
+
+// firstQuotedArg returns the content of the FIRST double-quoted argument in rest
+// and the tail — the text AFTER that argument's closing quote (used to end-anchor
+// the directive). ok is false when rest has no complete double-quoted argument.
+func firstQuotedArg(rest string) (name, tail string, ok bool) {
+	open := strings.IndexByte(rest, '"')
+	if open < 0 {
+		return "", "", false
+	}
+	rel := strings.IndexByte(rest[open+1:], '"')
+	if rel < 0 {
+		return "", "", false
+	}
+	end := open + 1 + rel // index of the closing quote
+	return rest[open+1 : end], rest[end+1:], true
+}
+
+// isBrewNameShaped reports whether name is a plain package/tap/extension name: no
+// leading path indicator ("/", "~", "."), no "..", and only the characters brew
+// package/tap/cask/vscode names use ([A-Za-z0-9] plus @ . _ + - / :). This admits
+// `node@18`, `user/repo`, `ms-python.python`, and `user/repo/formula`, while
+// rejecting `./x.rb`, `~/x`, `../x`, and any shell/URL punctuation.
+func isBrewNameShaped(name string) bool {
+	if name == "" {
+		return false
+	}
+	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "~") || strings.HasPrefix(name, ".") {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '@' || r == '.' || r == '_' || r == '+' || r == '-' || r == '/' || r == ':':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // parseAptLines returns the package names in an apt.txt: one package per line,

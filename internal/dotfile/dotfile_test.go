@@ -126,7 +126,7 @@ func applyEager(t Target, store *Store, b Backuper, force, dryRun bool) (Result,
 	if err != nil {
 		return Result{}, err
 	}
-	res, err := applyContent(t, content, defaultPerm, store, b, force, dryRun)
+	res, err := applyContent(t, content, defaultPerm, store, b, force, dryRun, false)
 	if err != nil {
 		return res, err
 	}
