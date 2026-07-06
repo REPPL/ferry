@@ -19,7 +19,7 @@
 
 ---
 
-`ferry` carries your development setup (dotfiles, agent setup, and dependencies) across
+`ferry` carries your development setup (dotfiles, agent setup, terminal config, and dependencies) across
 accounts and machines. Define your configuration once in a git repo; `ferry` reconciles
 any machine to match it, and pulls local changes back when you want to harmonise them
 everywhere.

@@ -366,7 +366,7 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 //     per-machine sidecar wins), and materialise the sidecar (~/.zshrc.local).
 //   - generic dotfiles (whole-file replace, e.g. .gitconfig): deploy the LOCAL
 //     copy (local/<domain>/<bare>) INSTEAD OF shared when one exists (local wins),
-//     else the shared content — both routed through ApplyWholeFileOverlay.
+//     else the shared content — both routed through ApplyWholeFileOverlayDeferred.
 //
 // TargetFor / IncludeSidecarTarget are the ~/.ssh + path-traversal SECURITY
 // BOUNDARY: on ErrForbiddenSSHPath / ErrPathEscapesHome (or any error) the dotfile

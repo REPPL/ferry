@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// Action is what Apply did (or, in dry-run, would do) for one target.
+// Action is what apply did (or, in dry-run, would do) for one target.
 type Action string
 
 const (
@@ -36,7 +36,7 @@ const (
 // crash-safe path), and only when a write actually happened. The caller persists
 // it with CommitLastApplied AFTER the surrounding journal commit, so last-applied
 // can never get ahead of a rolled-back file. It is empty for noop/skipped/conflict
-// results and for the eager Apply path (which persists immediately).
+// results.
 type Result struct {
 	Target Target
 	State  State  // the three-way state apply observed
@@ -49,8 +49,7 @@ type Result struct {
 	// caller's post-journal CommitLastApplied. It is set only when PendingHash is
 	// (a write, or a clean-adoption of an identical existing file), so the
 	// snapshot advances atomically with the hash and never gets ahead of a
-	// rolled-back file. Empty for noop-without-adoption/skipped/conflict results
-	// and for the eager Apply path (which records the snapshot immediately).
+	// rolled-back file. Empty for noop-without-adoption/skipped/conflict results.
 	PendingContent []byte
 
 	// SecretRouted marks a target whose deployed bytes were rendered from the
@@ -72,7 +71,7 @@ type Result struct {
 	ForcedPath                 string
 }
 
-// ConflictError is returned by Apply when it refuses to overwrite. It carries
+// ConflictError is returned by apply when it refuses to overwrite. It carries
 // the Result so callers can render guidance ("run capture, or apply --force").
 type ConflictError struct {
 	Result Result
@@ -91,7 +90,7 @@ func (e *ConflictError) Error() string {
 // clearly separate a meaningful config from a placeholder.
 const substantialThreshold = 64
 
-// EmptyOverSubstantialError is returned by Apply when, WITHOUT --force, it would
+// EmptyOverSubstantialError is returned by apply when, WITHOUT --force, it would
 // replace a SUBSTANTIAL existing live file with an EMPTY or near-empty (blank /
 // whitespace-only / comments-only) repo source. This is the confirmed data-loss
 // transition (a fresh init's empty seed zeroing a real ~/.zshrc); apply refuses
@@ -151,7 +150,7 @@ func IsNearEmpty(content []byte) bool { return isNearEmpty(content) }
 // significant bytes — the "substantial live file" side of the guard.
 func isSubstantial(content []byte) bool { return significantBytes(content) >= substantialThreshold }
 
-// Apply materializes one target from the repo onto the home destination,
+// ApplyDeferred materializes one target from the repo onto the home destination,
 // honouring the three-way state. It writes ONLY through the Backuper, so any
 // overwrite is backed up first and the write is atomic. force discards local
 // edits (still backed up). dryRun computes the decision and Result but writes
@@ -161,25 +160,18 @@ func isSubstantial(content []byte) bool { return significantBytes(content) >= su
 // ActionConflict) so a caller can both detect the conflict via errors.As and
 // render the Result.
 //
-// Apply persists last-applied EAGERLY (immediately after the write). For a
-// crash-safe apply that must not let last-applied get ahead of an uncommitted
-// journal, use ApplyDeferred + CommitLastApplied instead.
-func Apply(t Target, store *Store, b Backuper, force, dryRun bool) (Result, error) {
-	return apply(t, store, b, force, dryRun, true)
-}
-
-// ApplyDeferred behaves like Apply but does NOT persist last-applied. When it
-// performs a write, the hash to record is returned in Result.PendingHash; the
-// caller must persist it with CommitLastApplied AFTER committing the surrounding
-// journal. This decouples last-applied from the file write so a crash/commit
-// failure between the write and the journal commit can never leave last-applied
-// ahead of a rolled-back file (Codex#3).
+// ApplyDeferred does NOT persist last-applied. When it performs a write, the hash
+// to record is returned in Result.PendingHash (and the deployed bytes in
+// Result.PendingContent); the caller must persist them with CommitLastApplied
+// AFTER committing the surrounding journal. This decouples last-applied from the
+// file write so a crash/commit failure between the write and the journal commit
+// can never leave last-applied ahead of a rolled-back file (Codex#3).
 //
 // Note the StateClean adoption case (an identical pre-existing file) advances
 // last-applied via PendingHash too, so the caller's CommitLastApplied still
 // records it post-commit.
 func ApplyDeferred(t Target, store *Store, b Backuper, force, dryRun bool) (Result, error) {
-	return apply(t, store, b, force, dryRun, false)
+	return apply(t, store, b, force, dryRun)
 }
 
 // ApplyContentDeferred is ApplyDeferred with the repo side provided IN MEMORY:
@@ -195,17 +187,17 @@ func ApplyDeferred(t Target, store *Store, b Backuper, force, dryRun bool) (Resu
 // runnable. last-applied is never persisted directly: the hash rides on
 // Result.PendingHash for the caller's post-journal CommitLastApplied.
 func ApplyContentDeferred(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force bool) (Result, error) {
-	return applyContent(t, content, freshPerm, store, b, force, false, false)
+	return applyContent(t, content, freshPerm, store, b, force, false)
 }
 
 // apply is the file-based entry to the shared core: it reads the repo source
 // ONCE (refusing a symlinked or non-regular source, matching hashFile's
 // contract) and delegates to applyContent, so the bytes that are classified
 // are byte-identical to the bytes written — the "repo changed mid-apply"
-// race is impossible by construction. persist=true records last-applied
-// immediately (eager Apply); persist=false leaves it to the caller via
-// Result.PendingHash (deferred ApplyDeferred + CommitLastApplied).
-func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Result, error) {
+// race is impossible by construction. last-applied is never persisted here: the
+// hash and deployed bytes ride on the Result for the caller's post-journal
+// CommitLastApplied (ApplyDeferred + CommitLastApplied).
+func apply(t Target, store *Store, b Backuper, force, dryRun bool) (Result, error) {
 	fi, err := os.Lstat(t.Repo)
 	if errors.Is(err, os.ErrNotExist) {
 		// A declared target with no repo source is a configuration error the
@@ -222,7 +214,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	return applyContent(t, content, defaultPerm, store, b, force, dryRun, persist)
+	return applyContent(t, content, defaultPerm, store, b, force, dryRun)
 }
 
 // applyContent is the ONE shared apply core: the three-way decision table over
@@ -230,7 +222,7 @@ func apply(t Target, store *Store, b Backuper, force, dryRun, persist bool) (Res
 // data-loss guard, and the Backuper-mediated write. Both the file-based apply
 // (which reads t.Repo first) and ApplyContentDeferred (in-memory content)
 // funnel here, so the two paths can never diverge.
-func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, dryRun, persist bool) (Result, error) {
+func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store, b Backuper, force, dryRun bool) (Result, error) {
 	st, err := ClassifyContent(t, content, store)
 	if err != nil {
 		return Result{}, err
@@ -251,16 +243,11 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 		// clean repo-ahead update instead of a false conflict. Skip in dry-run.
 		if !dryRun && st.AppliedHash != st.RepoHash {
 			// Live already reproduces content, so content IS the deployed baseline:
-			// record it as the snapshot too, establishing the baseline for an
-			// already-in-sync target (the first-apply-after-upgrade bootstrap).
-			if persist {
-				if err := store.setDeployed(t.Name, st.RepoHash, content); err != nil {
-					return Result{}, err
-				}
-			} else {
-				res.PendingHash = st.RepoHash
-				res.PendingContent = content
-			}
+			// carry it on the Result so the caller's post-journal CommitLastApplied
+			// records it, establishing the baseline for an already-in-sync target
+			// (the first-apply-after-upgrade bootstrap).
+			res.PendingHash = st.RepoHash
+			res.PendingContent = content
 		}
 		res.Action = ActionNoop
 		return res, nil
@@ -279,7 +266,7 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 				res.Action = action
 				return res, nil
 			}
-			if err := writeContent(t, content, st.RepoHash, freshPerm, store, b, persist, &res); err != nil {
+			if err := writeContent(t, content, st.RepoHash, freshPerm, b, &res); err != nil {
 				return Result{}, err
 			}
 			res.Action = action
@@ -307,7 +294,7 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 			res.Action = action
 			return res, nil
 		}
-		if err := writeContent(t, content, st.RepoHash, freshPerm, store, b, persist, &res); err != nil {
+		if err := writeContent(t, content, st.RepoHash, freshPerm, b, &res); err != nil {
 			return Result{}, err
 		}
 		res.Action = action
@@ -333,41 +320,28 @@ func LocalOverlayPath(repoRoot, domain, name string) string {
 // LocalSubdir is the repo subdirectory holding per-machine `.local` overlays.
 const LocalSubdir = "local"
 
-// ApplyWholeFileOverlay deploys a whole-file-replace target (a generic dotfile
-// with no include point, e.g. .gitconfig): when a per-machine local copy exists
-// at localSource it is deployed INSTEAD OF the shared content (local wins);
+// ApplyWholeFileOverlayDeferred deploys a whole-file-replace target (a generic
+// dotfile with no include point, e.g. .gitconfig): when a per-machine local copy
+// exists at localSource it is deployed INSTEAD OF the shared content (local wins);
 // otherwise the shared content (t.Repo) is deployed. Either way the deploy goes
 // through the normal three-way apply (backup-then-write via the Backuper, atomic,
-// conflict-aware), so it is as safe and reversible as a plain Apply.
+// conflict-aware), so it is as safe and reversible as a plain ApplyDeferred.
 //
 // It REFUSES a target whose Overlay is not OverlayWholeFileReplace, so an
 // include-style (zsh sidecar) target can never be silently whole-file-replaced —
-// the caller must route those through Apply + its own sidecar materialization.
+// the caller must route those through ApplyDeferred + its own sidecar
+// materialization.
 //
 // localSource is the repo-side overlay path (see LocalOverlayPath); pass "" when
 // the domain has no local copy on this machine and only the shared content
-// should deploy. force/dryRun/persist behave exactly as Apply.
-func ApplyWholeFileOverlay(t Target, localSource string, store *Store, b Backuper, force, dryRun bool) (Result, error) {
-	t, err := selectOverlaySource(t, localSource)
-	if err != nil {
-		return Result{}, err
-	}
-	return Apply(t, store, b, force, dryRun)
-}
-
-// ApplyWholeFileOverlayDeferred is the crash-safe counterpart of
-// ApplyWholeFileOverlay: it performs the same local-wins source selection and
-// deploys through the Backuper, but routes through ApplyDeferred, so it does NOT
-// persist last-applied. When a write happens the hash to record is returned in
-// Result.PendingHash; the caller persists it with CommitLastApplied AFTER the
-// surrounding journal commit. This keeps last-applied from getting ahead of a
-// rolled-back file when ferry crashes between the file write and run.Commit()
-// (the same ordering guarantee the zsh sidecar path gets via ApplyDeferred).
+// should deploy. force/dryRun behave exactly as ApplyDeferred.
 //
-// Like the eager version it REFUSES a target whose Overlay is not
-// OverlayWholeFileReplace. The apply command should use THIS variant plus
-// CommitLastApplied; the eager ApplyWholeFileOverlay remains for callers that
-// want immediate persistence.
+// It routes through ApplyDeferred, so it does NOT persist last-applied. When a
+// write happens the hash to record is returned in Result.PendingHash; the caller
+// persists it with CommitLastApplied AFTER the surrounding journal commit. This
+// keeps last-applied from getting ahead of a rolled-back file when ferry crashes
+// between the file write and run.Commit() (the same ordering guarantee the zsh
+// sidecar path gets via ApplyDeferred).
 func ApplyWholeFileOverlayDeferred(t Target, localSource string, store *Store, b Backuper, force, dryRun bool) (Result, error) {
 	t, err := selectOverlaySource(t, localSource)
 	if err != nil {
@@ -379,8 +353,8 @@ func ApplyWholeFileOverlayDeferred(t Target, localSource string, store *Store, b
 // selectOverlaySource enforces the whole-file-replace contract and resolves
 // which bytes are the "repo content" for an overlay deploy. A present local copy
 // at localSource replaces the shared source: only t.Repo is repointed; the home
-// destination, name, and three-way state machinery are unchanged. Shared by the
-// eager and deferred overlay applies.
+// destination, name, and three-way state machinery are unchanged. Used by the
+// deferred overlay apply.
 func selectOverlaySource(t Target, localSource string) (Target, error) {
 	if t.Overlay != OverlayWholeFileReplace {
 		return Target{}, fmt.Errorf("dotfile: whole-file overlay apply called on %q with overlay mode %q, want %q",
@@ -402,8 +376,8 @@ func selectOverlaySource(t Target, localSource string) (Target, error) {
 // surrounding journal commit, so a crash before commit leaves both the hash and
 // the snapshot untouched (matching the rolled-back file) and a successful commit
 // is followed by the matching write. Results with no PendingHash
-// (noop-without-adoption/skipped/conflict, or eager Apply) are ignored, so
-// passing the full result slice is safe.
+// (noop-without-adoption/skipped/conflict) are ignored, so passing the full
+// result slice is safe.
 //
 // A SecretRouted result records ONLY its hash (content=nil, the hash-only path):
 // its deployed bytes carry substituted secret-store values, and the last-applied
@@ -527,14 +501,14 @@ func guardEmptyOverSubstantial(t Target, desired []byte, force, dryRun bool, res
 }
 
 // writeContent copies the desired content to the home destination through the
-// Backuper and records the new last-applied hash. The bytes written are the
-// SAME bytes ClassifyContent hashed (repoHash), so last-applied can never
-// record a lie. An existing regular destination keeps its mode; a fresh write
-// takes freshPerm. When persist is true the hash is written to the store
-// immediately (only after a successful write, so a failed write never advances
-// last-applied); when false it is recorded on res.PendingHash for the caller
-// to commit post-journal.
-func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMode, store *Store, b Backuper, persist bool, res *Result) error {
+// Backuper and records the new last-applied hash on res for the caller's
+// post-journal CommitLastApplied. The bytes written are the SAME bytes
+// ClassifyContent hashed (repoHash), so last-applied can never record a lie. An
+// existing regular destination keeps its mode; a fresh write takes freshPerm.
+// last-applied is never persisted here: the hash rides on res.PendingHash and the
+// deployed bytes on res.PendingContent, so a crash between the write and the
+// journal commit can never leave last-applied ahead of a rolled-back file.
+func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMode, b Backuper, res *Result) error {
 	if b == nil {
 		return errors.New("dotfile: nil Backuper")
 	}
@@ -547,10 +521,7 @@ func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMo
 		return err
 	}
 	// content is exactly the bytes just written, so it is the last-deployed
-	// baseline for this target; record it as the snapshot alongside the hash.
-	if persist {
-		return store.setDeployed(t.Name, repoHash, content)
-	}
+	// baseline for this target; carry it on res for the caller's CommitLastApplied.
 	res.PendingHash = repoHash
 	res.PendingContent = content
 	return nil

@@ -100,6 +100,39 @@ func (h *harness) readHome(name string) string {
 	return string(data)
 }
 
+// applyEager runs the crash-safe deferred apply and commits last-applied
+// immediately, reproducing the persist-on-success behaviour the state-machine
+// tests below assert. Production code never persists eagerly: it composes
+// ApplyDeferred with a post-journal CommitLastApplied, so a deployed byte
+// snapshot can only reach the store THROUGH CommitLastApplied's secret-routed
+// hash-only gate. Routing this helper the same way keeps the tests exercising the
+// one real persistence path.
+func applyEager(t Target, store *Store, b Backuper, force, dryRun bool) (Result, error) {
+	res, err := ApplyDeferred(t, store, b, force, dryRun)
+	if err != nil {
+		return res, err
+	}
+	if err := CommitLastApplied([]Result{res}, store); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
+// applyWholeFileOverlayEager is applyEager for the whole-file overlay path: it
+// runs ApplyWholeFileOverlayDeferred (local-wins source selection) then commits
+// last-applied, so the overlay tests exercise the same secret-safe deferred +
+// CommitLastApplied path production uses.
+func applyWholeFileOverlayEager(t Target, localSource string, store *Store, b Backuper, force, dryRun bool) (Result, error) {
+	res, err := ApplyWholeFileOverlayDeferred(t, localSource, store, b, force, dryRun)
+	if err != nil {
+		return res, err
+	}
+	if err := CommitLastApplied([]Result{res}, store); err != nil {
+		return res, err
+	}
+	return res, nil
+}
+
 // --- copy-not-symlink ---
 
 func TestApplyCopiesNotSymlinks(t *testing.T) {
@@ -107,7 +140,7 @@ func TestApplyCopiesNotSymlinks(t *testing.T) {
 	h.writeRepo("zshrc", "export A=1\n")
 	tgt := h.target("zshrc")
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -152,13 +185,13 @@ func TestApplyUpdatesWhenLiveMatchesLastApplied(t *testing.T) {
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
 
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	// Repo moves ahead; live is untouched (== last-applied).
 	h.writeRepo("zshrc", "v2\n")
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -180,14 +213,14 @@ func TestApplyConflictWhenLocallyEditedAndRepoMoved(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	// User edits live (uncaptured) AND the repo also moves ahead.
 	h.writeHome("zshrc", "local-edit\n")
 	h.writeRepo("zshrc", "v2\n")
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	var ce *ConflictError
 	if !errors.As(err, &ce) {
 		t.Fatalf("err = %v, want *ConflictError", err)
@@ -207,12 +240,12 @@ func TestApplySkipsLocallyDrifted(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	h.writeHome("zshrc", "local-edit\n") // repo still v1
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -230,10 +263,10 @@ func TestApplyNoopWhenLiveMatchesRepo(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "same\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -248,13 +281,13 @@ func TestApplyForceOverwritesConflict(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	h.writeHome("zshrc", "local-edit\n")
 	h.writeRepo("zshrc", "v2\n")
 
-	res, err := Apply(tgt, h.store, h.b, true /*force*/, false)
+	res, err := applyEager(tgt, h.store, h.b, true /*force*/, false)
 	if err != nil {
 		t.Fatalf("force apply: %v", err)
 	}
@@ -283,7 +316,7 @@ func TestApplyAdoptsPreExistingDifferingFile(t *testing.T) {
 	const preExisting = "[user]\n\tname = pre-existing\n" // home content X
 	h.writeHome("gitconfig", preExisting)
 
-	res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+	res, err := applyEager(tgt, h.store, h.b, false /*no force*/, false)
 	if err != nil {
 		t.Fatalf("first-touch adoption should not error: %v", err)
 	}
@@ -315,7 +348,7 @@ func TestApplyAdoptionRefusesWhenBackupFails(t *testing.T) {
 	h.writeHome("gitconfig", preExisting)
 
 	failing := &failingBackuper{}
-	if _, err := Apply(tgt, h.store, failing, false, false); err == nil {
+	if _, err := applyEager(tgt, h.store, failing, false, false); err == nil {
 		t.Fatal("apply should propagate the backup failure, refusing to deploy")
 	}
 	// Nothing deployed: the pre-existing file is untouched.
@@ -334,7 +367,7 @@ func TestApplyAdoptsIdenticalUnmanagedFile(t *testing.T) {
 	tgt := h.target("gitconfig")
 	h.writeHome("gitconfig", "[user]\n") // identical, no last-applied
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -350,7 +383,7 @@ func TestApplyDryRunWritesNothing(t *testing.T) {
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
 
-	res, err := Apply(tgt, h.store, h.b, false, true /*dryRun*/)
+	res, err := applyEager(tgt, h.store, h.b, false, true /*dryRun*/)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -378,27 +411,27 @@ func TestClassifyAllStates(t *testing.T) {
 		}, StateMissing},
 		{"clean", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 		}, StateClean},
 		{"repo-ahead", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeRepo(tgt.Name, "v2\n")
 		}, StateRepoAhead},
 		{"locally-drifted", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeHome(tgt.Name, "edit\n")
 		}, StateLocallyDrifted},
 		{"conflict", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeHome(tgt.Name, "edit\n")
@@ -433,7 +466,7 @@ func TestUpdateLastAppliedFullReproduction(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -460,7 +493,7 @@ func TestUpdateLastAppliedPartialKeepsDrift(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	appliedBefore, _ := h.store.LastApplied("zshrc")
@@ -641,7 +674,7 @@ func TestApplyAdoptIdenticalThenRepoAdvanceIsUpdate(t *testing.T) {
 	tgt := h.target("zshrc")
 	h.writeHome("zshrc", "v1\n") // identical, no last-applied record
 
-	res, err := Apply(tgt, h.store, h.b, false, false)
+	res, err := applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -654,7 +687,7 @@ func TestApplyAdoptIdenticalThenRepoAdvanceIsUpdate(t *testing.T) {
 
 	// Repo advances; live is untouched -> repo-ahead update, NOT a conflict.
 	h.writeRepo("zshrc", "v2\n")
-	res, err = Apply(tgt, h.store, h.b, false, false)
+	res, err = applyEager(tgt, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply after advance: %v", err)
 	}
@@ -672,12 +705,12 @@ func TestApplyForceResetsLocallyDrifted(t *testing.T) {
 	h := newHarness(t)
 	h.writeRepo("zshrc", "v1\n")
 	tgt := h.target("zshrc")
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatal(err)
 	}
 	h.writeHome("zshrc", "local-edit\n") // repo still v1 -> locally-drifted
 
-	res, err := Apply(tgt, h.store, h.b, true /*force*/, false)
+	res, err := applyEager(tgt, h.store, h.b, true /*force*/, false)
 	if err != nil {
 		t.Fatalf("force apply: %v", err)
 	}
@@ -807,7 +840,7 @@ func TestApplyWholeFileOverlayLocalPresentReplacesShared(t *testing.T) {
 	local := h.writeLocal("git", "gitconfig", "[user]\n\tname = local\n")
 	tgt := h.target("gitconfig") // default overlay = whole-file-replace
 
-	res, err := ApplyWholeFileOverlay(tgt, local, h.store, h.b, false, false)
+	res, err := applyWholeFileOverlayEager(tgt, local, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply overlay: %v", err)
 	}
@@ -827,7 +860,7 @@ func TestApplyWholeFileOverlayAbsentDeploysShared(t *testing.T) {
 
 	// localSource path that does not exist -> shared deploys.
 	missing := LocalOverlayPath(h.repoRoot, "git", "gitconfig")
-	res, err := ApplyWholeFileOverlay(tgt, missing, h.store, h.b, false, false)
+	res, err := applyWholeFileOverlayEager(tgt, missing, h.store, h.b, false, false)
 	if err != nil {
 		t.Fatalf("apply overlay: %v", err)
 	}
@@ -848,11 +881,11 @@ func TestApplyWholeFileOverlayRefusesIncludeSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ApplyWholeFileOverlay(tgt, "", h.store, h.b, false, false); err == nil {
+	if _, err := applyWholeFileOverlayEager(tgt, "", h.store, h.b, false, false); err == nil {
 		t.Fatal("ApplyWholeFileOverlay must refuse an include-sidecar target")
 	}
 	// And a plain Apply of the same target still works (sidecar stays Apply's job).
-	if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+	if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 		t.Fatalf("zsh sidecar Apply: %v", err)
 	}
 	if got := h.readHome("zshrc"); got != "export A=1\n" {
@@ -1047,27 +1080,27 @@ func TestClassifyContentMatchesClassify(t *testing.T) {
 		}, StateMissing},
 		{"clean", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 		}, StateClean},
 		{"repo-ahead", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeRepo(tgt.Name, "v2\n")
 		}, StateRepoAhead},
 		{"locally-drifted", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeHome(tgt.Name, "edit\n")
 		}, StateLocallyDrifted},
 		{"conflict", func(h *harness, tgt Target) {
 			h.writeRepo(tgt.Name, "v1\n")
-			if _, err := Apply(tgt, h.store, h.b, false, false); err != nil {
+			if _, err := applyEager(tgt, h.store, h.b, false, false); err != nil {
 				h.t.Fatal(err)
 			}
 			h.writeHome(tgt.Name, "edit\n")
@@ -1239,7 +1272,7 @@ func TestApplyRefusesSemicolonCommentOnlyOverSubstantial(t *testing.T) {
 	const live = "[user]\n\tname = Real Person\n\temail = real@example.com\n[core]\n\tpager = less\n"
 	h.writeHome("gitconfig", live)
 
-	res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+	res, err := applyEager(tgt, h.store, h.b, false /*no force*/, false)
 	var eErr *EmptyOverSubstantialError
 	if !errors.As(err, &eErr) {
 		t.Fatalf("want EmptyOverSubstantialError, got err=%v res=%+v", err, res)
@@ -1297,7 +1330,7 @@ func TestApplyRefusesEmptyOverSubstantialViaInjectedOverlay(t *testing.T) {
 
 			// Default apply (no --force) must REFUSE: the user's real shared source is
 			// near-empty once ferry's own directive is excluded.
-			res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+			res, err := applyEager(tgt, h.store, h.b, false /*no force*/, false)
 			var eErr *EmptyOverSubstantialError
 			if !errors.As(err, &eErr) {
 				t.Fatalf("want EmptyOverSubstantialError (overlay bypass must be closed), got err=%v res=%+v", err, res)
@@ -1310,7 +1343,7 @@ func TestApplyRefusesEmptyOverSubstantialViaInjectedOverlay(t *testing.T) {
 			}
 
 			// --force proceeds and flags the hazard so the caller warns.
-			res, err = Apply(tgt, h.store, h.b, true /*force*/, false)
+			res, err = applyEager(tgt, h.store, h.b, true /*force*/, false)
 			if err != nil {
 				t.Fatalf("--force should proceed, got err=%v", err)
 			}
@@ -1333,7 +1366,7 @@ func TestGuardDoesNotFalseFireOnRealSourceWithOverlay(t *testing.T) {
 	tgt := h.target("zshrc")
 	h.writeHome("zshrc", "export OLD=1\nexport PATH=$HOME/old:$PATH\nalias x='echo old'\nsetopt SHARE_HISTORY\n")
 
-	res, err := Apply(tgt, h.store, h.b, false /*no force*/, false)
+	res, err := applyEager(tgt, h.store, h.b, false /*no force*/, false)
 	if err != nil {
 		t.Fatalf("guard false-fired on a real-content shared source: err=%v", err)
 	}

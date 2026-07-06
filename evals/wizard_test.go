@@ -358,6 +358,14 @@ func wizHomeState(t *testing.T, s *Sandbox) map[string]string {
 	state := map[string]string{}
 	err := filepath.Walk(s.Home, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
+			// A file git creates and then removes mid-walk — e.g. a
+			// .git/objects/pack/tmp_pack_* temporary during a pack/gc — can
+			// vanish between the walk enumerating it and the lstat, which is a
+			// transient, not a test failure. Skip a since-deleted entry rather
+			// than aborting the whole snapshot.
+			if os.IsNotExist(err) {
+				return nil
+			}
 			return err
 		}
 		rel, rerr := filepath.Rel(s.Home, path)

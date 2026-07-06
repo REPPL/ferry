@@ -11,6 +11,19 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-06
+
+### Security
+
+- **Defence in depth: a secret's plaintext can no longer reach the last-applied
+  state file by any code path.** The dotfile apply core now records the deployed
+  byte snapshot exclusively through `CommitLastApplied`, which already withholds
+  the bytes for a secret-routed target (recording the content hash only). A pair
+  of unused eager-persist entry points that snapshotted deployed content without
+  that secret-routed gate has been removed, closing a latent path down which a
+  future caller could have persisted secret plaintext into the non-secret
+  bookkeeping file.
+
 ## [0.5.0] - 2026-07-06
 
 ### Breaking

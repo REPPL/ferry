@@ -58,8 +58,8 @@ type Target struct {
 	// include point: there is no merge point, so the local copy (if any) replaces
 	// the shared file. An include-style domain (zsh) is built with
 	// IncludeSidecarTarget so its overlay is a sidecar instead. The apply command
-	// reads this to choose the overlay path; ApplyWholeFileOverlay implements the
-	// whole-file-replace path in this package.
+	// reads this to choose the overlay path; ApplyWholeFileOverlayDeferred
+	// implements the whole-file-replace path in this package.
 	Overlay OverlayMode
 }
 
