@@ -52,6 +52,19 @@ func TestResolveCurrentNoMigrate(t *testing.T) {
 	}
 }
 
+func TestResolveOlderVersionMigrates(t *testing.T) {
+	// A file at a supported-but-OLDER version (1 < 2) must be flagged for a
+	// forward migration so a store bumped to version 2 rewrites it — and backs it
+	// up — rather than silently reading the old shape as current.
+	v, migrate, err := Resolve("/x/state.json", []byte(`{"version":1,"applied":{}}`), 2)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if v != 1 || !migrate {
+		t.Fatalf("older version: got version=%d migrate=%v, want 1,true", v, migrate)
+	}
+}
+
 func TestResolveInvalidVersionRefused(t *testing.T) {
 	// A declared version below 1 is corrupt, never a legacy form: accepting it
 	// as current would decode an empty envelope and the next save would

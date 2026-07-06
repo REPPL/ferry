@@ -921,7 +921,12 @@ func finishWithApply(c *cobra.Command, in *bufio.Reader, out io.Writer) error {
 		return nil
 	}
 
-	if err := applyPlan(ctx, plan, false, out); err != nil {
+	// Hand off to apply's guided walkthrough: init owns SETUP only; the single
+	// guided flow (risk gate, safe auto-apply, risky confirmation, fail-closed)
+	// lives in apply. init consumed its own prompt line above; the rest of stdin
+	// flows to the walkthrough. On a fresh machine every target is a
+	// create-where-absent (safe), so the common first apply needs no confirmation.
+	if err := applyPlan(ctx, false, guidedOpts{}, in, out); err != nil {
 		return err
 	}
 	return nil

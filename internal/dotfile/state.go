@@ -15,16 +15,36 @@ import (
 )
 
 // lastAppliedVersion is the current on-disk schema version of the last-applied
-// store. Version 1 is the first versioned form: a JSON envelope carrying this
-// integer plus the applied map. A file with no "version" field is the original
-// v0.3.x form (a bare name->hash map) and reads as version 1, migrated forward on
-// the next mutating open. See internal/statefile for the shared version contract.
-const lastAppliedVersion = 1
+// store. Version 2 adds the "deployed" map: the per-target last-deployed
+// content snapshot (the "last-deployed baseline"), content-addressed by the same
+// hash the "applied" map records, so `apply` can persist the exact bytes it last
+// wrote to each target — EXCEPT a secret-routed target (one whose bytes were
+// rendered from the secret store), whose bytes are deliberately NOT snapshotted:
+// only its "applied" hash is recorded, keeping plaintext secrets out of this
+// non-secret bookkeeping file (the secret-at-rest boundary). Version 1 is the
+// envelope without "deployed"; a file with
+// no "version" field is the original v0.3.x form (a bare name->hash map). Both
+// read forward and are migrated to the current form on the next mutating open,
+// preserving every recorded hash. See internal/statefile for the shared version
+// contract.
+const lastAppliedVersion = 2
 
 // lastAppliedFile is the versioned on-disk envelope for the last-applied store.
+// Deployed maps a content hash (the same hash stored in Applied) to the exact
+// bytes ferry last wrote for a target with that hash — the last-deployed
+// baseline. It is content-addressed, so targets sharing identical content share
+// one entry, and it is pruned on every save to the hashes Applied still
+// references, keeping it bounded by the managed-target count. It omits when
+// empty, so a store with no snapshots serialises the same shape as version 1
+// (plus the bumped version). It intentionally OMITS the bytes of a secret-routed
+// target (rendered from the secret store): CommitLastApplied records only that
+// target's Applied hash, so a plaintext secret is never written into this
+// non-secret file. Such a target therefore has an Applied hash with no Deployed
+// entry — indistinguishable on disk from the pre-baseline bootstrap case.
 type lastAppliedFile struct {
-	Version int               `json:"version"`
-	Applied map[string]string `json:"applied"`
+	Version  int               `json:"version"`
+	Applied  map[string]string `json:"applied"`
+	Deployed map[string][]byte `json:"deployed,omitempty"`
 }
 
 // stateFileName is the per-machine last-applied record, kept under ferry's
@@ -52,6 +72,7 @@ const (
 type Store struct {
 	path     string
 	applied  map[string]string // target name -> last-applied content hash
+	deployed map[string][]byte // content hash -> last-deployed bytes (the baseline)
 	readOnly bool              // true for a status/diff store: no mkdir, no save
 }
 
@@ -124,6 +145,7 @@ func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 	s := &Store{
 		path:     filepath.Join(stateDir, stateFileName),
 		applied:  map[string]string{},
+		deployed: map[string][]byte{},
 		readOnly: readOnly,
 	}
 	data, err := os.ReadFile(s.path)
@@ -140,40 +162,67 @@ func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if migrate {
+	// A migration can be one of two shapes, distinguished by whether the file
+	// already carries a "version" field: the pre-versioning v0.3.x form is a bare
+	// name->hash map; a versioned-but-older file (version 1) is an envelope that
+	// simply lacks "deployed". Both preserve every recorded hash on the way to
+	// version 2 — the v1 envelope's "applied" carries over verbatim and "deployed"
+	// starts empty (populated by the next apply, the "confirm every target once"
+	// bootstrap).
+	_, wasVersioned := statefile.PeekVersion(data)
+	if migrate && !wasVersioned {
 		// The original v0.3.x form is a bare name->hash map: decode it directly.
 		if err := json.Unmarshal(data, &s.applied); err != nil {
 			return nil, err
 		}
-		// Migrate-on-read, but only on the mutating path: back the pre-migration
-		// file up first, then rewrite it in the current versioned envelope form.
-		// The read-only status/diff path decodes in memory and writes nothing.
-		if !readOnly {
-			if _, err := statefile.BackupForMigration(s.path, version); err != nil {
-				return nil, err
-			}
-			if err := s.save(); err != nil {
-				return nil, err
-			}
-		}
 	} else {
-		// Strict envelope decode: an unknown top-level key means the payload is
-		// not where the schema says (e.g. a hand-edit put hashes beside "version"
-		// instead of under "applied"). Silently reading that as an EMPTY store
-		// would let the next save permanently overwrite the record with no
-		// backup, so it is a clean refusal instead.
-		dec := json.NewDecoder(bytes.NewReader(data))
-		dec.DisallowUnknownFields()
-		var env lastAppliedFile
-		if err := dec.Decode(&env); err != nil {
-			return nil, fmt.Errorf("dotfile: state file %s is not a valid version %d last-applied record (%v) — the file has been left untouched; repair or remove it", s.path, version, err)
+		// Strict envelope decode (current-version reads AND versioned-but-older
+		// migrations): an unknown top-level key means the payload is not where the
+		// schema says (e.g. a hand-edit put hashes beside "version" instead of under
+		// "applied"). Silently reading that as an EMPTY store would let the next save
+		// permanently overwrite the record with no backup, so it is a clean refusal.
+		env, err := decodeEnvelope(data, s.path, version)
+		if err != nil {
+			return nil, err
 		}
 		s.applied = env.Applied
+		s.deployed = env.Deployed
+	}
+	if migrate && !readOnly {
+		// Migrate-on-read, mutating path only: back the pre-migration file up first
+		// (write-once sibling backup, keyed by the version being migrated away from),
+		// then rewrite it in the current versioned envelope form. The read-only
+		// status/diff path decodes in memory and writes nothing.
+		if _, err := statefile.BackupForMigration(s.path, version); err != nil {
+			return nil, err
+		}
+		if err := s.save(); err != nil {
+			return nil, err
+		}
 	}
 	if s.applied == nil {
 		s.applied = map[string]string{}
 	}
+	if s.deployed == nil {
+		s.deployed = map[string][]byte{}
+	}
 	return s, nil
+}
+
+// decodeEnvelope strictly decodes versioned last-applied bytes into the current
+// envelope, rejecting any unknown top-level key (a hand-edit that put payload
+// beside the schema's fields, which a lenient decode would silently read as an
+// EMPTY store the next save would overwrite with no backup). A version-1 file has
+// no "deployed" key, so its Deployed decodes nil; the caller normalises that to
+// an empty map.
+func decodeEnvelope(data []byte, path string, version int) (lastAppliedFile, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var env lastAppliedFile
+	if err := dec.Decode(&env); err != nil {
+		return lastAppliedFile{}, fmt.Errorf("dotfile: state file %s is not a valid version %d last-applied record (%v) — the file has been left untouched; repair or remove it", path, version, err)
+	}
+	return env, nil
 }
 
 // LastApplied returns the recorded last-applied hash for a target name. ok is
@@ -198,20 +247,71 @@ func (s *Store) RecordedNames() []string {
 	return names
 }
 
-// set records a new last-applied hash for a target and persists the store. It
-// errors on a read-only store (status/diff), which must never mutate state.
+// set records a new last-applied hash for a target and persists the store,
+// WITHOUT recording a deployed-content snapshot. It is the hash-only path (the
+// capture full-file reconcile, which advances the sync point but does not carry
+// the exact bytes to snapshot here). It errors on a read-only store (status/diff),
+// which must never mutate state.
 func (s *Store) set(name, hash string) error {
+	return s.record(name, hash, nil)
+}
+
+// setDeployed records a new last-applied hash for a target AND the exact bytes
+// ferry deployed for it — the last-deployed baseline — then persists the store.
+// It is the apply write path's setter (writeContent / CommitLastApplied), where
+// the deployed content is in hand. The snapshot is content-addressed by hash, so
+// it re-reads via LastDeployedSnapshot(name). A nil content records only the hash
+// (equivalent to set) — the path CommitLastApplied takes for a secret-routed
+// target, so its plaintext bytes never reach this file. Errors on a read-only store.
+func (s *Store) setDeployed(name, hash string, content []byte) error {
+	return s.record(name, hash, content)
+}
+
+// record is the single mutating core behind set/setDeployed: it advances the
+// last-applied hash and, when content is non-nil, stores the content-addressed
+// last-deployed snapshot, then persists. save() prunes any snapshot the applied
+// map no longer references, so a superseded baseline never lingers.
+func (s *Store) record(name, hash string, content []byte) error {
 	if s.readOnly {
 		return errors.New("dotfile: cannot persist last-applied on a read-only store")
 	}
 	s.applied[name] = hash
+	if content != nil {
+		if s.deployed == nil {
+			s.deployed = map[string][]byte{}
+		}
+		s.deployed[hash] = content
+	}
 	return s.save()
 }
 
+// LastDeployedSnapshot returns the exact bytes ferry last deployed for a target
+// — the last-deployed baseline — resolved through the target's recorded
+// last-applied hash. ok is false when the target has no record, or when its hash
+// has no stored snapshot (a hash set by the hash-only path — including every
+// secret-routed target, whose bytes are deliberately never snapshotted — a
+// v0.3.x/v1 record migrated forward before any apply re-established the snapshot,
+// or a superseded hash whose snapshot has been pruned). Callers treat a missing
+// snapshot as "no baseline yet" — the first-apply-after-upgrade bootstrap case.
+func (s *Store) LastDeployedSnapshot(name string) (content []byte, ok bool) {
+	hash, ok := s.applied[name]
+	if !ok {
+		return nil, false
+	}
+	c, ok := s.deployed[hash]
+	if !ok {
+		return nil, false
+	}
+	return c, true
+}
+
 // save atomically rewrites the store file (temp + rename), 0600, in the current
-// versioned envelope form.
+// versioned envelope form. It first prunes the deployed-snapshot map to the
+// hashes the applied map still references, so the last-deployed baseline stays
+// bounded by the managed-target count and a superseded snapshot never lingers.
 func (s *Store) save() error {
-	data, err := json.MarshalIndent(lastAppliedFile{Version: lastAppliedVersion, Applied: s.applied}, "", "  ")
+	s.pruneDeployed()
+	data, err := json.MarshalIndent(lastAppliedFile{Version: lastAppliedVersion, Applied: s.applied, Deployed: s.deployed}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -238,4 +338,24 @@ func (s *Store) save() error {
 		return err
 	}
 	return os.Rename(tmpName, s.path)
+}
+
+// pruneDeployed drops every last-deployed snapshot whose hash is no longer
+// referenced by any applied entry. A target's hash advances on each redeploy, so
+// its old snapshot becomes orphaned; pruning keeps the deployed map bounded by
+// the number of distinct current target contents rather than growing without
+// limit. It is a no-op when there are no snapshots.
+func (s *Store) pruneDeployed() {
+	if len(s.deployed) == 0 {
+		return
+	}
+	referenced := make(map[string]bool, len(s.applied))
+	for _, hash := range s.applied {
+		referenced[hash] = true
+	}
+	for hash := range s.deployed {
+		if !referenced[hash] {
+			delete(s.deployed, hash)
+		}
+	}
 }

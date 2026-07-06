@@ -155,7 +155,9 @@ func wcSetup(t *testing.T, zshrc, answers string) *Sandbox {
 		t.Fatalf("wcSetup: wizard init exited %d\n%s", code, errOut)
 	}
 	s.Repo = managedRepoPath(s)
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// The first apply adopts the pre-existing ~/.zshrc and deploys a secret-routed
+	// seed — both risky — so confirm the guided walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("wcSetup: apply exited %d\n%s", code, errOut)
 	}
 	live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -336,7 +338,8 @@ func TestWizardCapture_AC_capture_roundtrip_sidecar(t *testing.T) {
 		t.Fatalf("sidecar setup: init exited %d\n%s", code, errOut)
 	}
 	s.Repo = managedRepoPath(s)
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting the pre-existing ~/.zshrc is risky; confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("sidecar setup: apply exited %d\n%s", code, errOut)
 	}
 
@@ -456,8 +459,9 @@ func TestWizardCapture_AC_capture_new_secret(t *testing.T) {
 		s.AssertNoSecretInRepo(t, wizSecretToken)
 
 		// Next apply renders BOTH placeholders: no literal `{{ferry.secret` in the
-		// live file, and both values present.
-		if _, applyErr, code := s.Ferry("apply"); code != 0 {
+		// live file, and both values present. Secret-routed deploys are risky, so
+		// confirm the walkthrough.
+		if _, applyErr, code := s.ApplyConfirmed(); code != 0 {
 			t.Fatalf("AC-capture-new-secret: apply exited %d\n%s", code, applyErr)
 		}
 		live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -652,8 +656,8 @@ func TestWizardCapture_AC_capture_multi_placeholder_line(t *testing.T) {
 	s.WriteHomeFile(t, filepath.Join(".config", "ferry", "secrets-local", "zsh.toml"),
 		"token_a = \""+valueA+"\"\ntoken_b = \""+valueB+"\"\n", 0o600)
 
-	// Apply renders BOTH placeholders on the one line.
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Apply renders BOTH placeholders on the one line (secret-routed = risky).
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("setup apply exited %d\n%s", code, errOut)
 	}
 	live, err := os.ReadFile(s.HomePath(".zshrc"))

@@ -252,9 +252,11 @@ func Plan(in PlanInput) (items []Item, warnings []string, err error) {
 	for _, spec := range specs {
 		var content []byte
 		if spec.RepoFile != "" {
-			// An asset target: the spec's RepoFile is the guard-validated path
-			// the enumeration walked.
-			content, err = os.ReadFile(spec.RepoFile)
+			// An asset target: deploy the per-machine local overlay
+			// (local/agents/<source>/<relpath>) when one exists — local wins,
+			// mirroring the dotfile domain — else the shared repo file. Both reads
+			// are routed through the caller's symlink-refusing guard.
+			content, _, _, err = assetContent(in.RepoRoot, spec.RepoFile, in.Guard)
 			if err != nil {
 				return nil, nil, err
 			}

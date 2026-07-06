@@ -64,11 +64,12 @@ func PeekVersion(data []byte) (version int, versioned bool) {
 // caller MUST leave the file untouched). A file already at a supported version
 // needs no migration.
 //
-// Scope: today the only forward transition is unversioned -> version 1, so
-// migrate is true ONLY for that case. When a future release introduces a
-// version 2, a versioned-but-older file (v < supported) will also need
-// migrate=true AND its own pre-migration backup — revisit this function and its
-// callers then, rather than relying on save() to silently upgrade it.
+// Scope: a forward migration is flagged for BOTH the pre-versioning form
+// (unversioned -> version 1) AND a versioned-but-older file (1 <= v < supported).
+// Either way a mutating read must reshape the file into the current form AND
+// preserve the pre-migration bytes in its own sibling backup (BackupForMigration)
+// before rewriting it — never rely on save() to silently upgrade it. A file
+// already AT the supported version needs no migration.
 func Resolve(path string, data []byte, supported int) (version int, migrate bool, err error) {
 	v, versioned := PeekVersion(data)
 	if !versioned {
@@ -87,6 +88,12 @@ func Resolve(path string, data []byte, supported int) (version int, migrate bool
 	}
 	if v > supported {
 		return v, false, &FutureVersionError{Path: path, Found: v, Supported: supported}
+	}
+	if v < supported {
+		// A versioned-but-older file: migrate it forward. The caller MUST back the
+		// pre-migration bytes up (BackupForMigration, keyed by this returned v)
+		// before rewriting it in the current form.
+		return v, true, nil
 	}
 	return v, false, nil
 }

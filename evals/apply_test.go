@@ -11,6 +11,10 @@ package evals
 // where it is cheap; where it is not, a TODO(contract) marks the assumption.
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +62,116 @@ func TestApplyIdempotent_AC_apply_idempotent(t *testing.T) {
 	}
 	// Second run must not have touched content/mode.
 	snap.AssertUnchanged(t)
+}
+
+// TestApplyRecordsDeployedBaseline proves the v0.5.0 Foundation primitive is
+// wired to the live CLI: a real `ferry apply` records, in its version-2
+// last-applied state file, a per-target last-deployed content snapshot that is
+// content-addressed by the recorded hash. This is what the guided-apply risk
+// gate and capture-back divergence detection later read.
+func TestApplyRecordsDeployedBaseline(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	seedManagedDotfile(t, s, "export EDITOR=vim\n")
+
+	if _, errOut, code := s.Ferry("apply"); code != 0 {
+		t.Fatalf("apply exited %d; stderr:\n%s", code, errOut)
+	}
+
+	statePath := s.HomePath(".local", "state", "ferry", "dotfile-last-applied.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read last-applied state %s: %v", statePath, err)
+	}
+
+	var env struct {
+		Version  int               `json:"version"`
+		Applied  map[string]string `json:"applied"`
+		Deployed map[string][]byte `json:"deployed"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("parse state file: %v\n%s", err, raw)
+	}
+	if env.Version != 2 {
+		t.Fatalf("state version = %d, want 2", env.Version)
+	}
+	if len(env.Applied) == 0 {
+		t.Fatalf("no applied entries recorded; apply did not deploy anything")
+	}
+
+	// Every recorded hash must have a content-addressed deployed snapshot: the
+	// baseline exists AND its stored bytes hash back to their key.
+	for name, hash := range env.Applied {
+		snap, ok := env.Deployed[hash]
+		if !ok {
+			t.Fatalf("target %q (hash %s) has no last-deployed snapshot; the baseline was not recorded", name, hash)
+		}
+		sum := sha256.Sum256(snap)
+		if got := hex.EncodeToString(sum[:]); got != hash {
+			t.Fatalf("target %q snapshot is not content-addressed: sha256(bytes)=%s, key=%s", name, got, hash)
+		}
+	}
+}
+
+// TestApplySecretRoutedBaselineHashOnly proves the secret-at-rest fix end-to-end
+// via the live CLI: applying a managed dotfile that references the secret store
+// renders the real secret into the LIVE file, but records ONLY the content hash in
+// the last-applied state file — the rendered plaintext secret appears NOWHERE in
+// that on-disk bookkeeping file, while drift detection survives via the recorded
+// hash.
+func TestApplySecretRoutedBaselineHashOnly(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	s.SeedSharedManifest(t, baseManifest)
+
+	const secretValue = "sk-live-SECRET-VALUE-9876543210"
+	src := "export API_KEY={{ferry.secret \"api.key\"}}\n"
+	s.WriteRepoFile(t, ".zshrc", src)
+	s.WriteRepoFile(t, filepath.Join("dotfiles", ".zshrc"), src)
+	seedSecret(t, s, "api", "key", secretValue)
+
+	// A secret-routed target is risky (it deploys a real secret value): confirm
+	// the guided walkthrough so the deploy proceeds.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
+		t.Fatalf("apply exited %d; stderr:\n%s", code, errOut)
+	}
+
+	// The live file received the RENDERED secret (the deploy really is secret-routed).
+	live, err := os.ReadFile(s.HomePath(".zshrc"))
+	if err != nil {
+		t.Fatalf("read live .zshrc: %v", err)
+	}
+	if !strings.Contains(string(live), secretValue) {
+		t.Fatalf("secret was not rendered into the live file:\n%s", live)
+	}
+
+	statePath := s.HomePath(".local", "state", "ferry", "dotfile-last-applied.json")
+	raw, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read last-applied state %s: %v", statePath, err)
+	}
+	// The rendered plaintext secret must appear NOWHERE in the state file bytes.
+	if bytes.Contains(raw, []byte(secretValue)) {
+		t.Fatalf("SECRET LEAK: rendered plaintext %q found in %s:\n%s", secretValue, statePath, raw)
+	}
+
+	var env struct {
+		Version  int               `json:"version"`
+		Applied  map[string]string `json:"applied"`
+		Deployed map[string][]byte `json:"deployed"`
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		t.Fatalf("parse state file: %v\n%s", err, raw)
+	}
+	// Drift/baseline detection survives: the secret target's hash IS recorded.
+	hash, ok := env.Applied["zshrc"]
+	if !ok {
+		t.Fatalf("no applied hash recorded for the secret-routed target; drift detection lost\n%s", raw)
+	}
+	// But its bytes are NOT: the deployed map has no entry for that hash (hash-only).
+	if _, present := env.Deployed[hash]; present {
+		t.Fatalf("secret-routed target recorded a deployed byte snapshot (hash %s); it must be hash-only\n%s", hash, raw)
+	}
 }
 
 // TestConflictRefuse covers AC-conflict-refuse: a locally-edited (uncaptured)
@@ -315,7 +429,8 @@ func TestBackupBeforeChange_AC_backup_before_change(t *testing.T) {
 	target := s.WriteHomeFile(t, ".zshrc", originalX, 0o600)
 	origTW := s.SnapshotFile(t, target)
 
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting/overwriting a pre-existing ~/.zshrc is risky; confirm it.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-backup-before-change: apply exited %d; stderr:\n%s", code, errOut)
 	}
 	// apply must have changed the content away from X (otherwise vacuous).

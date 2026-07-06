@@ -81,7 +81,9 @@ func TestApplyRefusesEmptyOverSubstantialViaOverlay_AC_apply_refuses_empty_over_
 			target := s.WriteHomeFile(t, ".zshrc", substantialZshrc, 0o644)
 			snap := s.SnapshotFile(t, target)
 
-			out, errOut, code := s.Ferry("apply")
+			// Confirm the guided walkthrough (adopting a pre-existing file is risky) so
+			// the flow reaches the empty-over-substantial guard, which must refuse.
+			out, errOut, code := s.ApplyConfirmed()
 			combined := out + errOut
 
 			namesFile := containsAnyFold(combined, ".zshrc", "zshrc")
@@ -159,7 +161,9 @@ func TestApplyOverlayRealSourceDeploysNormally(t *testing.T) {
 	// A pre-existing live file (also substantial) that apply legitimately updates.
 	s.WriteHomeFile(t, ".zshrc", "export OLD=1\nalias x='echo old'\nsetopt SHARE_HISTORY\n", 0o644)
 
-	out, errOut, code := s.Ferry("apply")
+	// Adopting a pre-existing file is risky; confirm the walkthrough so the
+	// legitimate deploy proceeds.
+	out, errOut, code := s.ApplyConfirmed()
 	combined := out + errOut
 	if code != 0 {
 		t.Fatalf("apply of a real-content shared source + overlay was refused (guard false-fired); exit=%d\n%s", code, combined)

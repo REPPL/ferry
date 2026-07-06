@@ -88,7 +88,9 @@ func runStatus(c *cobra.Command, _ []string) error {
 			}
 			continue
 		}
-		if it.kind != kindDotfile && it.kind != kindOverlay {
+		// Config-file terminal targets are carried like dotfiles, so they share
+		// the three-way status rendering (capture guidance, not repo-authoritative).
+		if it.kind != kindDotfile && it.kind != kindOverlay && it.kind != kindTerminal {
 			continue
 		}
 		reported++

@@ -599,7 +599,8 @@ confirm = true
 
 		// First apply over the substantial live zshrc must SUCCEED (no
 		// EmptyOverSubstantial refusal) and deploy scaffold + sidecar + directive.
-		if _, errOut, code := s.Ferry("apply"); code != 0 {
+		// Adopting the pre-existing file is risky, so confirm the walkthrough.
+		if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 			t.Fatalf("AC-wizard-scaffold[local]: first apply exited %d (EmptyOverSubstantial refusal? the scaffold must survive the guard)\n%s", code, errOut)
 		}
 		live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -651,7 +652,8 @@ confirm = true
 
 		// Apply over the substantial live zshrc succeeds; live becomes the scaffold;
 		// no ~/.zshrc.local appears (the scaffold's guarded source line stays inert).
-		if _, errOut, code := s.Ferry("apply"); code != 0 {
+		// Adopting the pre-existing file is risky, so confirm the walkthrough.
+		if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 			t.Fatalf("AC-wizard-scaffold[drop]: first apply exited %d (EmptyOverSubstantial refusal?)\n%s", code, errOut)
 		}
 		live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -1115,8 +1117,9 @@ prompt = "minimal"
 		t.Errorf("AC-wizard-fresh-over-existing: .bak mode = %v, want 0600 (err %v)", info.Mode().Perm(), err)
 	}
 
-	// First apply replaces the live file with the starter.
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// First apply replaces the live file with the starter (risky overwrite of a
+	// pre-existing file); confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-wizard-fresh-over-existing: apply exited %d\n%s", code, errOut)
 	}
 	live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -1241,7 +1244,9 @@ confirm = true
 
 	// Apply renders the placeholder back: the live secret line equals the ORIGINAL
 	// adopted bytes; the repaired line carries $HOME; no placeholder literal leaks.
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting the pre-existing file and deploying a secret-routed seed are risky;
+	// confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-secret-store-route: apply exited %d\n%s", code, errOut)
 	}
 	live, err := os.ReadFile(s.HomePath(".zshrc"))
@@ -1867,7 +1872,8 @@ confirm = true
 	if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
 		t.Fatalf("AC-init-rerun-guard: init exited %d\n%s", code, errOut)
 	}
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting the pre-existing ~/.zshrc is risky; confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-init-rerun-guard: first apply exited %d\n%s", code, errOut)
 	}
 	repoDir := managedRepoPath(s)

@@ -44,6 +44,26 @@ type Result struct {
 
 	PendingHash string // last-applied hash to commit post-journal (ApplyDeferred only)
 
+	// PendingContent carries the exact bytes ferry deployed to the home target,
+	// to be recorded as the last-deployed baseline alongside PendingHash by the
+	// caller's post-journal CommitLastApplied. It is set only when PendingHash is
+	// (a write, or a clean-adoption of an identical existing file), so the
+	// snapshot advances atomically with the hash and never gets ahead of a
+	// rolled-back file. Empty for noop-without-adoption/skipped/conflict results
+	// and for the eager Apply path (which records the snapshot immediately).
+	PendingContent []byte
+
+	// SecretRouted marks a target whose deployed bytes were rendered from the
+	// secret store (a {{ferry.secret ...}} placeholder was substituted with a
+	// real value). For such a target CommitLastApplied records ONLY the content
+	// hash and NEVER the PendingContent bytes: the rendered bytes hold plaintext
+	// secrets, and ferry's last-applied state file is a non-secret bookkeeping
+	// file, so snapshotting them would be a secret-at-rest leak. The hash alone
+	// still advances the sync point and drives drift/baseline detection. The apply
+	// command sets this from the plan (the raw source referenced the secret store);
+	// it is false for every non-secret target, which keeps its full byte snapshot.
+	SecretRouted bool
+
 	// ForcedEmptyOverSubstantial is set when --force pushed an empty/near-empty
 	// repo source OVER a substantial existing live file (the data-loss transition
 	// the guard normally refuses). The caller MUST surface a warning naming the
@@ -230,12 +250,16 @@ func applyContent(t Target, content []byte, freshPerm os.FileMode, store *Store,
 		// adopt it into last-applied now so a later repo advance classifies as a
 		// clean repo-ahead update instead of a false conflict. Skip in dry-run.
 		if !dryRun && st.AppliedHash != st.RepoHash {
+			// Live already reproduces content, so content IS the deployed baseline:
+			// record it as the snapshot too, establishing the baseline for an
+			// already-in-sync target (the first-apply-after-upgrade bootstrap).
 			if persist {
-				if err := store.set(t.Name, st.RepoHash); err != nil {
+				if err := store.setDeployed(t.Name, st.RepoHash, content); err != nil {
 					return Result{}, err
 				}
 			} else {
 				res.PendingHash = st.RepoHash
+				res.PendingContent = content
 			}
 		}
 		res.Action = ActionNoop
@@ -373,17 +397,29 @@ func selectOverlaySource(t Target, localSource string) (Target, error) {
 }
 
 // CommitLastApplied persists the deferred last-applied hashes recorded by
-// ApplyDeferred. The caller runs it AFTER the surrounding journal commit, so a
-// crash before commit leaves last-applied untouched (matching the rolled-back
-// file) and a successful commit is followed by the matching last-applied write.
-// Results with no PendingHash (noop/skipped/conflict, or eager Apply) are
-// ignored, so passing the full result slice is safe.
+// ApplyDeferred — and, alongside each, the last-deployed content baseline the
+// same apply captured on Result.PendingContent. The caller runs it AFTER the
+// surrounding journal commit, so a crash before commit leaves both the hash and
+// the snapshot untouched (matching the rolled-back file) and a successful commit
+// is followed by the matching write. Results with no PendingHash
+// (noop-without-adoption/skipped/conflict, or eager Apply) are ignored, so
+// passing the full result slice is safe.
+//
+// A SecretRouted result records ONLY its hash (content=nil, the hash-only path):
+// its deployed bytes carry substituted secret-store values, and the last-applied
+// file is a non-secret bookkeeping file, so snapshotting them would write a
+// plaintext secret at rest. The hash still advances the sync point and drives
+// drift/baseline detection — only the byte snapshot is withheld.
 func CommitLastApplied(results []Result, store *Store) error {
 	for _, r := range results {
 		if r.PendingHash == "" {
 			continue
 		}
-		if err := store.set(r.Target.Name, r.PendingHash); err != nil {
+		content := r.PendingContent
+		if r.SecretRouted {
+			content = nil
+		}
+		if err := store.setDeployed(r.Target.Name, r.PendingHash, content); err != nil {
 			return err
 		}
 	}
@@ -510,10 +546,13 @@ func writeContent(t Target, content []byte, repoHash string, freshPerm os.FileMo
 	if err := b.BackupAndWrite(t.Home, content, perm); err != nil {
 		return err
 	}
+	// content is exactly the bytes just written, so it is the last-deployed
+	// baseline for this target; record it as the snapshot alongside the hash.
 	if persist {
-		return store.set(t.Name, repoHash)
+		return store.setDeployed(t.Name, repoHash, content)
 	}
 	res.PendingHash = repoHash
+	res.PendingContent = content
 	return nil
 }
 

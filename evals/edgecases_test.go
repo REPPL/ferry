@@ -52,7 +52,8 @@ dotfiles = [".zshrc", ".gitconfig"]
 	zshSnap := s.SnapshotFile(t, zshTarget)
 	gitconfigTarget := s.HomePath(".gitconfig")
 
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting the pre-existing .zshrc is risky; confirm the guided walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("apply exited %d; stderr:\n%s", code, errOut)
 	}
 	// Preconditions: apply changed .zshrc away from original and created .gitconfig.
@@ -102,7 +103,8 @@ func TestRestoreAfterForceApply_AC_restore_clean(t *testing.T) {
 	preSnap := s.SnapshotFile(t, target)
 
 	// First apply establishes ferry's management + backup of the pre-ferry content.
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Adopting the pre-existing file is risky, so confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("initial apply exited %d; stderr:\n%s", code, errOut)
 	}
 	// The user then makes an uncaptured edit AND the repo drifts, creating a conflict.

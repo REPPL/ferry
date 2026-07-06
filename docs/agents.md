@@ -143,8 +143,10 @@ templates — ferry carries and deploys them but does not ship them.
   reported by `status`/`diff` as drift and **skipped** by `apply` (ferry never
   silently discards an edit); resolve it by updating the repo copy, or
   override with `ferry apply --force` (backed up, reversible).
-- **Capture**: `ferry capture` deliberately skips agents targets with one
-  informative line. It never modifies user files.
+- **Capture**: `ferry capture` flows a live edit to a deployed agent file back
+  into the config repo through the same approve and route flow as dotfiles (see
+  [Capturing agent edits back](#capturing-agent-edits-back) below). It never
+  rewrites the deployed file, never commits, and never pushes.
 - **De-scoping**: setting `agents = false` (or removing a harness) leaves the
   deployed files in place and warns that they are now unmanaged; revert them
   with `ferry restore agents`.
@@ -161,6 +163,49 @@ works with the repo deleted or its manifest unreadable. Recorded paths
 without a baseline are skipped, so nothing ferry never touched can be
 reverted. A full `ferry restore` likewise needs no repo and reverts
 everything ferry ever touched.
+
+## Capturing agent edits back
+
+Deployed agent files are ordinary regular files, so it is natural to edit one
+in place — a skill, a hook, or a harness instruction file. `ferry capture`
+brings such an edit back into the config repo so it is no longer reported as
+drift forever. It is explicit and user-initiated: there is no daemon and no
+file-watcher, and it never commits or pushes (you do that yourself).
+
+Capture classifies every deployed agents target against the last-deployed
+baseline — the exact bytes ferry last wrote — and acts only on the two
+outcomes that call for it:
+
+- **Locally edited** (the deployed file changed; its repo source did not): a
+  capture candidate. Capture reviews the change hunk by hunk and, on your
+  approval, routes it to the config repo. An **asset** file (a skill, a hook, a
+  sub-agent) routes to its shared source under `agents/<source>/` or to the
+  per-machine overlay `local/agents/<source>/` (gitignored, and deployed in
+  preference to the shared source on the next apply — local wins). A harness
+  **instruction** file sourced from a single file (`general.md` or `coding.md`)
+  routes to that source; because one source feeds every harness that shares it,
+  only the shared route is offered.
+- **Diverged** (the deployed file **and** its repo source have both changed
+  since ferry last deployed it): capture **refuses** and shows a diff. It never
+  auto-merges and never guesses a winner — reconcile the two by hand, then
+  `ferry apply`.
+
+A file whose deployed content is the **derived** `general.md` + `coding.md`
+combination (a flat harness's `AGENTS.md`) cannot be split back into two
+sources automatically, so an edit there is reported and you are pointed at the
+two source files rather than having capture guess.
+
+Capture also offers to **adopt** new agent-shaped files: a regular file sitting
+under a managed asset mapping's target directory (for example a skill you
+dropped into `~/.claude/skills/`) that ferry has never deployed. What counts as
+agent-shaped is defined entirely by the asset-mapping registry, so it grows as
+the registry grows. On approval the file is brought into the repo under the
+mapping's source directory.
+
+Every route runs the same secret gate as the dotfile domain: a high-confidence
+secret in a captured change is blocked from the repo entirely. `~/.ssh` is
+never touched, and a captured write is refused if its repo destination resolves
+through a symlink out of the repo.
 
 ## `ferry agents scaffold [--private|--attribution] <repo-dir> [name]`
 

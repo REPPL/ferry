@@ -146,13 +146,20 @@ func runCapture(c *cobra.Command, _ []string) error {
 		}
 	}
 
-	// --- Agents pass (v1): the agents domain is REPO-AUTHORITATIVE — its
-	// targets carry content DERIVED from the config repo (general/coding/
-	// combined renders, asset copies), so the repo copy is the place to edit
-	// and capture deliberately never ingests a live agents target (and never
-	// modifies any user file here). One informative line, no offer.
+	// --- Agents pass: live edits to deployed agent files flow back through the
+	// same approve + route (shared vs local) flow as dotfiles. A locally-drifted
+	// target is reviewed hunk by hunk and routed; a TRUE DIVERGENCE (the deployed
+	// file AND its repo source both moved past the last-deployed baseline) is
+	// refused with a diff — never auto-merged. New agent-shaped files under a
+	// tracked mapping's target dir are offered for adoption. A SourceCombined
+	// render cannot be decomposed, so its drift is reported, not captured.
 	if ctx.Scope.IsManaged("agents") {
-		fmt.Fprintln(out, "agents: skipped — agents targets are repo-authoritative in v1; edit agents/ in the config repo, then run `ferry apply`")
+		wroteAgents, offeredAgents, aerr := captureAgents(ctx, home, in, out, lastApplied)
+		if aerr != nil {
+			return aerr
+		}
+		offered += offeredAgents
+		captured += wroteAgents
 	}
 
 	// Terminal/plist preference domains (A3): the dotfile loop above only handles

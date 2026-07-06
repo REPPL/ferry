@@ -32,8 +32,9 @@ dotfiles = [".zshrc", ".gitconfig"]
 	gitconfigTarget := s.HomePath(".gitconfig")
 	gitconfigSnap := s.SnapshotFile(t, gitconfigTarget) // absent
 
-	// Apply (changes .zshrc, creates .gitconfig), then restore.
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Apply (adopts .zshrc, creates .gitconfig), then restore. Adopting the
+	// pre-existing .zshrc is risky, so confirm the guided walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-restore-clean: apply exited %d; stderr:\n%s", code, errOut)
 	}
 	// Sanity: apply actually did something (otherwise the test is vacuous).
@@ -66,7 +67,8 @@ func TestRestoreRoundTrip_AC_backup_before_change(t *testing.T) {
 	const originalMode os.FileMode = 0o600
 	target := s.WriteHomeFile(t, ".zshrc", originalX, originalMode)
 
-	if _, errOut, code := s.Ferry("apply"); code != 0 {
+	// Overwriting the pre-existing ~/.zshrc is risky; confirm the walkthrough.
+	if _, errOut, code := s.ApplyConfirmed(); code != 0 {
 		t.Fatalf("AC-backup-before-change: apply exited %d; stderr:\n%s", code, errOut)
 	}
 	// apply should have changed the content away from X.

@@ -2,9 +2,9 @@ package agents
 
 import (
 	"fmt"
-	"sort"
 
 	"github.com/REPPL/ferry/internal/config"
+	"github.com/REPPL/ferry/internal/registry"
 )
 
 // Source names which rendered instruction content a harness target receives.
@@ -59,7 +59,7 @@ func Builtins() []Harness {
 // Config errors — a new harness without a target, or a selection naming an
 // unknown harness — are returned as clear errors, never silently dropped.
 func Resolve(cfg config.AgentsConfig) ([]Harness, error) {
-	return resolveRegistry(
+	return registry.Resolve(
 		Builtins(),
 		func(h Harness) string { return h.Name },
 		cfg.Harness,
@@ -83,69 +83,6 @@ func Resolve(cfg config.AgentsConfig) ([]Harness, error) {
 			return fmt.Errorf("agents.harnesses names %q, which is neither a built-in harness nor declared as [agents.harness.%s]", name, name)
 		},
 	)
-}
-
-// resolveRegistry is the shared registry resolver for both the harness and the
-// asset-mapping registries (which are structurally identical): the built-in
-// entries, overlaid with the user's per-name declarations in sorted-name order
-// (an existing name is overridden field by field via overlay; a new name is
-// appended), then filtered by the selection list when one is declared. Order is
-// deterministic: built-ins, then user additions sorted by name — or exactly the
-// declared selection order. overlay applies one user spec (and enforces the
-// registry's required-field rule); unknown formats the selection-not-found error.
-func resolveRegistry[T any, S any](
-	builtins []T,
-	nameOf func(T) string,
-	decls map[string]S,
-	overlay func(cur T, exists bool, name string, spec S) (T, error),
-	selection []string,
-	selectionSet bool,
-	unknown func(name string) error,
-) ([]T, error) {
-	byName := map[string]T{}
-	var order []string
-	for _, b := range builtins {
-		n := nameOf(b)
-		byName[n] = b
-		order = append(order, n)
-	}
-
-	names := make([]string, 0, len(decls))
-	for n := range decls {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	for _, n := range names {
-		cur, exists := byName[n]
-		if !exists {
-			order = append(order, n)
-		}
-		merged, err := overlay(cur, exists, n, decls[n])
-		if err != nil {
-			return nil, err
-		}
-		byName[n] = merged
-	}
-
-	if !selectionSet {
-		out := make([]T, 0, len(order))
-		for _, n := range order {
-			out = append(out, byName[n])
-		}
-		return out, nil
-	}
-
-	// An explicit selection restricts (and orders) the set; naming an unknown
-	// entry is a config error, not a silent no-op.
-	out := make([]T, 0, len(selection))
-	for _, n := range selection {
-		e, ok := byName[n]
-		if !ok {
-			return nil, unknown(n)
-		}
-		out = append(out, e)
-	}
-	return out, nil
 }
 
 // AssetMapping is one asset-tree mapping in the registry: a named,
@@ -185,7 +122,7 @@ func BuiltinAssets() []AssetMapping {
 // naming an unknown mapping — are returned as clear errors, never silently
 // dropped.
 func ResolveAssets(cfg config.AgentsConfig) ([]AssetMapping, error) {
-	return resolveRegistry(
+	return registry.Resolve(
 		BuiltinAssets(),
 		func(m AssetMapping) string { return m.Name },
 		cfg.Asset,

@@ -50,7 +50,7 @@ The versioned files are:
 
 | File | Contents |
 |---|---|
-| `dotfile-last-applied.json` | Per managed dotfile, the content hash ferry last wrote — the middle term of the three-way apply comparison. |
+| `dotfile-last-applied.json` | Per managed target, the content hash ferry last wrote — the middle term of the three-way apply comparison — and, from schema version 2, the exact bytes it last deployed (the *last-deployed baseline*), content-addressed by that hash so ferry can reconstruct and diff what it last wrote. |
 | `agents-targets.json` | Every `$HOME` destination the agents domain has applied on this machine, so `ferry restore agents` reverts what was actually applied. |
 | `journal/<run>/manifest.json` | One apply run's record of prior states and actions, used to roll back an interrupted run. |
 
@@ -61,9 +61,14 @@ version-independently; it is not part of this envelope scheme.
 ### Reading an older file
 
 A file with **no `version` field** is the original form that predates versioning
-and reads as **version 1**. Migration is **forward-only** and happens **on read**,
-on a mutating command (`apply`, `capture`) — a read-only command (`status`,
-`diff`) reads the older form in memory and writes nothing.
+and reads as **version 1**. A file at a **versioned-but-older** version (for
+example the last-applied store at version 1, once its current schema is version
+2) is recognised the same way. Migration is **forward-only** and happens **on
+read**, on a mutating command (`apply`, `capture`) — a read-only command
+(`status`, `diff`) reads the older form in memory and writes nothing. An older
+last-applied store migrates forward with every recorded hash preserved; the
+last-deployed baseline it gains starts empty and is re-established target by
+target on the next apply.
 
 Before a migrating command rewrites a file into the current form, it **preserves
 the pre-migration bytes** in a sibling copy named `<file>.pre-v<n>.bak`, where

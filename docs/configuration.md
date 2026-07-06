@@ -22,15 +22,19 @@ to ferry: it is never applied and never captured.
 ```toml
 # ferry.toml (shared)
 [manage]
-dotfiles = [".zshrc", ".gitconfig"]
-brew     = true
-iterm2   = true
-fonts    = false        # never sync fonts
-agents   = true         # AI-agent instruction files; see agents.md
+dotfiles  = [".zshrc", ".gitconfig"]
+brew      = true
+iterm2    = true
+fonts     = false       # never sync fonts
+agents    = true        # AI-agent instruction files; see agents.md
+terminals = true        # config-file terminal emulators (Alacritty, kitty, WezTerm)
 
 [agents]
 devtree = "Development"           # optional workspace layer, relative to $HOME
 # harnesses = ["claude", "codex"] # optional; default is every built-in harness
+
+[terminals]
+# enabled = ["alacritty", "wezterm"] # optional; default is every built-in terminal
 ```
 
 ```toml
@@ -38,6 +42,46 @@ devtree = "Development"           # optional workspace layer, relative to $HOME
 [manage]
 iterm2 = false          # this is a headless box; skip terminal-app config here
 ```
+
+## Terminal emulators (config-file)
+
+Config-file terminal emulators — those that keep their settings in plain-text
+files — are carried like dotfiles. A built-in registry maps each known terminal
+to where its config lives in the repo and where it deploys under `$HOME`:
+
+| Terminal | Repo source (`terminals/`) | Home target |
+|---|---|---|
+| Alacritty | `terminals/alacritty/` | `~/.config/alacritty/` |
+| kitty | `terminals/kitty/` | `~/.config/kitty/` |
+| WezTerm | `terminals/wezterm.lua` | `~/.wezterm.lua` |
+
+Enable the domain with `terminals = true` under `[manage]`, then commit each
+terminal's config under `terminals/` in the repo. A built-in terminal whose
+source is not present in the repo deploys nothing, so you enable the ones you
+use simply by committing their config. A directory terminal (Alacritty, kitty)
+carries its whole config tree file by file; a single-file terminal (WezTerm)
+carries its one file.
+
+The registry is data, edited in the manifest — never in code:
+
+```toml
+[terminals]
+# Restrict (and order) the deployed set; default is every built-in terminal.
+enabled = ["alacritty", "wezterm"]
+
+# Override a built-in's paths, or add a terminal the registry does not know:
+[terminals.terminal.foot]
+source = "foot"          # under terminals/ in the repo
+target = ".config/foot"  # relative to $HOME
+```
+
+GNOME Terminal is deliberately out of scope: it stores its settings in dconf,
+not a config file, so it needs a dump/load bridge rather than a file copy.
+
+The `.local` layer applies per file, which is the natural home for a
+per-machine colour scheme: an override at
+`local/terminals/<source>/<relpath>` wins over the shared copy on the next
+`apply`, leaving every other file shared.
 
 ## The `.local` layer
 

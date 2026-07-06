@@ -220,7 +220,10 @@ func TestApplyRefusesEmptyOverSubstantial_AC_apply_refuses_empty_over_substantia
 			target := s.WriteHomeFile(t, tc.dotfile, tc.live, 0o644)
 			snap := s.SnapshotFile(t, target)
 
-			out, errOut, code := s.Ferry("apply")
+			// Confirm the guided walkthrough (this adoption of a pre-existing file is
+			// risky) so the flow reaches the empty-over-substantial guard, which must
+			// then refuse the destructive empty overwrite with its specific message.
+			out, errOut, code := s.ApplyConfirmed()
 			combined := out + errOut
 
 			// REFUSAL must be OBSERVABLE and SPECIFIC. The message must name the file

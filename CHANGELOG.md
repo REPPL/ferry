@@ -11,6 +11,89 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- **Config-file terminal emulators.** ferry now carries the settings of
+  config-file terminal emulators — Alacritty (`~/.config/alacritty`), kitty
+  (`~/.config/kitty`), and WezTerm (`~/.wezterm.lua`) — like dotfiles. Enable
+  the domain with `terminals = true` under `[manage]`, then commit each
+  terminal's config under `terminals/` in the repo; a built-in terminal whose
+  config is not in the repo deploys nothing, so you enable the ones you use by
+  committing their config. A built-in registry maps each known terminal to its
+  paths and is data, edited in the manifest: `[terminals] enabled = [...]`
+  restricts the set, and `[terminals.terminal.<name>]` overrides a built-in's
+  source/target or adds a terminal the registry does not know. A directory
+  terminal carries its whole config tree file by file; a single-file terminal
+  carries its one file. Scope gates the domain in both directions, and the
+  `.local` layer applies per file (`local/terminals/<source>/<relpath>` wins) —
+  the natural home for a per-machine colour scheme. Terminal config deploys
+  through the same guided, backup-first apply as dotfiles, so overwriting a
+  locally-modified config is risky and refused unattended. GNOME Terminal
+  (dconf) is deferred: it needs a dump/load bridge, not a file copy.
+- **Capture-back for the agents domain.** `ferry capture` no longer skips agents
+  targets. A live edit to a deployed agent file — a skill, a hook, or a harness
+  instruction file — now flows back into the config repo through the same
+  approve and route (shared vs `.local`) flow as dotfiles: an asset routes to
+  its shared source or a gitignored per-machine `local/agents/` overlay (which
+  wins on the next apply), and a single-source instruction file (`general.md` or
+  `coding.md`) routes to that source. When the deployed file **and** its repo
+  source have both changed since ferry last deployed it — a true divergence —
+  capture refuses and shows a diff rather than guessing a winner. A derived
+  combined `AGENTS.md` cannot be split back automatically, so its drift is
+  reported and points at the two sources. Capture also offers to **adopt** new
+  agent-shaped files (a regular file under a managed asset mapping's target
+  directory that ferry never deployed); what counts as agent-shaped comes from
+  the asset-mapping registry, not a fixed list. The secret gate, `~/.ssh`
+  hands-off rule, and the never-commit/never-push contract all still hold, and
+  capture never rewrites the deployed file itself.
+- **Guided `apply` (quiet when safe, stop when risky).** `apply` is no longer a
+  terse reconciler. On a run that has changes it walks the pending work grouped
+  by domain (dotfiles / agents): a *safe* change — creating a file where none
+  exists, or updating a target whose live content still matches what ferry last
+  deployed — applies automatically, while a *risky* change halts for
+  confirmation. A change is risky when it would overwrite a file that differs
+  from the last-deployed baseline, adopt a pre-existing file ferry never wrote,
+  or deploy a value from the secret store. In the walkthrough you confirm a
+  domain wholesale, drill in to see each change's full diff, apply or skip a
+  change this run, or skip it *always* — remembered per machine in the
+  gitignored `.local` layer (`local/skip-always.txt`). A clean, in-sync apply
+  prints one line. The risk gate reads the per-target last-deployed baseline to
+  tell a locally-modified file from an in-sync one.
+- **`apply --skip-wizard`.** An expert opt-out from the walkthrough: safe
+  changes still auto-apply, but risky changes are refused rather than prompted.
+- **`apply --force` now covers the risk gate.** `--force` is an explicit "just
+  do it" override: it treats every risky change as confirmed (the downstream
+  conflict and empty-over-substantial data-loss guards still apply and warn).
+- **Per-target last-deployed baseline.** `apply` now records, alongside each
+  managed target's last-applied hash, the exact bytes it deployed — the
+  last-deployed baseline. It is the foundation for the guided apply and
+  capture-back work: it lets ferry tell a locally-modified file from an
+  in-sync one and reconstruct what it last wrote. The baseline lives in the
+  `dotfile-last-applied.json` state file, content-addressed by the hash it
+  already stores. A secret-routed target (one whose bytes were rendered from
+  the secret store) records ONLY its hash, never the deployed bytes, so a
+  plaintext secret is never written into this non-secret state file.
+
+### Changed
+
+- **Non-interactive `apply` fails closed on risky changes.** With no way to
+  confirm — an empty/exhausted stdin, or `--skip-wizard` — a risky change is
+  listed and refused with a non-zero exit; nothing risky is ever applied
+  unattended. The safe subset of the same run still applies. Creating a file
+  where none exists remains a safe, automatic change, so a fresh-machine first
+  `apply` is unaffected; adopting or overwriting a pre-existing file now asks
+  first.
+- **`init` hands off to `apply` for the reconcile walkthrough.** `init` keeps
+  its zshrc-adoption setup step and then points at (or, with `--apply`, runs)
+  the single guided flow, which lives in `apply`.
+- **Last-applied state schema is now version 2.** The store gains the
+  last-deployed baseline. An older file (a version-1 envelope, or a
+  pre-versioning `v0.3.x` file) is migrated forward on the next `apply` with
+  every recorded hash preserved and its pre-migration bytes kept in a
+  write-once `dotfile-last-applied.json.pre-v1.bak` sibling; the baseline
+  starts empty and is re-established per target as `apply` redeploys it. A
+  downgraded ferry refuses a version-2 file rather than corrupting it.
+
 ## [0.4.1] - 2026-07-05
 
 ### Changed

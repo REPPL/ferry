@@ -48,7 +48,10 @@ func planAgents(ctx *cmdContext, home string, lastApplied *dotfile.Store) ([]pla
 	planned := map[string]bool{}
 	for _, ai := range aItems {
 		planned[ai.Key] = true
-		state, cerr := classifyItemState(ai.Target, ai.Content, lastApplied)
+		// Agents content is never secret-rendered (secretRouted=false); its risk
+		// comes from the three-way state alone (a brand-new adoption over an
+		// existing file, or a conflict).
+		state, risky, reason, cerr := classifyItem(ai.Target, ai.Content, false, lastApplied)
 		if cerr != nil {
 			var kind *dotfile.UnexpectedKindError
 			if errors.As(cerr, &kind) {
@@ -60,12 +63,14 @@ func planAgents(ctx *cmdContext, home string, lastApplied *dotfile.Store) ([]pla
 			return nil, nil, cerr
 		}
 		items = append(items, planItem{
-			kind:    kindAgents,
-			domain:  ai.Label,
-			target:  ai.Target,
-			content: ai.Content,
-			execBit: ai.Exec,
-			state:   state,
+			kind:       kindAgents,
+			domain:     ai.Label,
+			target:     ai.Target,
+			content:    ai.Content,
+			execBit:    ai.Exec,
+			state:      state,
+			risky:      risky,
+			riskReason: reason,
 		})
 	}
 

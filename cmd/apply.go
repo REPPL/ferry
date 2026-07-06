@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/REPPL/ferry/internal/paths"
 	"github.com/REPPL/ferry/internal/platform"
 	"github.com/REPPL/ferry/internal/secret"
+	"github.com/REPPL/ferry/internal/termcfg"
 	"github.com/REPPL/ferry/internal/terminal"
 )
 
@@ -26,6 +28,11 @@ func init() {
 	// conflict). Registered here so commands.go stays owned by the skeleton wave;
 	// --deps and --dry-run are already declared there.
 	applyCmd.Flags().Bool("force", false, "overwrite uncaptured local edits on conflict")
+	// --skip-wizard is the expert opt-out from the guided walkthrough: safe changes
+	// still auto-apply, but risky changes are NOT prompted — they FAIL CLOSED
+	// (listed, refused, non-zero exit) exactly as in a non-interactive run. It
+	// suppresses the UI; it never makes a risky change happen unattended.
+	applyCmd.Flags().Bool("skip-wizard", false, "skip the guided walkthrough (safe changes auto-apply; risky changes are refused, not prompted)")
 }
 
 // kind classifies a planned item so diff/apply can describe it precisely.
@@ -36,6 +43,7 @@ const (
 	kindOverlay                    // a .local overlay materialised to its home path
 	kindPreference                 // a native macOS preference (plist/defaults) domain
 	kindAgents                     // an agents-domain target (derived content, repo-authoritative)
+	kindTerminal                   // a config-file terminal target (carried like a dotfile)
 )
 
 // planItem is one unit of work apply would perform. It carries the fully
@@ -49,6 +57,27 @@ type planItem struct {
 	skip    bool           // true when a missing secret forces a skip
 	missing []string       // refs that were missing (when skip)
 	note    string         // free-form note (de-scope warnings, preference TODO)
+
+	// risky/riskReason are the guided-apply risk gate's per-item verdict, computed
+	// during planning by assessRisk. A risky change halts for confirmation in the
+	// interactive walkthrough and FAILS CLOSED (never applied) in a non-interactive
+	// run or under --skip-wizard. riskReason is the human sentence shown to the
+	// user (empty when not risky). Meaningful for the guided kinds
+	// (kindDotfile/kindOverlay/kindAgents); always false for kindPreference (terminal
+	// domains auto-apply through their own reversible backup path, outside the
+	// dotfiles/agents grouping the walkthrough covers).
+	risky      bool
+	riskReason string
+
+	// secretRouted is true when this target's deployed content was rendered from
+	// the secret store (its effective source carried a {{ferry.secret ...}}
+	// placeholder that was substituted). It rides onto dotfile.Result.SecretRouted
+	// so CommitLastApplied records ONLY the content hash for such a target, never
+	// the rendered bytes — keeping plaintext secrets out of the last-applied state
+	// file. Meaningful for kindDotfile/kindOverlay; always false for the agents and
+	// preference kinds (agents content is not secret-rendered; preference domains
+	// stage their rendered bytes separately, never via the last-applied baseline).
+	secretRouted bool
 
 	// state is the three-way classification dotfile.Classify computed for this
 	// target against its EFFECTIVE (composed + secret-rendered) content during
@@ -99,6 +128,7 @@ func runApply(c *cobra.Command, _ []string) error {
 	depsFlag, _ := c.Flags().GetBool("deps")
 	dryRun, _ := c.Flags().GetBool("dry-run")
 	force, _ := c.Flags().GetBool("force")
+	skipWizard, _ := c.Flags().GetBool("skip-wizard")
 
 	ctx, err := loadContext()
 	if err != nil {
@@ -106,6 +136,7 @@ func runApply(c *cobra.Command, _ []string) error {
 	}
 
 	out := c.OutOrStdout()
+	in := bufio.NewReader(c.InOrStdin())
 
 	// --dry-run is a pure preview: take NO lock, write NOTHING. The plan is
 	// read-only here, so it is safe to compute it without the lock — it never
@@ -132,7 +163,7 @@ func runApply(c *cobra.Command, _ []string) error {
 	// mutate + commit + persist last-applied. applyPlan owns that whole ordered
 	// transaction (lock -> rollback -> buildPlan -> Begin -> mutate -> Commit ->
 	// CommitLastApplied -> Unlock).
-	if err := applyPlan(ctx, nil, force, out); err != nil {
+	if err := applyPlan(ctx, force, guidedOpts{skipWizard: skipWizard}, in, out); err != nil {
 		return err
 	}
 
@@ -230,6 +261,25 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 		warnings = append(warnings, awarn...)
 	} else {
 		warnings = append(warnings, descopeAgentsWarnings(lastApplied, nil, false)...)
+	}
+
+	// Config-file terminal domain: the built-in terminal registry × the repo's
+	// terminals/ configs, expanded to 1:1 (content, target) items by
+	// planTerminals and reconciled through the same three-way machinery as
+	// dotfiles (they ARE carried like dotfiles: capturable, .local overlay wins).
+	// Gated behind `[manage] terminals = true` (default off). When de-scoped,
+	// previously applied targets collapse into one de-scope warning (files left
+	// untouched). Distinct from the macOS `terminal`/`iterm2` preference domains
+	// below.
+	if ctx.Scope.IsManaged("terminals") {
+		titems, twarn, terr := planTerminals(ctx, home, lastApplied)
+		if terr != nil {
+			return nil, nil, terr
+		}
+		items = append(items, titems...)
+		warnings = append(warnings, twarn...)
+	} else {
+		warnings = append(warnings, descopeTerminalConfigWarnings(lastApplied, nil, false)...)
 	}
 
 	// Terminal preference domains: represent in-scope iterm2 / Apple Terminal as
@@ -397,13 +447,14 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 				})
 				continue
 			}
-			state, err := classifyItemState(t, rendered, lastApplied)
+			secretRouted := isSecretRouted(content)
+			state, risky, reason, err := classifyItem(t, rendered, secretRouted, lastApplied)
 			if err != nil {
 				return nil, nil, err
 			}
 			items = append(items, planItem{
 				kind: kindDotfile, domain: "." + bare, target: t, content: rendered,
-				state: state,
+				state: state, secretRouted: secretRouted, risky: risky, riskReason: reason,
 			})
 
 			if hasOverlay {
@@ -431,13 +482,15 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 					})
 					continue
 				}
-				ostate, err := classifyItemState(ot, orendered, lastApplied)
+				oSecretRouted := isSecretRouted(overlayContent)
+				ostate, orisky, oreason, err := classifyItem(ot, orendered, oSecretRouted, lastApplied)
 				if err != nil {
 					return nil, nil, err
 				}
 				items = append(items, planItem{
 					kind: kindOverlay, domain: "." + bare + ".local",
 					target: ot, content: orendered, state: ostate,
+					secretRouted: oSecretRouted, risky: orisky, riskReason: oreason,
 				})
 			}
 			continue
@@ -471,33 +524,38 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 			})
 			continue
 		}
-		state, err := classifyItemState(t, rendered, lastApplied)
+		secretRouted := isSecretRouted(raw)
+		state, risky, reason, err := classifyItem(t, rendered, secretRouted, lastApplied)
 		if err != nil {
 			return nil, nil, err
 		}
 		items = append(items, planItem{
 			kind: kindDotfile, domain: "." + bare, target: t, content: rendered,
-			state: state,
+			state: state, secretRouted: secretRouted, risky: risky, riskReason: reason,
 		})
 	}
 
 	return items, warnings, nil
 }
 
-// classifyItemState computes the three-way dotfile.Classify state for a target
-// against its EFFECTIVE (composed + secret-rendered) content — the exact bytes
-// apply would deploy. It hashes the effective content IN MEMORY via
-// dotfile.ClassifyContent: NO temp file is staged and NO secret-rendered byte is
-// ever written to disk, so the diff/status/dry-run preview path is fully
+// classifyItem computes the three-way dotfile.Classify state for a target against
+// its EFFECTIVE (composed + secret-rendered) content — the exact bytes apply would
+// deploy — PLUS the guided-apply risk verdict. It hashes the effective content IN
+// MEMORY via dotfile.ClassifyContent: NO temp file is staged and NO secret-rendered
+// byte is ever written to disk, so the diff/status/dry-run preview path is fully
 // write-free while still observing the identical state apply's deploy path sees
-// (zsh source-last, whole-file local-wins, rendered secrets all agree). The store
-// is read-only and no ferry state is created — safe on the diff/status path.
-func classifyItemState(t dotfile.Target, content []byte, store *dotfile.Store) (dotfile.State, error) {
+// (zsh source-last, whole-file local-wins, rendered secrets all agree). It then
+// runs the risk gate (assessRisk) over the resulting Status so planning computes
+// both state and risk in a single live-file read. secretRouted flags a target
+// whose effective bytes were rendered from the secret store (always risky). The
+// store is read-only and no ferry state is created — safe on the diff/status path.
+func classifyItem(t dotfile.Target, content []byte, secretRouted bool, store *dotfile.Store) (dotfile.State, bool, string, error) {
 	st, err := dotfile.ClassifyContent(t, content, store)
 	if err != nil {
-		return "", err
+		return "", false, "", err
 	}
-	return st.State, nil
+	risky, reason := assessRisk(t, st, secretRouted, store)
+	return st.State, risky, reason, nil
 }
 
 // effectiveZshShared returns the EFFECTIVE shared ~/.<bare> content apply and
@@ -561,11 +619,12 @@ func refusalWarning(name string, err error) string {
 // A conflict on any target is reported and skipped (force overrides); other
 // targets still apply.
 //
-// Any plan a caller computed earlier (outside the lock, e.g. init's preview) is
-// deliberately IGNORED for mutation: applyPlan recomputes the plan under the lock
-// so the bytes it writes cannot be stale. The parameter is kept only so existing
-// callers compile unchanged.
-func applyPlan(ctx *cmdContext, _ []planItem, force bool, out io.Writer) (retErr error) {
+// The guided walkthrough (decideGuided) runs UNDER the lock, on the freshly
+// recomputed plan: it partitions pending changes into safe (auto-applied) and
+// risky (halt for confirmation), FAILS CLOSED on unconfirmed risky changes, and
+// hands mutate only the approved subset. So the risk gate can never let a risky
+// change apply unattended, and the bytes written are never stale.
+func applyPlan(ctx *cmdContext, force bool, gopts guidedOpts, in *bufio.Reader, out io.Writer) (retErr error) {
 	// Obtain the transactional engine (built lazily; this is the first mutating
 	// use, so it creates ferry's state dir). Read-only diff/dry-run never reach here.
 	eng, err := ctx.Engine()
@@ -632,6 +691,31 @@ func applyPlan(ctx *cmdContext, _ []planItem, force bool, out io.Writer) (retErr
 		fmt.Fprintln(out, w)
 	}
 
+	// GUIDED WALKTHROUGH + RISK GATE. decideGuided partitions the plan into what
+	// should actually be written this run: safe changes auto-apply, risky changes
+	// are confirmed (interactive) or refused (non-interactive / --skip-wizard). It
+	// may persist skip-always exclusions to the .local layer. It never mutates the
+	// live machine — it only decides and reports.
+	dec, err := decideGuided(ctx, plan, force, gopts, in, out)
+	if err != nil {
+		return err
+	}
+	if dec.nothingToDo {
+		// A clean, in-sync apply prints ONE line and does not walk (no mutation,
+		// no journal run) — the plan's "quiet when safe" contract at its quietest.
+		fmt.Fprintf(out, "in sync: %d target(s) already match the repo; nothing to apply\n", dec.cleanCount)
+		return nil
+	}
+	if len(dec.toApply) == 0 {
+		// Nothing approved to write. Either everything risky was refused (fail
+		// closed, non-zero) or the user skipped it all this run (exit 0).
+		if len(dec.refused) > 0 {
+			return riskyRefusedError(out, dec.refused)
+		}
+		fmt.Fprintln(out, "nothing applied: every pending change was skipped this run.")
+		return nil
+	}
+
 	run, err := eng.Begin()
 	if err != nil {
 		return fmt.Errorf("begin apply run: %w", err)
@@ -652,7 +736,7 @@ func applyPlan(ctx *cmdContext, _ []planItem, force bool, out io.Writer) (retErr
 	// apply's RollbackIncomplete (that net is only for a real crash, where no
 	// in-process handler can run). mutate performs the whole per-target apply and
 	// returns its error; on a non-nil error we roll the in-progress run back here.
-	if err := mutate(eng, b, backupResource, commitRun, plan, force, out); err != nil {
+	if err := mutate(eng, b, backupResource, commitRun, dec.toApply, force, out); err != nil {
 		// Roll back the current run's recorded changes immediately so a failed apply
 		// leaves the machine in its pre-apply state (files restored, terminal
 		// resources re-imported/deleted to their captured baseline) rather than half
@@ -665,6 +749,13 @@ func applyPlan(ctx *cmdContext, _ []planItem, force bool, out io.Writer) (retErr
 			return fmt.Errorf("apply failed (%v); inline rollback also failed (machine may be partially applied): %w", err, rbErr)
 		}
 		return err
+	}
+
+	// The safe/confirmed subset committed cleanly. If risky changes were refused
+	// (non-interactive / --skip-wizard), report them and exit NON-ZERO — the safe
+	// work is kept, but the run did not fully succeed and the user must review.
+	if len(dec.refused) > 0 {
+		return riskyRefusedError(out, dec.refused)
 	}
 
 	return nil
@@ -819,6 +910,43 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			it.action = string(res.Action)
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
 			continue
+		case kindTerminal:
+			// Config-file terminal targets deploy their overlay-or-shared Content
+			// through the same Backuper/journal as dotfiles (termcfg.ApplyItem).
+			// Unlike dotfiles, though, capture has NO config-file terminal pass
+			// (cmd/capture.go handles only declared dotfiles and the iterm2/terminal
+			// PREFERENCE domains), so a drifted/conflicting terminal target is NOT a
+			// capture candidate: the guidance points at updating the repo source or
+			// `ferry apply --force`, never `ferry capture`.
+			res, err := termcfg.ApplyItem(termcfg.Item{
+				Key:     it.target.Name,
+				Label:   it.domain,
+				Target:  it.target,
+				Content: it.content,
+				Exec:    it.execBit,
+			}, lastApplied, b, force)
+			if err != nil {
+				var conflict *dotfile.ConflictError
+				if errors.As(err, &conflict) {
+					conflicts = append(conflicts, it.domain)
+					fmt.Fprintf(out, "  %-22s CONFLICT: local edits AND repo change; not overwritten (update the repo source to match, or `ferry apply --force`)\n", it.domain)
+					continue
+				}
+				// The empty-over-substantial data-loss guard aborts the run, same
+				// as a dotfile target (the run rolls back inline).
+				return err
+			}
+			if res.ForcedEmptyOverSubstantial {
+				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
+			}
+			if res.Action == dotfile.ActionSkipped {
+				fmt.Fprintf(out, "  %-22s skipped (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain)
+				continue
+			}
+			deferred = append(deferred, res)
+			it.action = string(res.Action)
+			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
+			continue
 		case kindDotfile, kindOverlay:
 			if it.skip {
 				fmt.Fprintf(out, "  %-22s skipped (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
@@ -845,6 +973,10 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			if res.ForcedEmptyOverSubstantial {
 				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
 			}
+			// A secret-routed target's deployed bytes hold substituted secret values;
+			// flag the result so CommitLastApplied records only its hash, never the
+			// plaintext bytes (secret-at-rest boundary).
+			res.SecretRouted = it.secretRouted
 			deferred = append(deferred, res)
 			it.action = string(res.Action)
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
@@ -1021,6 +1153,28 @@ func printPlan(out io.Writer, plan []planItem) {
 			default:
 				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
 			}
+		case kindTerminal:
+			// Config-file terminal targets share the dotfile states but, unlike
+			// dotfiles, capture has NO config-file terminal pass, so a drift/conflict
+			// is NOT a capture candidate: the guidance points at updating the repo
+			// source or `ferry apply --force`, never `ferry capture`.
+			switch it.state {
+			case dotfile.StateClean:
+				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
+			case dotfile.StateMissing:
+				create++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
+			case dotfile.StateRepoAhead:
+				update++
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
+			case dotfile.StateLocallyDrifted:
+				fmt.Fprintf(out, "  %-22s %s (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
+			case dotfile.StateConflict:
+				conflict++
+				fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; update the repo source, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+			default:
+				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+			}
 		default:
 			if it.skip {
 				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
@@ -1076,7 +1230,7 @@ func planSummary(create, update, conflict int) string {
 // mechanism). Only a StateClean dotfile/overlay is "nothing to do".
 func planItemPending(it planItem) bool {
 	switch it.kind {
-	case kindDotfile, kindOverlay, kindAgents:
+	case kindDotfile, kindOverlay, kindAgents, kindTerminal:
 		if it.skip {
 			return true
 		}
@@ -1144,6 +1298,13 @@ func descopeDotfileWarnings(ctx *cmdContext, store *dotfile.Store) []string {
 		// OWN de-scope (descopeAgentsWarnings) — they are never declared dotfiles,
 		// so warning here would be a false positive on every apply.
 		if strings.HasPrefix(name, agentsKeyPrefix) {
+			continue
+		}
+		// Config-file terminal records are namespaced under "terminals/" and
+		// report their OWN de-scope (descopeTerminalConfigWarnings) — they are
+		// never declared dotfiles, so warning here would falsely report every
+		// still-managed terminal target as de-scoped on every apply.
+		if strings.HasPrefix(name, termcfg.KeyPrefix) {
 			continue
 		}
 		if inScope[strings.TrimPrefix(name, ".")] {
@@ -1348,6 +1509,16 @@ func sourceDirectivePresent(content []byte, file string) bool {
 		}
 	}
 	return false
+}
+
+// isSecretRouted reports whether content references the secret store — it carries
+// at least one {{ferry.secret ...}} placeholder that apply substitutes with a real
+// value. A secret-routed target's deployed bytes hold plaintext secrets, so its
+// last-deployed baseline records ONLY the content hash, never the bytes (gated via
+// dotfile.Result.SecretRouted in CommitLastApplied). It is judged on the PRE-render
+// content — the source referenced the store regardless of the substituted value.
+func isSecretRouted(content []byte) bool {
+	return len(secret.DetectPlaceholders(string(content))) > 0
 }
 
 // renderSecrets runs the placeholder renderer; a missing referenced secret means
