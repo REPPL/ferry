@@ -135,6 +135,11 @@ jobs:
   gitleaks:
     timeout-minutes: 10
     runs-on: ubuntu-latest
+    # gitleaks-action reads the PR's commit list via the pulls API; the repo-wide
+    # `contents: read` default is not enough for that call.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -151,9 +156,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      security-events: write
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
+        with:
+          # ferry is a private repo without GitHub Advanced Security, so uploading
+          # zizmor's SARIF to Code Scanning is unavailable and fails the job. Run the
+          # audit and gate on its findings only; do not upload to Code Scanning.
+          advanced-security: false
