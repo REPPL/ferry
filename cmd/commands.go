@@ -30,8 +30,10 @@ var applyCmd = &cobra.Command{
 
 apply deploys in-scope dotfiles and terminal settings, layering the per-machine
 .local overlay last. It is idempotent and safe to re-run after every git pull.
-By default it reconciles files only and runs unattended; dependency installs are
-a separate, gated step run with --deps.`,
+A run with changes walks a guided, domain-grouped review that applies safe
+changes automatically and prompts on risky ones; non-interactively, risky
+changes fail closed. Dependency installs are a separate, gated step run with
+--deps.`,
 	RunE: runApply,
 }
 

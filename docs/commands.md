@@ -13,7 +13,7 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 | `apply` | Reconcile this machine to the repo (deploy dotfiles, terminal settings). On a run that has changes it walks the pending work **grouped by domain** (dotfiles / agents / terminals), staying **quiet when safe** and **stopping when risky**: a safe change (creating a file where none exists, or updating a target whose live content still matches what ferry last deployed) applies automatically, while a *risky* change — overwriting a file that differs from the last-deployed baseline, adopting a pre-existing file, or deploying a value from the secret store — halts for confirmation. In the walkthrough you confirm a domain wholesale, drill into it to see each change's full diff, apply or skip a change this run, or skip it *always* (remembered per machine in the gitignored `.local` layer). A clean, in-sync apply prints one line. Non-interactively — or with `--skip-wizard` — nothing risky is applied unattended: risky changes **fail closed** (listed, refused, non-zero exit) while the safe subset still applies. Idempotent; safe to re-run. Dependencies install behind `apply --deps`. |
 | `apply --skip-wizard` | Skip the guided walkthrough (for experts and scripts): safe changes still auto-apply, but risky changes are refused rather than prompted — they never happen unattended. |
 | `apply --force` | Treat every risky change as confirmed (an explicit override) and overwrite uncaptured local edits on a conflict; the downstream data-loss guards still apply and warn. |
-| `capture` | Pull local changes back into the repo. Interactive: approve each change, route it *shared* (synced everywhere) or *local* (this machine only). For sources that reference stored secrets, capture compares against the rendered content and splices your edits back around the placeholders, so stored values never re-enter the repo and a store-routed secret never blocks its own round-trip. |
+| `capture` | Pull local changes back into the repo. Interactive: approve each change, route it *shared* (synced everywhere) or *local* (this machine only). For sources that reference stored secrets, capture compares against the rendered content and splices your edits back around the placeholders, so stored values never re-enter the repo and a store-routed secret never blocks its own round-trip. It also captures edits to deployed agent files (routing to their shared source or a `local/agents/` overlay, refusing a true divergence with a diff) and offers to adopt new agent-shaped files it finds; see [Agents](agents.md). |
 | `sync` | Publish captured changes and pull remote ones for a managed repo, in one command. Integrates the remote first, never force-pushes, gates the whole push range for secrets, and leaves your machine unchanged on a conflict. Route-1 repos need `--allow-unmanaged`. Run `ferry apply` after to deploy pulled changes. |
 | `status` | Report config drift (what changed on this machine). |
 | `doctor` | Report machine/tool health. |
@@ -27,6 +27,8 @@ Every command is run as `ferry <command>` (e.g. `ferry init`).
 
 The agents *domain* itself (which instruction files deploy where, for which coding
 CLIs) is enabled with `agents = true` in the manifest and rides the normal
-lifecycle: `apply` deploys, `status`/`diff` report drift, `capture` treats the repo
-as authoritative, and `restore agents` reverts the domain even when the config
-repo is gone. See [Agents](agents.md).
+lifecycle: `apply` deploys, `status`/`diff` report drift, `capture` flows live
+edits to deployed agent files back to the repo (routing each to its shared
+source or a per-machine `local/agents/` overlay) and refuses only a true
+divergence, and `restore agents` reverts the domain even when the config repo
+is gone. See [Agents](agents.md).

@@ -11,6 +11,22 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-06
+
+### Breaking
+
+- **Non-interactive `apply` now fails closed on a risky change.** A run with no
+  way to confirm (exhausted stdin, or `--skip-wizard`) exits non-zero when a
+  *risky* change is pending — overwriting a locally-modified file, adopting a
+  pre-existing file ferry never wrote, or deploying a secret — instead of
+  applying it silently. Unattended automation that should proceed anyway must
+  pass `--force`. The safe subset of the run still applies, and a fresh-machine
+  first `apply` (only file creations) is unaffected. See *Changed* below.
+- **The last-applied state file is now schema version 2.** A downgraded ferry
+  refuses a version-2 file rather than corrupting it, so rolling back after an
+  upgrade means restoring the write-once `dotfile-last-applied.json.pre-v1.bak`
+  sibling. Upgrading migrates the older file forward losslessly. See *Changed*.
+
 ### Added
 
 - **Config-file terminal emulators.** ferry now carries the settings of
