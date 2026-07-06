@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-07-06
+
 ### Security
 
 - **The capture secret-gate now blocks several credential shapes that previously
@@ -51,8 +53,8 @@ called out in a **Breaking** section. See
   `ferry apply --deps` now refuses a `Brewfile` directive outside a strict
   allow-list (`brew`, `cask`, `mas`, `tap`, `vscode`, `whalebrew` with plain
   name-shaped arguments), rejecting a URL or custom-tap argument, a local-path
-  formula, a Ruby string-interpolation expression (`#{...}`) that Homebrew would
-  evaluate, and an `args:`/postflight block that could run install-time code. The
+  formula, a Ruby string-interpolation marker (`#{`, `#@`, or `#$`) that Homebrew
+  would evaluate, and an `args:`/postflight block that could run install-time code. The
   gate is fail-closed: a hand-edited Brewfile that uses an inline comment or a
   single-quoted directive is rejected, but ferry's own `brew bundle dump` output
   is unaffected — the allow-list is a superset of what `brew bundle dump` emits,
