@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-07
+
 ### Security
 
 - **The backup write boundary now closes the leaf-swap TOCTOU.** `apply` and
