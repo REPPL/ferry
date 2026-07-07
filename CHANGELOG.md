@@ -11,6 +11,14 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- A "Built with Claude Code" attribution badge in the README, and an
+  **Attribution** policy in `AGENTS.md`: the badge is the one sanctioned place
+  to name the AI assistant, user-facing prose stays host-agnostic, and commits
+  carry no AI trailers.
+- README badges for the CI workflow status and the Go toolchain version.
+
 ### Changed
 
 - The default built-in harness registry ships a trimmed set of coding CLIs;
