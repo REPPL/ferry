@@ -1,0 +1,40 @@
+name: auto-merge
+
+# Arm GitHub auto-merge for docs:/chore: pull requests so they land hands-free
+# once the required checks pass. feat/fix/ci/refactor/test PRs are left
+# untouched and wait for a manual merge. The required status checks still gate
+# every merge; this workflow only presses "enable auto-merge" on the qualifying
+# PRs — it never merges anything that has not gone green.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  arm-auto-merge:
+    # Only docs:/chore: titles, and never for drafts. startsWith runs in the
+    # Actions expression context, so the title is compared here, never
+    # interpolated into a shell — no script-injection surface.
+    if: >-
+      github.event.pull_request.draft == false &&
+      (startsWith(github.event.pull_request.title, 'docs:') ||
+       startsWith(github.event.pull_request.title, 'chore:'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # enablePullRequestAutoMerge needs merge capability
+      pull-requests: write   # ...on the pull request
+    steps:
+      - name: Enable auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          ALREADY_ARMED: ${{ github.event.pull_request.auto_merge != null }}
+        run: |
+          if [ "$ALREADY_ARMED" = "true" ]; then
+            echo "Auto-merge already enabled; nothing to do."
+            exit 0
+          fi
+          gh pr merge "$PR_URL" --auto --squash
