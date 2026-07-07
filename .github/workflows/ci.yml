@@ -183,13 +183,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write   # upload zizmor's SARIF to Code Scanning
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
       - uses: zizmorcore/zizmor-action@192e21d79ab29983730a13d1382995c2307fbcaa # v0.5.7
         with:
-          # ferry is a private repo without GitHub Advanced Security, so uploading
-          # zizmor's SARIF to Code Scanning is unavailable and fails the job. Run the
-          # audit and gate on its findings only; do not upload to Code Scanning.
-          advanced-security: false
+          # ferry is public, so zizmor uploads its SARIF to Code Scanning, surfacing
+          # findings in the Security tab; the job also still gates on those findings.
+          # The upload needs security-events: write from the job permissions above.
+          advanced-security: true
