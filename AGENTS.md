@@ -53,6 +53,17 @@ on the internal packages, and the full eval suite against a real Linux binary.
 - The docs under `docs/` stay in sync with any behaviour change.
 - A CHANGELOG entry accompanies any user-facing change.
 
+## Attribution
+
+- **Naming a tool is confined to credit.** User-facing prose (`README.md`,
+  `docs/`) stays host-agnostic. The one sanctioned place to name the AI
+  assistant is attribution: the "Built with Claude Code" badge in `README.md`.
+  Private, unpublished tool names never appear in any committed file.
+- **Commits stay clean.** No `Co-Authored-By:` or `Assisted-by:` trailers for
+  AI, no "Generated with" lines, no session links. The human is the author of
+  record, responsible for all AI-assisted output — its correctness, licensing,
+  and fit for the project.
+
 ## Working memory
 
 Load `.work/CONTEXT.md` first — it is the curated, load-first summary of ferry's
