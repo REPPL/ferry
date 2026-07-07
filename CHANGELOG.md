@@ -11,6 +11,12 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Changed
+
+- The default built-in harness registry ships a trimmed set of coding CLIs;
+  any additional harness is declared via `[agents.harness.<name>]` — data, not
+  a code change.
+
 ## [0.6.0] - 2026-07-07
 
 ### Security
@@ -440,7 +446,7 @@ called out in a **Breaking** section. See
   regular-file copies reconciled by hash. Nothing under `$HOME` is
   symlinked. The domain is off by default; enable it with `agents = true`
   under `[manage]`. Built-in harnesses ship as data (`claude`, `codex`,
-  `opencode`, `companion`, `gemini`), and an optional `devtree` deploys the
+  `opencode`, `gemini`), and an optional `devtree` deploys the
   coding rules to a workspace-root `CLAUDE.md`.
 - **Agents lifecycle integration.** With the domain enabled, `apply`
   deploys, `status` and `diff` report per-target drift, `capture` skips

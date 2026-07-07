@@ -271,8 +271,8 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		return err
 	}
 
-	// Bridges: Claude Code + companion both read CLAUDE.md; Gemini reads
-	// GEMINI.md. (Codex CLI and OpenCode read AGENTS.md natively.) These are
+	// Bridges: Claude Code reads CLAUDE.md; Gemini reads GEMINI.md. (Codex
+	// CLI and OpenCode read AGENTS.md natively.) These are
 	// RELATIVE symlinks INSIDE the user's project repo — tracked project
 	// content, not a $HOME deploy. NOTHING pre-existing is ever replaced: a
 	// real file is skipped, and a symlink pointing anywhere OTHER than

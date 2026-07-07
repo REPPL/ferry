@@ -43,7 +43,6 @@ func Builtins() []Harness {
 		{Name: "claude", Target: ".claude/CLAUDE.md", Source: SourceGeneral},
 		{Name: "codex", Target: ".codex/AGENTS.md", Source: SourceCombined},
 		{Name: "opencode", Target: ".config/opencode/AGENTS.md", Source: SourceCombined},
-		{Name: "companion", Target: ".companion/COMPANION.md", Source: SourceCombined},
 		{Name: "gemini", Target: ".gemini/GEMINI.md", Source: SourceCombined},
 	}
 }

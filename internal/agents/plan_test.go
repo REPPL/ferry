@@ -73,7 +73,6 @@ func TestPlanExpandsHarnessesDevtreeAndAssets(t *testing.T) {
 		{"agents/claude", ".claude/CLAUDE.md", "GENERAL\n", false},
 		{"agents/codex", ".codex/AGENTS.md", combined, false},
 		{"agents/opencode", ".config/opencode/AGENTS.md", combined, false},
-		{"agents/companion", ".companion/COMPANION.md", combined, false},
 		{"agents/gemini", ".gemini/GEMINI.md", combined, false},
 		{"agents/devtree", "Workspace/CLAUDE.md", "CODING\n", false},
 		{"agents/skills/demo/SKILL.md", ".claude/skills/demo/SKILL.md", "skill\n", false},

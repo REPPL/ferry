@@ -258,10 +258,10 @@ func TestFindBridges(t *testing.T) {
 		t.Fatal(err)
 	}
 	link(filepath.Join(elsewhere, "other.md"), filepath.Join(home, ".gemini", "GEMINI.md"))
-	if err := os.MkdirAll(filepath.Join(home, ".companion"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, ".companion", "COMPANION.md"), []byte("real"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, ".config", "opencode", "AGENTS.md"), []byte("real"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -299,7 +299,7 @@ func TestFindBridges(t *testing.T) {
 	if got[filepath.Join(home, ".gemini", "GEMINI.md")] {
 		t.Error("a symlink pointing OUTSIDE the adopted dir was reported as a bridge")
 	}
-	if got[filepath.Join(home, ".companion", "COMPANION.md")] {
+	if got[filepath.Join(home, ".config", "opencode", "AGENTS.md")] {
 		t.Error("a REAL file was reported as a bridge")
 	}
 }

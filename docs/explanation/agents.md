@@ -1,8 +1,8 @@
 # The agents domain
 
 The agents domain carries a single source of truth of agent instructions —
-rules for coding CLIs such as Claude Code, Codex CLI, OpenCode, companion, and
-Gemini CLI — across machines and users. Two Markdown files in the config repo
+rules for coding CLIs such as Claude Code, Codex CLI, OpenCode, and Gemini
+CLI — across machines and users. Two Markdown files in the config repo
 hold every rule; ferry deploys them (and any skills, sub-agents, and hooks) to
 the path each tool natively reads, as **regular-file copies** reconciled by
 hash. Nothing under `$HOME` is ever symlinked.
@@ -48,7 +48,7 @@ field overrides just that field of the shared entry.
 ```toml
 [agents]
 devtree   = "Workspace"     # optional workspace directory, relative to $HOME
-harnesses = ["claude", "codex", "opencode", "companion", "gemini"]
+harnesses = ["claude", "codex", "opencode", "gemini"]
 assets    = ["skills", "agents", "hooks"]
 
 [agents.harness.myharness]  # a user-defined harness: data, not code
@@ -79,7 +79,6 @@ The registry ships as data; adding a harness never requires a code change.
 | `claude` | `~/.claude/CLAUDE.md` | `general` |
 | `codex` | `~/.codex/AGENTS.md` | `combined` |
 | `opencode` | `~/.config/opencode/AGENTS.md` | `combined` |
-| `companion` | `~/.companion/COMPANION.md` | `combined` |
 | `gemini` | `~/.gemini/GEMINI.md` | `combined` |
 
 Claude Code receives the split pair (`general` at user level, `coding` at the

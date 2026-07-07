@@ -183,7 +183,7 @@ func TestApplyItemAdoptsIdenticalPreexistingFile(t *testing.T) {
 	home := t.TempDir()
 	store := openStore(t)
 	b := &fakeBackuper{}
-	it := testItem(t, home, ".companion/COMPANION.md", "agents/companion", []byte("same\n"), false)
+	it := testItem(t, home, ".gemini/GEMINI.md", "agents/gemini", []byte("same\n"), false)
 
 	if err := os.MkdirAll(filepath.Dir(it.Target.Home), 0o755); err != nil {
 		t.Fatal(err)
