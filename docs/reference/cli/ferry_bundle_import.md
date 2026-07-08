@@ -1,4 +1,4 @@
-## ferry import
+## ferry bundle import
 
 Ingest a ferry bundle into a fresh config repo
 
@@ -14,7 +14,7 @@ Pass --expect-sha256 <hash> to verify the bundle against the SHA256 export
 printed. Run "ferry apply" afterwards to reconcile this machine.
 
 ```
-ferry import <bundle> [flags]
+ferry bundle import <bundle> [flags]
 ```
 
 ### Options
@@ -28,5 +28,5 @@ ferry import <bundle> [flags]
 
 ### SEE ALSO
 
-* [ferry](ferry.md)	 - Carries your terminal, dotfiles, and dependencies across machines
+* [ferry bundle](ferry_bundle.md)	 - Move the config repo offline as a portable bundle
 

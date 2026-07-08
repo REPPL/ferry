@@ -188,27 +188,27 @@ or run `ferry capture` to save the current file into the repo before applying.
 
 When you can't clone the repo on the destination: a second user account on the same Mac,
 or a machine with no network path to your repo: move a self-contained bundle instead.
-`ferry export` writes a secret-scanned `.zip` of the repo's tracked shared files;
-`ferry import` ingests it into a fresh config repo on the other side.
+`ferry bundle export` writes a secret-scanned `.zip` of the repo's tracked shared files;
+`ferry bundle import` ingests it into a fresh config repo on the other side.
 
 ```bash
 # On the source machine/account:
-ferry export --out /Users/Shared/ferry-bundle.zip   # prints the bundle path + SHA256
+ferry bundle export --out /Users/Shared/ferry-bundle.zip   # prints the bundle path + SHA256
 
 # On the destination machine/account, after moving the zip there:
-ferry import --expect-sha256 <sha256> /Users/Shared/ferry-bundle.zip
+ferry bundle import --expect-sha256 <sha256> /Users/Shared/ferry-bundle.zip
 ferry apply                                          # reconcile the destination
 ```
 
 **Same-Mac, two accounts:** account B usually cannot read account A's home directory, so
 write the bundle somewhere both accounts can reach: `--out /Users/Shared/ferry-bundle.zip`,
-or move it via a USB drive or AirDrop. Convey the SHA256 that `export` printed
+or move it via a USB drive or AirDrop. Convey the SHA256 that `bundle export` printed
 separately (a message, not the same channel as the file) and pass it to
-`import --expect-sha256` so a tampered or corrupt bundle is refused. `import` writes into
-`~/.config/ferry/repo` by default and refuses a non-empty target.
+`bundle import --expect-sha256` so a tampered or corrupt bundle is refused. `bundle import`
+writes into `~/.config/ferry/repo` by default and refuses a non-empty target.
 
 The bundle never contains secrets, anything under `~/.ssh/`, or the per-machine local
-layer (unless you pass `--include-local` on **both** export and import). SSH keys stay a
+layer (unless you pass `--include-local` on **both** `bundle export` and `bundle import`). SSH keys stay a
 manual copy you make yourself: see [Move SSH keys yourself](../how-to/move-ssh-keys.md).
 
 ---

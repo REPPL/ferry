@@ -252,5 +252,4 @@ func init() {
 	importCmd.Flags().String("out", "", "target repo directory (default ~/.config/ferry/repo; must be empty/absent)")
 	importCmd.Flags().String("expect-sha256", "", "verify the bundle's overall SHA256 before importing (out-of-band tamper check)")
 	importCmd.Flags().Bool("include-local", false, "also import the bundle's local layer (only if it was exported --include-local)")
-	rootCmd.AddCommand(importCmd)
 }

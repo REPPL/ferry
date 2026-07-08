@@ -11,6 +11,13 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Breaking
+
+- **`ferry export` and `ferry import` are now `ferry bundle export` and
+  `ferry bundle import`.** The two verbs move under a new `bundle` parent noun.
+  Their flags and behaviour are unchanged — only the command path moves. There
+  is no alias: the old top-level spellings now error.
+
 ### Fixed
 
 - **Release automation self-heals a missing GitHub Release.** When a version's

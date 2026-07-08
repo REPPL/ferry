@@ -240,7 +240,7 @@ func containsString(ss []string, v string) bool {
 func exportOK(t *testing.T, s *Sandbox, extraArgs ...string) string {
 	t.Helper()
 	out := bundleOutPath(t)
-	args := append([]string{"export", "--out", out}, extraArgs...)
+	args := append([]string{"bundle", "export", "--out", out}, extraArgs...)
 	stdout, stderr, code := s.Ferry(args...)
 	if code != 0 {
 		t.Fatalf("ferry export exited %d; stdout:\n%s\nstderr:\n%s", code, stdout, stderr)
@@ -320,19 +320,28 @@ func TestBundleCommandsExist_AC_export_import_exists(t *testing.T) {
 		t.Run(verb, func(t *testing.T) {
 			t.Parallel()
 			s := NewSandbox(t) // fresh sandbox so requireBin's skip targets THIS subtest
-			if _, _, code := s.Ferry(verb, "--help"); code != 0 {
-				t.Errorf("AC-%s-exists: `ferry %s --help` exited %d (must resolve, exit 0)", verb, verb, code)
+			if _, _, code := s.Ferry("bundle", verb, "--help"); code != 0 {
+				t.Errorf("AC-%s-exists: `ferry bundle %s --help` exited %d (must resolve, exit 0)", verb, verb, code)
 			}
 		})
 	}
-	t.Run("in-top-level-help", func(t *testing.T) {
+	t.Run("bundle-in-top-level-help", func(t *testing.T) {
 		t.Parallel()
 		s := NewSandbox(t)
 		out, errOut, _ := s.Ferry("--help")
 		combined := out + errOut
+		if !containsAnyFold(combined, "bundle") {
+			t.Errorf("AC-bundle-exists: `bundle` not listed in `ferry --help`\n%s", combined)
+		}
+	})
+	t.Run("verbs-under-bundle-help", func(t *testing.T) {
+		t.Parallel()
+		s := NewSandbox(t)
+		out, errOut, _ := s.Ferry("bundle", "--help")
+		combined := out + errOut
 		for _, verb := range []string{"export", "import"} {
 			if !containsAnyFold(combined, verb) {
-				t.Errorf("AC-%s-exists: `%s` not listed in `ferry --help`\n%s", verb, verb, combined)
+				t.Errorf("AC-%s-exists: `%s` not listed in `ferry bundle --help`\n%s", verb, verb, combined)
 			}
 		}
 	})
@@ -462,7 +471,7 @@ func TestExportSecretWithheld_AC_export_secret_withheld(t *testing.T) {
 	})
 
 	out := bundleOutPath(t)
-	stdout, stderr, code := s.Ferry("export", "--out", out)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 	if code != 0 {
 		t.Fatalf("AC-export-secret-withheld: export must SKIP the secret file (exit 0), got exit %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -504,7 +513,7 @@ func TestExportPathnameSecret_AC_export_pathname_secret(t *testing.T) {
 	})
 
 	out := bundleOutPath(t)
-	stdout, stderr, code := s.Ferry("export", "--out", out)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 	if code != 0 {
 		t.Fatalf("AC-export-pathname-secret: export must SKIP the secret-named file (exit 0), got %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -562,7 +571,7 @@ func TestExportRequiredAbort_AC_export_required_abort(t *testing.T) {
 		gitCommitAll(t, s.Repo, "no ferry.toml")
 
 		out := bundleOutPath(t)
-		stdout, stderr, code := s.Ferry("export", "--out", out)
+		stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 		if code == 0 {
 			t.Errorf("AC-export-required-abort[missing]: export exited 0 despite a missing required ferry.toml (must abort)")
 		}
@@ -588,7 +597,7 @@ func TestExportRequiredAbort_AC_export_required_abort(t *testing.T) {
 		gitCommitAll(t, s.Repo, "ferry.toml with a secret")
 
 		out := bundleOutPath(t)
-		stdout, stderr, code := s.Ferry("export", "--out", out)
+		stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 		if code == 0 {
 			t.Errorf("AC-export-required-abort[withheld]: export exited 0 though the required ferry.toml would be withheld (must abort, not skip)")
 		}
@@ -623,7 +632,7 @@ func TestExportNoSSH_AC_export_no_ssh(t *testing.T) {
 	gitCommitAll(t, s.Repo, "add ssh-pointing symlink")
 
 	out := bundleOutPath(t)
-	s.Ferry("export", "--out", out) // may exit 0 (skip) or non-zero (refuse) — observable is below
+	s.Ferry("bundle", "export", "--out", out) // may exit 0 (skip) or non-zero (refuse) — observable is below
 
 	// SSH tripwire intact: nothing under ~/.ssh was read-and-copied or modified.
 	// (AssertSSHUntouched proves no MODIFICATION/creation/deletion; the "never reads"
@@ -676,7 +685,7 @@ func TestExportNoSSH_AC_export_no_ssh(t *testing.T) {
 		sshDir := s.HomePath(".ssh")
 		if fsUsageUsable(t, s) {
 			traceOut := filepath.Join(t.TempDir(), "trace-bundle.zip")
-			if opens := traceSSHOpens(t, s, sshDir, "export", "--out", traceOut); len(opens) > 0 {
+			if opens := traceSSHOpens(t, s, sshDir, "bundle", "export", "--out", traceOut); len(opens) > 0 {
 				t.Errorf("AC-export-no-ssh: `export` opened path(s) under ~/.ssh/ (export must not read SSH material):\n%s", strings.Join(opens, "\n"))
 			}
 		} else {
@@ -704,7 +713,7 @@ func TestExportNoSymlink_AC_export_no_symlink(t *testing.T) {
 	gitCommitPaths(t, s.Repo, "add ordinary symlink", "alias-link")
 
 	out := bundleOutPath(t)
-	s.Ferry("export", "--out", out) // may skip+report or abort; the observable is below
+	s.Ferry("bundle", "export", "--out", out) // may skip+report or abort; the observable is below
 	if _, err := os.Stat(out); err != nil {
 		return // export aborted rather than producing a bundle: acceptable (symlink refused)
 	}
@@ -730,7 +739,7 @@ func TestExportOutOutsideRepo_AC_export_out_outside_repo(t *testing.T) {
 	seedExportRepo(t, s, map[string]string{"shared.txt": "ok\n"})
 
 	inside := s.RepoPath("sub", "bundle.zip")
-	stdout, stderr, code := s.Ferry("export", "--out", inside)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", inside)
 	if code == 0 {
 		t.Errorf("AC-export-out-outside-repo: export accepted an --out UNDER the repo root (must refuse)")
 	}
@@ -791,7 +800,7 @@ func TestExportPrintsSHA_AC_export_prints_sha(t *testing.T) {
 	seedExportRepo(t, s, map[string]string{"shared.txt": "ok\n"})
 
 	out := bundleOutPath(t)
-	stdout, stderr, code := s.Ferry("export", "--out", out)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 	if code != 0 {
 		t.Fatalf("export exited %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -825,7 +834,7 @@ func TestImportRoundtrip_AC_import_roundtrip(t *testing.T) {
 
 	b := NewSandbox(t)
 	target := importTargetAbsent(t)
-	if _, errOut, code := b.Ferry("import", "--out", target, out); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "import", "--out", target, out); code != 0 {
 		t.Fatalf("AC-import-roundtrip: import exited %d\n%s", code, errOut)
 	}
 	for rel, body := range files {
@@ -861,7 +870,7 @@ func TestImportWritesConfig_AC_import_writes_config(t *testing.T) {
 	out := exportOK(t, a)
 
 	b := NewSandbox(t)
-	if _, errOut, code := b.Ferry("import", out); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "import", out); code != 0 {
 		t.Fatalf("AC-import-writes-config: import exited %d\n%s", code, errOut)
 	}
 	cfg, err := os.ReadFile(b.ConfigTOMLPath())
@@ -890,7 +899,7 @@ func TestImportThenApply_AC_import_then_apply(t *testing.T) {
 	out := exportOK(t, a)
 
 	b := NewSandbox(t)
-	if _, errOut, code := b.Ferry("import", out); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "import", out); code != 0 {
 		t.Fatalf("AC-import-then-apply: import exited %d\n%s", code, errOut)
 	}
 	if _, errOut, code := b.Ferry("apply"); code != 0 {
@@ -924,7 +933,7 @@ func TestImportIntegrity_AC_import_integrity(t *testing.T) {
 	writeCraftedZip(t, path, manifestBytes(t, m), []zipMember{{name: "shared.txt", data: body}})
 
 	target := importTargetAbsent(t)
-	_, errOut, code := s.Ferry("import", "--out", target, path)
+	_, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 	if code == 0 {
 		t.Errorf("AC-import-integrity: import accepted a bundle with a per-entry sha256 mismatch (must reject)")
 	}
@@ -948,7 +957,7 @@ func TestImportExpectSHA_AC_import_expect_sha(t *testing.T) {
 	b := NewSandbox(t)
 	target := importTargetAbsent(t)
 	wrong := strings.Repeat("0", 64)
-	_, errOut, code := b.Ferry("import", "--expect-sha256", wrong, "--out", target, out)
+	_, errOut, code := b.Ferry("bundle", "import", "--expect-sha256", wrong, "--out", target, out)
 	if code == 0 {
 		t.Errorf("AC-import-expect-sha: import accepted a wrong --expect-sha256 (must abort)")
 	}
@@ -963,7 +972,7 @@ func TestImportExpectSHA_AC_import_expect_sha(t *testing.T) {
 	correct := sha256Hex(zipBytes)
 	c := NewSandbox(t)
 	target2 := importTargetAbsent(t)
-	if _, errOut2, code2 := c.Ferry("import", "--expect-sha256", correct, "--out", target2, out); code2 != 0 {
+	if _, errOut2, code2 := c.Ferry("bundle", "import", "--expect-sha256", correct, "--out", target2, out); code2 != 0 {
 		t.Errorf("AC-import-expect-sha: import with the CORRECT --expect-sha256 was rejected (exit %d)\n%s", code2, errOut2)
 	}
 }
@@ -992,7 +1001,7 @@ func TestImportZipSlip_AC_import_zipslip(t *testing.T) {
 		}
 		writeCraftedZip(t, path, manifestBytes(t, m), []zipMember{{name: "../escape.txt", data: body}})
 
-		_, _, code := s.Ferry("import", "--out", target, path)
+		_, _, code := s.Ferry("bundle", "import", "--out", target, path)
 		if code == 0 {
 			t.Errorf("AC-import-zipslip[dotdot]: import accepted a `../escape.txt` traversal entry (must refuse)")
 		}
@@ -1017,7 +1026,7 @@ func TestImportZipSlip_AC_import_zipslip(t *testing.T) {
 		writeCraftedZip(t, path, manifestBytes(t, m), []zipMember{{name: abs, data: body}})
 
 		target := importTargetAbsent(t)
-		_, _, code := s.Ferry("import", "--out", target, path)
+		_, _, code := s.Ferry("bundle", "import", "--out", target, path)
 		if code == 0 {
 			t.Errorf("AC-import-zipslip[absolute]: import accepted an absolute-path entry %q (must refuse)", abs)
 		}
@@ -1046,7 +1055,7 @@ func TestImportRejectGit_AC_import_reject_git(t *testing.T) {
 	})
 
 	target := importTargetAbsent(t)
-	_, _, code := s.Ferry("import", "--out", target, path)
+	_, _, code := s.Ferry("bundle", "import", "--out", target, path)
 	if code == 0 {
 		t.Errorf("AC-import-reject-git: import accepted a bundle carrying a .git/** entry (must refuse)")
 	}
@@ -1090,7 +1099,7 @@ func TestImportRejectSymlink_AC_import_reject_symlink(t *testing.T) {
 			})
 
 			target := importTargetAbsent(t)
-			_, _, code := s.Ferry("import", "--out", target, path)
+			_, _, code := s.Ferry("bundle", "import", "--out", target, path)
 			if code == 0 {
 				t.Errorf("AC-import-reject-symlink[%s]: import accepted a non-regular (%s-mode) entry (must refuse)", tc.name, tc.name)
 			}
@@ -1119,7 +1128,7 @@ func TestImportNewerVersion_AC_import_newer_version_refused(t *testing.T) {
 	writeCraftedZip(t, path, manifestBytes(t, m), []zipMember{{name: "shared.txt", data: body}})
 
 	target := importTargetAbsent(t)
-	stdout, errOut, code := s.Ferry("import", "--out", target, path)
+	stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 	if code == 0 {
 		t.Errorf("AC-import-newer-version-refused: import accepted a newer-than-supported format version (must refuse)")
 	}
@@ -1160,7 +1169,7 @@ func TestImportResourceCaps_AC_import_resource_caps(t *testing.T) {
 		writeCraftedZip(t, path, manifestBytes(t, m), members)
 
 		target := importTargetAbsent(t)
-		stdout, errOut, code := s.Ferry("import", "--out", target, path)
+		stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 		if code == 0 {
 			t.Errorf("AC-import-resource-caps[entry-count]: import accepted a %d-entry bundle (must refuse on the entry-count cap)", n)
 		}
@@ -1195,7 +1204,7 @@ func TestImportResourceCaps_AC_import_resource_caps(t *testing.T) {
 		}
 
 		target := importTargetAbsent(t)
-		stdout, errOut, code := s.Ferry("import", "--out", target, path)
+		stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 		if code == 0 {
 			t.Errorf("AC-import-resource-caps[per-file-size]: import accepted a bundle whose central directory declares a %d-byte member (must refuse on the per-file size cap)", big)
 		}
@@ -1231,7 +1240,7 @@ func TestImportResourceCaps_AC_import_resource_caps(t *testing.T) {
 		writeCraftedZip(t, path, manifestBytes(t, m), members)
 
 		target := importTargetAbsent(t)
-		stdout, errOut, code := s.Ferry("import", "--out", target, path)
+		stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 		if code == 0 {
 			t.Errorf("AC-import-resource-caps[total-size]: import accepted a bundle whose central directory sums to %d bytes (must refuse on the total-size cap)", int64(per)*count)
 		}
@@ -1288,7 +1297,7 @@ func TestImportDupEntries_AC_import_dup_entries(t *testing.T) {
 			})
 
 			target := importTargetAbsent(t)
-			stdout, errOut, code := s.Ferry("import", "--out", target, path)
+			stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 			if code == 0 {
 				t.Errorf("AC-import-dup-entries[%s]: import accepted duplicate/colliding entries %q + %q (must refuse)", tc.name, tc.a, tc.b)
 			}
@@ -1320,7 +1329,7 @@ func TestImportNoClobber_AC_import_no_clobber(t *testing.T) {
 	}
 	snap := b.SnapshotFile(t, sentinel)
 
-	stdout, errOut, code := b.Ferry("import", "--out", target, out)
+	stdout, errOut, code := b.Ferry("bundle", "import", "--out", target, out)
 	if code == 0 {
 		t.Errorf("AC-import-no-clobber: import into a non-empty target exited 0 (must refuse)")
 	}
@@ -1363,7 +1372,7 @@ func TestImportLocalGated_AC_import_local_gated(t *testing.T) {
 	// absent, and no ferry.local.toml carrying the BUNDLE's marker body (a template is ok).
 	b1 := NewSandbox(t)
 	tgt1 := importTargetAbsent(t)
-	if _, errOut, code := b1.Ferry("import", "--out", tgt1, withLocal); code != 0 {
+	if _, errOut, code := b1.Ferry("bundle", "import", "--out", tgt1, withLocal); code != 0 {
 		t.Fatalf("import(a) exited %d\n%s", code, errOut)
 	}
 	assertTargetLacks(t, tgt1, localRel)
@@ -1374,7 +1383,7 @@ func TestImportLocalGated_AC_import_local_gated(t *testing.T) {
 	// (b) include-local bundle, imported WITH the flag → local content present.
 	b2 := NewSandbox(t)
 	tgt2 := importTargetAbsent(t)
-	if _, errOut, code := b2.Ferry("import", "--include-local", "--out", tgt2, withLocal); code != 0 {
+	if _, errOut, code := b2.Ferry("bundle", "import", "--include-local", "--out", tgt2, withLocal); code != 0 {
 		t.Fatalf("import(b) exited %d\n%s", code, errOut)
 	}
 	if _, err := os.Stat(filepath.Join(tgt2, localRel)); err != nil {
@@ -1394,7 +1403,7 @@ func TestImportLocalGated_AC_import_local_gated(t *testing.T) {
 	// bundle's marker body (a fresh template is still permitted per M4).
 	b3 := NewSandbox(t)
 	tgt3 := importTargetAbsent(t)
-	if _, errOut, code := b3.Ferry("import", "--include-local", "--out", tgt3, withoutLocal); code != 0 {
+	if _, errOut, code := b3.Ferry("bundle", "import", "--include-local", "--out", tgt3, withoutLocal); code != 0 {
 		t.Fatalf("import(c) exited %d\n%s", code, errOut)
 	}
 	assertTargetLacks(t, tgt3, localRel)
@@ -1437,7 +1446,7 @@ func TestExportBinaryKeyWithheld_regression(t *testing.T) {
 	gitCommitAll(t, s.Repo, "add key-bearing binary")
 
 	out := bundleOutPath(t)
-	stdout, stderr, code := s.Ferry("export", "--out", out)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", out)
 	if code != 0 {
 		t.Fatalf("export must SKIP the key-bearing binary (exit 0), got %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -1473,7 +1482,7 @@ func TestImportBinaryKeyRefused_regression(t *testing.T) {
 	writeCraftedZip(t, path, manifestBytes(t, m), []zipMember{{name: "blob.bin", data: fakeBinaryKey}})
 
 	target := importTargetAbsent(t)
-	stdout, errOut, code := s.Ferry("import", "--out", target, path)
+	stdout, errOut, code := s.Ferry("bundle", "import", "--out", target, path)
 	if code == 0 {
 		t.Errorf("regression: import accepted a binary payload carrying key material (must refuse)")
 	}
@@ -1502,7 +1511,7 @@ func TestBinaryRoundtrip_regression(t *testing.T) {
 
 	b := NewSandbox(t)
 	target := importTargetAbsent(t)
-	if _, errOut, code := b.Ferry("import", "--out", target, out); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "import", "--out", target, out); code != 0 {
 		t.Fatalf("regression: import of a clean-binary bundle exited %d\n%s", code, errOut)
 	}
 	got, err := os.ReadFile(filepath.Join(target, "logo.bin"))
@@ -1531,7 +1540,7 @@ func TestRoundtripGitignoreByteIdentical_regression(t *testing.T) {
 	// Import into a fresh B.
 	b := NewSandbox(t)
 	target := importTargetAbsent(t)
-	if _, errOut, code := b.Ferry("import", "--out", target, out1); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "import", "--out", target, out1); code != 0 {
 		t.Fatalf("import exited %d\n%s", code, errOut)
 	}
 	// The imported .gitignore must be BYTE-IDENTICAL to the source's (no mutation).
@@ -1548,7 +1557,7 @@ func TestRoundtripGitignoreByteIdentical_regression(t *testing.T) {
 	// compare the payload members: the shared tree must be byte-identical, so a
 	// re-exported .gitignore matches the original.
 	out2 := filepath.Join(t.TempDir(), "reexport.zip")
-	if _, errOut, code := b.Ferry("export", "--out", out2); code != 0 {
+	if _, errOut, code := b.Ferry("bundle", "export", "--out", out2); code != 0 {
 		t.Fatalf("re-export exited %d\n%s", code, errOut)
 	}
 	m1 := readZipMembers(t, out1)
@@ -1588,7 +1597,7 @@ func TestExportOutUnderSSHRefused_regression(t *testing.T) {
 	seedExportRepo(t, s, map[string]string{"shared.txt": "ok\n"})
 
 	outUnderSSH := s.HomePath(".ssh", "x.zip")
-	stdout, stderr, code := s.Ferry("export", "--out", outUnderSSH)
+	stdout, stderr, code := s.Ferry("bundle", "export", "--out", outUnderSSH)
 	if code == 0 {
 		t.Errorf("regression: export accepted an --out under ~/.ssh (must refuse)")
 	}
@@ -1612,7 +1621,7 @@ func TestImportBundleUnderSSHRefused_regression(t *testing.T) {
 	bundleUnderSSH := s.HomePath(".ssh", "bundle.zip")
 
 	target := importTargetAbsent(t)
-	stdout, stderr, code := s.Ferry("import", "--out", target, bundleUnderSSH)
+	stdout, stderr, code := s.Ferry("bundle", "import", "--out", target, bundleUnderSSH)
 	if code == 0 {
 		t.Errorf("regression: import accepted a bundle path under ~/.ssh (must refuse)")
 	}
