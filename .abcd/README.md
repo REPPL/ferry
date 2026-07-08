@@ -7,8 +7,11 @@ tree written for the reader of the CLI.
 
 - **[`development/`](development/)** — the durable record (committed): plans,
   research, and architecture decisions. The specification the build works from.
+- **[`work/`](work/)** — working memory, committed shared orientation:
+  `CONTEXT.md` (load-first standing facts) and `DECISIONS.md` (one-line decision
+  log).
 
-Working memory (`.work/`, committed shared orientation, and `.work.local/`,
-git-ignored local ephemera) currently sits at the repo root; a phase-2 migration
-folds it under this namespace (`.abcd/work/`, `.abcd/.work.local/`). Until then,
-see [`../AGENTS.md`](../AGENTS.md) for the working-memory split.
+Local, ephemeral working memory — the `NEXT.md` handover, scratch output, and
+logs — lives in the git-ignored `.work.local/` alongside these, hidden via
+`.git/info/exclude` and never committed. See [`../AGENTS.md`](../AGENTS.md) for
+the working-memory split.
