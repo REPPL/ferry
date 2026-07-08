@@ -11,6 +11,19 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-08
+
+### Changed
+
+- **Working memory moves into the `.abcd/` namespace.** ferry's committed
+  working memory moves from `.work/` to `.abcd/work/` (holding `CONTEXT.md`, the
+  load-first standing facts, and `DECISIONS.md`, the one-line decision log), and
+  `ferry agents scaffold` now creates the `.abcd/{work,.work.local}` layout: a
+  scaffolded repo gets a committed `.abcd/work/` and a git-ignored
+  `.abcd/.work.local/` (`NEXT.md`, `scratch/`, `logs/`, hidden via
+  `.git/info/exclude`) instead of the root-level `.work/` and `.work.local/`.
+  This completes the `.abcd/` alignment begun in 0.7.1.
+
 ## [0.7.1] - 2026-07-08
 
 ### Changed

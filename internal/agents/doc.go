@@ -15,9 +15,9 @@
 // reverses every deploy from the same file baseline as any other domain.
 //
 // The package also carries the two repo-onboarding operations: Scaffold (stamp
-// the standard AGENTS.md router, .work/ skeleton, and in-repo bridge symlinks
-// into a project repo — in-repo symlinks are the project's own and are never
-// deployed to $HOME) and the adopt helpers (import an existing symlink-based
+// the standard AGENTS.md router, .abcd/work/ skeleton, and in-repo bridge
+// symlinks into a project repo — in-repo symlinks are the project's own and are
+// never deployed to $HOME) and the adopt helpers (import an existing symlink-based
 // instruction directory into the config repo and retire its $HOME bridge
 // symlinks in favour of ferry-managed copies).
 package agents

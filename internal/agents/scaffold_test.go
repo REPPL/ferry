@@ -75,13 +75,13 @@ func TestScaffoldTrackedMode(t *testing.T) {
 		t.Errorf("AGENTS.md = %q, want %q", agentsMD, want)
 	}
 
-	// Committed memory in .work/, runtime artefacts in .work.local/ — both
-	// modes share the .work.local layout. docs/ carries the user-facing map;
-	// the dated developer records live under .abcd/development/. The tracked put
-	// files come from the shared scaffoldLayout table (the single source of
-	// truth), so this loop tracks the layout automatically.
-	want := layoutDests(false) // tracked dests: .work.local/NEXT.md, .work/DECISIONS.md, .work/CONTEXT.md, AGENTS.md, docs/README.md
-	want = append(want, ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml")
+	// Committed memory in .abcd/work/, runtime artefacts in .abcd/.work.local/
+	// — both modes share the .abcd/.work.local layout. docs/ carries the
+	// user-facing map; the dated developer records live under .abcd/development/.
+	// The tracked put files come from the shared scaffoldLayout table (the single
+	// source of truth), so this loop tracks the layout automatically.
+	want := layoutDests(false) // tracked dests: .abcd/.work.local/NEXT.md, .abcd/work/DECISIONS.md, .abcd/work/CONTEXT.md, AGENTS.md, docs/README.md
+	want = append(want, ".abcd/.work.local/scratch", ".abcd/.work.local/logs", ".pre-commit-config.yaml")
 	for _, d := range scaffoldDevDocsDirs {
 		want = append(want, ".abcd/development/"+d)
 	}
@@ -97,20 +97,20 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	if want := "# docs — map for " + name + "\n"; string(docsMap) != want {
 		t.Errorf("docs/README.md = %q, want %q (substituted)", docsMap, want)
 	}
-	// .work/ holds ONLY the committed standing-facts memory (DECISIONS.md,
-	// CONTEXT.md): no scratch/logs, and NEXT.md now lives in .work.local/.
-	for _, rel := range []string{".work/scratch", ".work/logs", ".work/NEXT.md"} {
+	// .abcd/work/ holds ONLY the committed standing-facts memory (DECISIONS.md,
+	// CONTEXT.md): no scratch/logs, and NEXT.md now lives in .abcd/.work.local/.
+	for _, rel := range []string{".abcd/work/scratch", ".abcd/work/logs", ".abcd/work/NEXT.md"} {
 		if _, err := os.Lstat(filepath.Join(repo, rel)); err == nil {
-			t.Errorf("%s exists; runtime artefacts belong in .work.local/", rel)
+			t.Errorf("%s exists; runtime artefacts belong in .abcd/.work.local/", rel)
 		}
 	}
 	// The volatile handoff note and the committed CONTEXT.md landed in their
 	// new homes (layoutDests above already asserts them; this pins the split).
-	if _, err := os.Stat(filepath.Join(repo, ".work.local", "NEXT.md")); err != nil {
-		t.Errorf(".work.local/NEXT.md missing: %v", err)
+	if _, err := os.Stat(filepath.Join(repo, ".abcd", ".work.local", "NEXT.md")); err != nil {
+		t.Errorf(".abcd/.work.local/NEXT.md missing: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(repo, ".work", "CONTEXT.md")); err != nil {
-		t.Errorf(".work/CONTEXT.md missing: %v", err)
+	if _, err := os.Stat(filepath.Join(repo, ".abcd", "work", "CONTEXT.md")); err != nil {
+		t.Errorf(".abcd/work/CONTEXT.md missing: %v", err)
 	}
 
 	for _, link := range []string{"CLAUDE.md", "GEMINI.md"} {
@@ -124,8 +124,8 @@ func TestScaffoldTrackedMode(t *testing.T) {
 		}
 	}
 
-	// Tracked mode never touches .gitignore; .work.local/ is hidden via the
-	// checkout-local git info/exclude instead.
+	// Tracked mode never touches .gitignore; .abcd/.work.local/ is hidden via
+	// the checkout-local git info/exclude instead.
 	if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); err == nil {
 		t.Error(".gitignore was created; scaffold must not touch it")
 	}
@@ -133,8 +133,8 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("info/exclude not written: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".work.local/") {
-		t.Errorf("info/exclude missing the .work.local/ entry: %q", exclude)
+	if !strings.Contains(string(exclude), ".abcd/.work.local/") {
+		t.Errorf("info/exclude missing the .abcd/.work.local/ entry: %q", exclude)
 	}
 	if !strings.Contains(out, "done: "+name) {
 		t.Errorf("output missing done line: %q", out)
@@ -417,15 +417,17 @@ func TestScaffoldPrivateMode(t *testing.T) {
 
 	// The private put files come from the shared scaffoldLayout table (the
 	// single source of truth), alongside the shared runtime dirs.
-	want := layoutDests(true) // private dests: .work.local/{NEXT,DECISIONS,CONTEXT,ISSUES}.md
-	want = append(want, ".work.local/scratch", ".work.local/logs")
+	want := layoutDests(true) // private dests: .abcd/.work.local/{NEXT,DECISIONS,CONTEXT,ISSUES}.md
+	want = append(want, ".abcd/.work.local/scratch", ".abcd/.work.local/logs")
 	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}
 	}
-	// Zero tracked trace: none of the tracked-mode artefacts may exist.
-	for _, rel := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".gitignore", ".work", "docs", ".pre-commit-config.yaml"} {
+	// Zero tracked trace: none of the tracked-mode artefacts may exist. (.abcd/
+	// itself now exists to hold the excluded .work.local/, but the COMMITTED
+	// .abcd/work/ memory must not.)
+	for _, rel := range []string{"AGENTS.md", "CLAUDE.md", "GEMINI.md", ".gitignore", ".abcd/work", "docs", ".pre-commit-config.yaml"} {
 		if _, err := os.Lstat(filepath.Join(repo, rel)); err == nil {
 			t.Errorf("private mode created tracked artefact %s", rel)
 		}
@@ -434,7 +436,7 @@ func TestScaffoldPrivateMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(exclude), ".work.local/") {
+	if !strings.Contains(string(exclude), ".abcd/.work.local/") {
 		t.Errorf(".git/info/exclude missing entry: %q", exclude)
 	}
 	if !strings.Contains(out, "private mode") {
@@ -447,7 +449,7 @@ func TestScaffoldPrivateMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(exclude2), ".work.local/") != 1 {
+	if strings.Count(string(exclude2), ".abcd/.work.local/") != 1 {
 		t.Errorf("exclude entry duplicated: %q", exclude2)
 	}
 }
@@ -553,14 +555,14 @@ func TestScaffoldPrivateModeInLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("common-dir exclude not written: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".work.local/") {
+	if !strings.Contains(string(exclude), ".abcd/.work.local/") {
 		t.Errorf("common-dir exclude missing entry: %q", exclude)
 	}
 }
 
-// TestScaffoldTrackedExcludeWithGitfile: TRACKED mode hides .work.local/ via
-// the same gitfile-aware exclude machinery as private mode — the entry lands
-// in the RESOLVED git dir's info/exclude, and .gitignore is never touched.
+// TestScaffoldTrackedExcludeWithGitfile: TRACKED mode hides .abcd/.work.local/
+// via the same gitfile-aware exclude machinery as private mode — the entry
+// lands in the RESOLVED git dir's info/exclude, and .gitignore is never touched.
 func TestScaffoldTrackedExcludeWithGitfile(t *testing.T) {
 	templates, repo := scaffoldFixture(t, false)
 	gitDir := filepath.Join(t.TempDir(), "gitdir")
@@ -572,13 +574,13 @@ func TestScaffoldTrackedExcludeWithGitfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolved git dir's info/exclude not written: %v", err)
 	}
-	if !strings.Contains(string(exclude), ".work.local/") {
-		t.Errorf("info/exclude missing the .work.local/ entry: %q", exclude)
+	if !strings.Contains(string(exclude), ".abcd/.work.local/") {
+		t.Errorf("info/exclude missing the .abcd/.work.local/ entry: %q", exclude)
 	}
 	if _, err := os.Lstat(filepath.Join(repo, ".gitignore")); err == nil {
 		t.Error(".gitignore was created; scaffold must not touch it")
 	}
-	for _, rel := range []string{".work.local/scratch", ".work.local/logs"} {
+	for _, rel := range []string{".abcd/.work.local/scratch", ".abcd/.work.local/logs"} {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}
