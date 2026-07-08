@@ -17,6 +17,9 @@ called out in a **Breaking** section. See
   `ferry bundle import`.** The two verbs move under a new `bundle` parent noun.
   Their flags and behaviour are unchanged — only the command path moves. There
   is no alias: the old top-level spellings now error.
+- **`apply --dry-run` is removed.** The read-only preview is now solely
+  `ferry diff`, which shows what `apply` would change without writing anything.
+  Replace any `ferry apply --dry-run` with `ferry diff`.
 
 ### Fixed
 

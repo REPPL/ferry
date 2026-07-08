@@ -340,8 +340,8 @@ func safeRepoPath(repoRoot, candidate string) (string, error) {
 // re-wiring config + scope + engine each.
 //
 // The backup Engine is NOT constructed by loadContext: building it mkdirs+chmods
-// ~/.local/state/ferry, which read-only commands (diff, status, apply --dry-run)
-// must not do — they need to be write-free. Mutating callers obtain the engine
+// ~/.local/state/ferry, which read-only commands (diff, status) must not do —
+// they need to be write-free. Mutating callers obtain the engine
 // via the Engine() accessor, which builds it on first use. Read-only callers
 // simply never call Engine(), so loading a context creates no ferry state.
 type cmdContext struct {
@@ -353,9 +353,9 @@ type cmdContext struct {
 }
 
 // Engine returns the transactional backup Engine, constructing it (and thus
-// creating ~/.local/state/ferry) on first call. Only mutating commands (apply
-// without --dry-run, capture, restore, init --apply) call this; read-only
-// commands (diff, status, apply --dry-run) never do, so they stay write-free.
+// creating ~/.local/state/ferry) on first call. Only mutating commands (apply,
+// capture, restore, init --apply) call this; read-only commands (diff, status)
+// never do, so they stay write-free.
 //
 // The engine is cached on the context, so repeated calls within one command
 // reuse the same engine (and the state dir is created at most once).

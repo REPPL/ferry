@@ -21,7 +21,6 @@ ferry apply [flags]
 
 ```
       --deps          install declared dependencies (separate, explicit step)
-      --dry-run       preview changes without writing (see also: ferry diff)
       --force         overwrite uncaptured local edits on conflict
   -h, --help          help for apply
       --skip-wizard   skip the guided walkthrough (safe changes auto-apply; risky changes are refused, not prompted)
