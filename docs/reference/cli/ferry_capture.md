@@ -6,10 +6,12 @@ Pull local changes back into the repo (interactive, selective)
 
 Pull local changes back into the repo.
 
-capture is interactive and selective: it shows you each change and lets you
-approve it, then route it shared (synced everywhere) or local (this machine
-only). Only declared targets are visible, and a secret scan blocks sensitive
-values from ever reaching the repo.
+capture moves config in the other direction to apply — this machine -> the
+repo — bringing local edits back into the source of truth. It is interactive
+and selective: it shows you each change and lets you approve it, then route it
+shared (synced everywhere) or local (this machine only). Only declared targets
+are visible, and a secret scan blocks sensitive values from ever reaching the
+repo.
 
 ```
 ferry capture [flags]

@@ -28,12 +28,15 @@ var applyCmd = &cobra.Command{
 	Short: "Reconcile this machine to the repo (deploy dotfiles, terminal settings)",
 	Long: `Reconcile this machine to the repo.
 
-apply deploys in-scope dotfiles and terminal settings, layering the per-machine
-.local overlay last. It is idempotent and safe to re-run after every git pull.
-A run with changes walks a guided, domain-grouped review that applies safe
-changes automatically and prompts on risky ones; non-interactively, risky
-changes fail closed. Dependency installs are a separate, gated step run with
---deps.`,
+apply moves config in one direction — repo -> this machine — deploying the
+repo's version onto the machine. It writes in-scope dotfiles and terminal
+settings, layering the per-machine .local overlay last. It is idempotent and
+safe to re-run after every git pull. A run with changes walks a guided,
+domain-grouped review that applies safe changes automatically and prompts on
+risky ones; non-interactively, risky changes fail closed. A file you have
+edited locally is left untouched for "ferry capture" to bring back — apply
+never overwrites uncaptured local work. Dependency installs are a separate,
+gated step run with --deps.`,
 	RunE: runApply,
 }
 
@@ -42,10 +45,12 @@ var captureCmd = &cobra.Command{
 	Short: "Pull local changes back into the repo (interactive, selective)",
 	Long: `Pull local changes back into the repo.
 
-capture is interactive and selective: it shows you each change and lets you
-approve it, then route it shared (synced everywhere) or local (this machine
-only). Only declared targets are visible, and a secret scan blocks sensitive
-values from ever reaching the repo.`,
+capture moves config in the other direction to apply — this machine -> the
+repo — bringing local edits back into the source of truth. It is interactive
+and selective: it shows you each change and lets you approve it, then route it
+shared (synced everywhere) or local (this machine only). Only declared targets
+are visible, and a secret scan blocks sensitive values from ever reaching the
+repo.`,
 	RunE: runCapture,
 }
 
