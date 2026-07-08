@@ -7,14 +7,36 @@ import (
 	"strings"
 )
 
-// ErrITerm2Running is returned by the iTerm2 domain's Apply when iTerm2 is
-// currently running. Importing the global preference plist into a running iTerm2
-// is silently lost: iTerm2 holds its preferences in memory and REWRITES
+// ErrITerm2Running is returned by the iTerm2 domain's Apply AND Restore when
+// iTerm2 is currently running. Mutating the global preference plist while iTerm2
+// runs is silently lost: iTerm2 holds its preferences in memory and REWRITES
 // com.googlecode.iterm2 on quit, and cfprefsd caches the domain, so a
-// `defaults import` while it runs is overwritten the moment the app quits. Apply
-// therefore REFUSES (a clean skip, not a failure) and asks the user to quit
-// iTerm2 first — mirroring ErrNotDarwin's clean-skip contract.
-var ErrITerm2Running = errors.New("terminal: iTerm2 is running; quit it before applying its global preferences")
+// `defaults import`/`delete` while it runs is overwritten the moment the app
+// quits. Apply and Restore therefore REFUSE (a clean skip, not a failure) and ask
+// the user to quit iTerm2 first — mirroring ErrNotDarwin's clean-skip contract.
+//
+// Its concrete type additionally satisfies backup's structural resource-skip
+// contract (ResourceRestoreSkipped), so when Restore refuses because iTerm2 is
+// running the restore/rollback engine treats it as a CLEAN SKIP (continue past
+// this one domain) rather than a hard failure that aborts a multi-domain restore.
+// errors.Is(err, ErrITerm2Running) still holds (a single comparable sentinel
+// value), so every existing errors.Is check is unchanged.
+var ErrITerm2Running error = iterm2RunningError{}
+
+// iterm2RunningError is ErrITerm2Running's concrete type. It is an empty struct so
+// the sentinel stays comparable (errors.Is works by value equality), and it
+// implements ResourceRestoreSkipped so backup can recognise a Restore refusal as a
+// skip WITHOUT the backup package importing this one.
+type iterm2RunningError struct{}
+
+func (iterm2RunningError) Error() string {
+	return "terminal: iTerm2 is running; quit it before applying or restoring its global preferences"
+}
+
+// ResourceRestoreSkipped reports that a Restore returning this error DECLINED the
+// restore (iTerm2 running) rather than failing — the signal backup's
+// ResourceRestoreSkipper interface reads to skip-and-continue instead of aborting.
+func (iterm2RunningError) ResourceRestoreSkipped() bool { return true }
 
 // ProcessController is the injectable seam over the iTerm2 lifecycle checks the
 // global-plist apply needs — is iTerm2 running, and flush cfprefsd's cache after

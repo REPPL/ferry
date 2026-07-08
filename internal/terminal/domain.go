@@ -29,6 +29,12 @@ type PreferenceDomain struct {
 	// via `defaults import` (iTerm2 additionally refuses when it is running and
 	// flushes cfprefsd afterwards — see NewITerm2).
 	apply func(r Runner) error
+	// proc is the iTerm2 lifecycle seam (is iTerm2 running / flush cfprefsd). It is
+	// set ONLY for the iTerm2 domain (NewITerm2); Apple Terminal leaves it nil and
+	// so carries no running-guard. Both Apply and Restore consult it to REFUSE
+	// mutating a live iTerm2 domain (see ErrITerm2Running) and flush cfprefsd after
+	// a successful mutation.
+	proc ProcessController
 	// note is the human-readable caveat surfaced in the apply result (e.g. the
 	// iTerm2 relaunch / cfprefsd-cache note).
 	note string
@@ -56,6 +62,7 @@ func NewITerm2(exportBlob []byte, runner Runner, proc ProcessController) *Prefer
 	d := &PreferenceDomain{
 		domain: ITerm2Domain,
 		runner: runner,
+		proc:   proc,
 		note:   "iTerm2 preferences imported; relaunch iTerm2 for them to take effect (cfprefsd was flushed).",
 	}
 	d.apply = func(r Runner) error {
@@ -165,9 +172,30 @@ func (d *PreferenceDomain) Backup() (blob []byte, absent bool, err error) {
 // return the machine to that pre-ferry (absent) state rather than importing an
 // empty blob. A missing-domain delete (already absent) is not an error. When
 // absent is false a present baseline is re-imported via `defaults import`.
+//
+// iTerm2 running-guard (iTerm2 ONLY — d.proc is nil for Apple Terminal, which has
+// no such concern and restores unconditionally). A running iTerm2 REWRITES
+// com.googlecode.iterm2 on quit and cfprefsd caches it, so ANY restore mutation
+// (`defaults import` OR `defaults delete`) into a LIVE iTerm2 is silently lost —
+// exactly the failure Apply already refuses. Restore therefore mirrors Apply:
+// when iTerm2 is running it REFUSES with ErrITerm2Running (a clean skip; the
+// restore/rollback caller surfaces a notice and CONTINUES past this domain rather
+// than aborting) instead of writing into a live domain. After a successful iTerm2
+// import it flushes cfprefsd so the restored values are not masked by its cache.
 func (d *PreferenceDomain) Restore(blob []byte, absent bool) error {
 	if !platform.IsDarwin() {
 		return ErrNotDarwin
+	}
+	// Only the iTerm2 domain carries a proc; skip the guard entirely for Apple
+	// Terminal. Fail closed on a probe error rather than mutate a possibly-live domain.
+	if d.proc != nil {
+		running, err := d.proc.Running()
+		if err != nil {
+			return fmt.Errorf("terminal: check whether iTerm2 is running: %w", err)
+		}
+		if running {
+			return ErrITerm2Running
+		}
 	}
 	if absent {
 		if _, err := d.runner.Run(nil, "delete", d.domain); err != nil {
@@ -181,6 +209,12 @@ func (d *PreferenceDomain) Restore(blob []byte, absent bool) error {
 	}
 	if _, err := d.runner.Run(blob, "import", d.domain, "-"); err != nil {
 		return fmt.Errorf("terminal: import %s: %w", d.domain, err)
+	}
+	// iTerm2 only: flush cfprefsd so the re-imported values are not masked by the
+	// daemon's cache (mirrors Apply). Best-effort — the bytes are already on disk,
+	// so a flush hiccup must not fail the restore.
+	if d.proc != nil {
+		_ = d.proc.FlushPrefsCache()
 	}
 	return nil
 }

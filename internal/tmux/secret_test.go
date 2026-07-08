@@ -1,12 +1,15 @@
 package tmux
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/REPPL/ferry/internal/secret"
+)
 
 // TestSecretSpansOffsets pins that the recogniser isolates EXACTLY the quoted
 // value's byte range, leaving the `set -g @token '…'` prefix and the quotes
 // outside the span — the precondition for a byte-stable secret.SwapColumns swap.
 func TestSecretSpansOffsets(t *testing.T) {
-	const ghToken = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8" // GitHub token: a named-token High secret
 	line := "set -g @token '" + ghToken + "'"
 	spans := SecretSpans(line + "\n")
 	if len(spans) != 1 {
@@ -66,5 +69,113 @@ func TestSecretSpansSkipsNonSecrets(t *testing.T) {
 func TestSecretSpansMismatchedQuotes(t *testing.T) {
 	if spans := SecretSpans(`set -g @token 'AKIAIOSFODNN7EXAMPLE"`); len(spans) != 0 {
 		t.Errorf("mismatched quotes flagged %d spans, want 0", len(spans))
+	}
+}
+
+const ghToken = "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8" // GitHub token: a named-token High secret
+
+// wantValueSpan asserts SecretSpans found exactly one span whose byte range is
+// value and whose surrounding bytes are untouched.
+func wantValueSpan(t *testing.T, line, value string) secret.SecretSpan {
+	t.Helper()
+	spans := SecretSpans(line)
+	if len(spans) != 1 {
+		t.Fatalf("SecretSpans(%q) found %d spans, want 1: %+v", line, len(spans), spans)
+	}
+	sp := spans[0]
+	if !sp.HasColumns() {
+		t.Fatalf("span is not column-grained: %+v", sp)
+	}
+	if got := line[sp.StartCol:sp.EndCol]; got != value {
+		t.Errorf("span byte range = %q, want %q (line %q)", got, value, line)
+	}
+	if sp.Value != value {
+		t.Errorf("span value = %q, want %q", sp.Value, value)
+	}
+	return sp
+}
+
+// TestSecretSpansSetw proves the `setw` command spelling is recognised and the
+// span isolates exactly the quoted value.
+func TestSecretSpansSetw(t *testing.T) {
+	line := "setw -g @token '" + ghToken + "'"
+	sp := wantValueSpan(t, line, ghToken)
+	if line[sp.StartCol-1] != '\'' || line[sp.EndCol] != '\'' {
+		t.Errorf("span [%d,%d) not inside the quotes: %q", sp.StartCol, sp.EndCol, line)
+	}
+}
+
+// TestSecretSpansSetWindowOption proves the long `set-window-option` spelling.
+func TestSecretSpansSetWindowOption(t *testing.T) {
+	line := `set-window-option -g @api "` + ghToken + `"`
+	sp := wantValueSpan(t, line, ghToken)
+	if line[sp.StartCol-1] != '"' || line[sp.EndCol] != '"' {
+		t.Errorf("span [%d,%d) not inside the quotes: %q", sp.StartCol, sp.EndCol, line)
+	}
+}
+
+// TestSecretSpansTrailingComment proves a `# comment` after the quoted value is
+// left outside the span — including a comment that itself contains a quote, which
+// must not extend the greedy value match past the true closing quote.
+func TestSecretSpansTrailingComment(t *testing.T) {
+	line := "set -g @token '" + ghToken + "' # it's the API note"
+	sp := wantValueSpan(t, line, ghToken)
+	// The byte at EndCol is the true closing quote; the comment (with its own
+	// apostrophe) stays intact after it.
+	if line[sp.EndCol] != '\'' {
+		t.Errorf("EndCol %d does not sit on the closing quote: %q", sp.EndCol, line)
+	}
+	if got := line[sp.EndCol:]; got != "' # it's the API note" {
+		t.Errorf("trailing bytes after span = %q, want the closing quote + comment", got)
+	}
+}
+
+// TestSecretSpansUnquoted proves a bare unquoted value token is isolated, both
+// alone and with a trailing comment, and that offsets cover exactly the token.
+func TestSecretSpansUnquoted(t *testing.T) {
+	line := "set -g @token " + ghToken
+	sp := wantValueSpan(t, line, ghToken)
+	if sp.StartCol != len("set -g @token ") || sp.EndCol != len(line) {
+		t.Errorf("unquoted span [%d,%d), want [%d,%d)", sp.StartCol, sp.EndCol, len("set -g @token "), len(line))
+	}
+
+	withComment := "setw -g @token " + ghToken + "   # trailing note"
+	sp = wantValueSpan(t, withComment, ghToken)
+	if withComment[sp.EndCol] != ' ' {
+		t.Errorf("EndCol %d should stop at the whitespace before the comment: %q", sp.EndCol, withComment)
+	}
+}
+
+// TestSecretSpansEnvRefUnquoted keeps the env-ref exemption for BARE values: an
+// unquoted ${ENV} / $ENV is expanded at read time, never a literal secret.
+func TestSecretSpansEnvRefUnquoted(t *testing.T) {
+	for _, line := range []string{
+		`set -g @token ${TMUX_TOKEN}`,
+		`setw -g @token $TMUX_TOKEN`,
+		`set-window-option -g @token ${TMUX_TOKEN} # ref`,
+	} {
+		if spans := SecretSpans(line); len(spans) != 0 {
+			t.Errorf("SecretSpans(%q) flagged %d spans, want 0: %+v", line, len(spans), spans)
+		}
+	}
+}
+
+// TestSecretSpansRefusesUnisolable is the SAFETY case: shapes the recogniser
+// cannot cleanly bound must yield NO span (capture then blocks whole-file via the
+// re-gate) rather than a mis-slice or whole-line clobber.
+func TestSecretSpansRefusesUnisolable(t *testing.T) {
+	for _, line := range []string{
+		// A closing quote followed by a second bare token: the tail is neither
+		// whitespace nor a comment, so there is no clean value boundary.
+		"set -g @token '" + ghToken + "' extra",
+		// A flag that consumes its own argument is not modelled: `main` is read as
+		// the flag argument, the `@token` prefix never matches.
+		"set -t main @token '" + ghToken + "'",
+		// Unbalanced quote (open only): no matching close with a clean tail.
+		"set -g @token '" + ghToken,
+	} {
+		if spans := SecretSpans(line); len(spans) != 0 {
+			t.Errorf("SecretSpans(%q) flagged %d spans, want 0 (must degrade to refusal): %+v", line, len(spans), spans)
+		}
 	}
 }

@@ -11,6 +11,29 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-08
+
+### Fixed
+
+- **Emacs local-only overlay files now deploy.** The Emacs domain deploys the
+  union of the shared `emacs/` tree and the per-machine `local/emacs/` overlay,
+  so a file that exists only in the overlay — a hand-authored `init.local.el`
+  with no shared counterpart, say — deploys to `~/.emacs.d/` as a machine-only
+  file, like an iTerm2 Dynamic Profile does. The volatile-path exclude filter and
+  symlink refusal apply to both trees.
+- **`ferry restore` refuses the iTerm2 preference domain while iTerm2 is
+  running.** `restore` now honours the same running-guard as `apply`: because a
+  running iTerm2 rewrites its preferences on quit and would discard a re-import,
+  restore skips that one domain (with a notice to quit iTerm2 and re-run) and
+  restores everything else — it never aborts the wider revert. Apple Terminal is
+  unaffected.
+- **The tmux secret recogniser covers more option shapes.** It now recognises a
+  credential in a `setw` / `set-window-option` value, a value followed by a
+  trailing `#` comment, and an unquoted value — in addition to the quoted
+  `set`/`set-option` form. A shape it cannot isolate still degrades to a safe
+  refusal on capture, never a partial redaction or a leak, and a `${ENV}`
+  reference is left verbatim.
+
 ## [0.7.2] - 2026-07-08
 
 ### Changed

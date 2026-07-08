@@ -122,6 +122,38 @@ func TestEmacsLocalOverlayWins(t *testing.T) {
 	assertFileContains(t, s.HomePath(".emacs.d", "init.el"), "SHARED_INIT")
 }
 
+// TestEmacsLocalOnlyFileDeploys proves a file present ONLY under local/emacs/
+// (no shared counterpart) deploys as a machine-only file: a hand-authored
+// init.local.el with no emacs/init.local.el reaches ~/.emacs.d/init.local.el.
+func TestEmacsLocalOnlyFileDeploys(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	s.InitGitRepo(t)
+	s.SeedSharedManifest(t, emacsManifest)
+
+	// A shared file plus a machine-only overlay file with NO shared counterpart.
+	s.WriteRepoFile(t, filepath.Join("emacs", "init.el"), "SHARED_INIT\n")
+	s.WriteRepoFile(t, filepath.Join("local", "emacs", "init.local.el"), "MACHINE_ONLY\n")
+	gitCommitAll(t, s.Repo, "emacs with a local-only file")
+
+	if _, errOut, code := s.Ferry("apply"); code != 0 {
+		t.Fatalf("apply exited %d; stderr:\n%s", code, errOut)
+	}
+
+	// The machine-only file deploys as a regular-file copy alongside the shared one.
+	localTarget := s.HomePath(".emacs.d", "init.local.el")
+	assertFileContains(t, localTarget, "MACHINE_ONLY")
+	assertFileContains(t, s.HomePath(".emacs.d", "init.el"), "SHARED_INIT")
+
+	fi, err := os.Lstat(localTarget)
+	if err != nil {
+		t.Fatalf("lstat local-only target: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		t.Errorf("%s must be a regular-file copy (mode %v)", localTarget, fi.Mode())
+	}
+}
+
 // TestEmacsStatusCleanThenDrift proves status reports clean right after apply
 // (with no spurious de-scope warning) and drift after a live edit — the
 // repo-authoritative reconcile (apply would skip a live edit).

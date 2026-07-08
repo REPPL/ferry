@@ -123,6 +123,13 @@ func runRestore(c *cobra.Command, args []string) (retErr error) {
 			return err
 		}
 
+		// If iTerm2 is running, the engine SKIPS its preference domain during this
+		// restore (a live iTerm2 rewrites com.googlecode.iterm2 on quit, so a
+		// re-import would be silently lost) and restores everything else. Tell the
+		// user up front how to finish restoring that one domain — the engine's own
+		// running-guard (terminal.Restore -> ErrITerm2Running) is what enforces it.
+		warnIfITerm2RestoreSkipped(ctx, args, out)
+
 		if len(args) > 0 {
 			if err := scopedRestore(ctx, args, out); err != nil {
 				return err
@@ -326,6 +333,44 @@ func terminalPrefDomainID(scopeName string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// warnIfITerm2RestoreSkipped prints the warn-skip notice when iTerm2 is running
+// and its preference domain is part of this restore. The engine's own guard
+// (terminal.Restore returns ErrITerm2Running, which backup treats as a clean skip)
+// leaves that one domain untouched and restores everything else; this surfaces the
+// user-facing notice, since backup holds no writer. darwin-only and best-effort:
+// a probe error is ignored (the engine still fails closed on its own probe).
+func warnIfITerm2RestoreSkipped(ctx *cmdContext, args []string, out io.Writer) {
+	if !platform.IsDarwin() {
+		return
+	}
+	// A scoped restore only touches the named domains, so skip the notice unless
+	// iTerm2 is one of them; a full restore (no args) always includes it.
+	if len(args) > 0 {
+		requested := false
+		for _, a := range args {
+			if id, ok := terminalPrefDomainID(a); ok && id == terminal.ITerm2Domain {
+				requested = true
+				break
+			}
+		}
+		if !requested {
+			return
+		}
+	}
+	eng, err := ctx.Engine()
+	if err != nil {
+		return
+	}
+	if !eng.HasBaseline(backup.ResourcePath(terminal.ITerm2Domain)) {
+		return
+	}
+	running, err := terminal.ExecProcessController{}.Running()
+	if err != nil || !running {
+		return
+	}
+	fmt.Fprintln(out, "restore: iTerm2 is running; skipping its preference domain (a running iTerm2 rewrites its preferences on quit, so the restore would be silently lost). Quit iTerm2 and re-run to restore it — all other paths were restored.")
 }
 
 // registerTerminalDomains attaches the iTerm2 + Apple Terminal preference domains

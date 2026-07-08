@@ -1003,6 +1003,67 @@ func (f *fakeResource) Restore(blob []byte, absent bool) error {
 	return nil
 }
 
+// skipResourceErr is a Resource.Restore error that reports itself as a clean
+// resource-restore SKIP (mirroring terminal.ErrITerm2Running when iTerm2 is
+// running), so the engine must continue the surrounding restore instead of
+// aborting. It satisfies ResourceRestoreSkipper without importing terminal.
+type skipResourceErr struct{}
+
+func (skipResourceErr) Error() string                { return "resource declined restore (running)" }
+func (skipResourceErr) ResourceRestoreSkipped() bool { return true }
+
+// decliningResource is a Resource whose Restore always DECLINES with a skip error,
+// recording how many times it was attempted.
+type decliningResource struct {
+	domain   string
+	attempts int
+}
+
+func (d *decliningResource) Domain() string                 { return d.domain }
+func (d *decliningResource) Backup() ([]byte, bool, error)  { return []byte("PREFS"), false, nil }
+func (d *decliningResource) Restore(_ []byte, _ bool) error { d.attempts++; return skipResourceErr{} }
+
+// TestRestoreSkipsDecliningResourceAndContinues proves the running-guard contract
+// at the engine level: a resource that DECLINES its restore (skip error) does NOT
+// abort the multi-path restore — every other managed path is still reverted, the
+// overall restore returns no error, and the resource restore was attempted.
+func TestRestoreSkipsDecliningResourceAndContinues(t *testing.T) {
+	e, home := newEngine(t)
+
+	// A registered resource that will decline restore, captured into the baseline.
+	res := &decliningResource{domain: "com.googlecode.iterm2"}
+	e.Register(res)
+
+	// A managed file whose baseline must still be restored despite the resource skip.
+	target := filepath.Join(home, "f")
+	mustWrite(t, target, []byte("ORIGINAL"), 0o600)
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupResource(r, res.domain); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupAndWrite(r, target, []byte("CHANGED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Full restore: the resource declines, but that must be a clean skip.
+	if _, err := e.Restore(); err != nil {
+		t.Fatalf("Restore aborted on a declining resource instead of skipping it: %v", err)
+	}
+	if res.attempts < 1 {
+		t.Errorf("resource restore was not attempted (attempts=%d)", res.attempts)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "ORIGINAL" {
+		t.Errorf("file baseline not restored past the resource skip: live = %q, want ORIGINAL", got)
+	}
+}
+
 func TestBackupResourceCapturesAndRestoreReapplies(t *testing.T) {
 	e, _ := newEngine(t)
 	res := &fakeResource{domain: "com.googlecode.iterm2", state: []byte("ORIGINAL-PREFS")}

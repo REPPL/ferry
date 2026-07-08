@@ -97,6 +97,14 @@ func (e *Engine) restorePaths(absPaths []string) (string, error) {
 				refused = append(refused, fmt.Errorf("restore refused for %s: %w", p, err))
 				continue
 			}
+			// A registered resource DECLINED its restore (e.g. iTerm2 running, where
+			// re-importing the live domain would be silently lost). This is a clean
+			// SKIP, not a failure: leave the domain as-is and CONTINUE restoring the
+			// other paths rather than aborting the whole revert. cmd surfaces the
+			// user-facing notice (it holds the writer and the same running probe).
+			if isResourceRestoreSkip(err) {
+				continue
+			}
 			return snapID, err
 		}
 	}
@@ -116,6 +124,24 @@ func (e *Engine) applyState(state PathState, blob []byte) error {
 		return e.restoreResource(domainForResourcePath(state.Path), blob, state.Kind == KindAbsent)
 	}
 	return restoreState(state, blob)
+}
+
+// ResourceRestoreSkipper is implemented by an error a Resource.Restore returns to
+// signal it DECLINED the restore (not failed) — e.g. the iTerm2 domain when iTerm2
+// is running, where importing/deleting the live domain would be silently lost. The
+// engine treats such an error as a CLEAN SKIP: the resource is left as-is and the
+// surrounding multi-path restore / snapshot-undo / incomplete-run rollback
+// CONTINUES instead of aborting. It is a structural interface so the engine stays
+// decoupled from the terminal package that raises it (no import either way).
+type ResourceRestoreSkipper interface {
+	ResourceRestoreSkipped() bool
+}
+
+// isResourceRestoreSkip reports whether an applyState error is a resource DECLINE
+// (a clean skip) rather than a genuine failure.
+func isResourceRestoreSkip(err error) bool {
+	var s ResourceRestoreSkipper
+	return errors.As(err, &s) && s.ResourceRestoreSkipped()
 }
 
 // restoreResource drives a registered preference-domain Resource's own restore.
