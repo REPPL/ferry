@@ -29,6 +29,25 @@ func (f *fakeRunner) Run(stdin []byte, args ...string) ([]byte, error) {
 // last returns the most recent recorded call.
 func (f *fakeRunner) last() call { return f.calls[len(f.calls)-1] }
 
+// fakeProc is a ProcessController stub: it reports a canned running state and
+// records whether the cfprefsd flush was invoked, so the iTerm2 running-guard and
+// cache flush are exercised without shelling out to pgrep/killall.
+type fakeProc struct {
+	running  bool
+	runErr   error
+	flushErr error
+	flushed  bool
+}
+
+func (f *fakeProc) Running() (bool, error) { return f.running, f.runErr }
+func (f *fakeProc) FlushPrefsCache() error { f.flushed = true; return f.flushErr }
+
+// newITerm2 builds an iTerm2 domain for tests with a not-running process stub, so
+// existing backup/restore/plan tests need not care about the running-guard.
+func newITerm2(blob []byte, r Runner) *PreferenceDomain {
+	return NewITerm2(blob, r, &fakeProc{})
+}
+
 func TestBackupExportsDomain(t *testing.T) {
 	if !platform.IsDarwin() {
 		t.Skip("Backup is darwin-only; covered by TestNonDarwinSkips on this host")
@@ -61,7 +80,7 @@ func TestBackupAbsentDomainReportsAbsent(t *testing.T) {
 		t.Skip("Backup is darwin-only")
 	}
 	fr := &fakeRunner{err: ErrDomainAbsent}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 
 	blob, absent, err := d.Backup()
 	if err != nil {
@@ -82,7 +101,7 @@ func TestBackupRealExportErrorIsFatal(t *testing.T) {
 		t.Skip("Backup is darwin-only")
 	}
 	fr := &fakeRunner{err: errors.New("permission denied")}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 
 	if _, absent, err := d.Backup(); err == nil || absent {
 		t.Fatalf("Backup = (absent=%v, err=%v), want a real error", absent, err)
@@ -94,7 +113,7 @@ func TestRestoreImportsDomain(t *testing.T) {
 		t.Skip("Restore is darwin-only; covered by TestNonDarwinSkips on this host")
 	}
 	fr := &fakeRunner{}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 	blob := []byte("<plist>captured</plist>")
 
 	if err := d.Restore(blob, false); err != nil {
@@ -118,7 +137,7 @@ func TestRestoreAbsentBaselineDeletesDomain(t *testing.T) {
 		t.Skip("Restore is darwin-only")
 	}
 	fr := &fakeRunner{}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 
 	if err := d.Restore(nil, true); err != nil {
 		t.Fatalf("Restore(absent): %v", err)
@@ -137,18 +156,22 @@ func TestRestoreAbsentAlreadyMissingIsNoError(t *testing.T) {
 		t.Skip("Restore is darwin-only")
 	}
 	fr := &fakeRunner{err: ErrDomainAbsent}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 	if err := d.Restore(nil, true); err != nil {
 		t.Fatalf("Restore(absent) on already-missing domain = %v, want nil", err)
 	}
 }
 
-func TestITerm2ApplySetsKeys(t *testing.T) {
+// TestITerm2ApplyImportsAndFlushes: with iTerm2 NOT running, Apply imports the
+// prepared export blob via `defaults import` and then flushes cfprefsd.
+func TestITerm2ApplyImportsAndFlushes(t *testing.T) {
 	if !platform.IsDarwin() {
 		t.Skip("Apply mutation is darwin-only; covered by TestNonDarwinSkips on this host")
 	}
+	blob := []byte("<plist>global-iterm2</plist>")
 	fr := &fakeRunner{}
-	d := NewITerm2("/repo/iterm2", fr)
+	proc := &fakeProc{running: false}
+	d := NewITerm2(blob, fr, proc)
 
 	res := Apply(d)
 	if res.Err != nil {
@@ -157,21 +180,62 @@ func TestITerm2ApplySetsKeys(t *testing.T) {
 	if !res.Applied || res.Skipped {
 		t.Fatalf("Apply result = %+v, want Applied", res)
 	}
-	if res.Note == "" || !strings.Contains(res.Note, "relaunch") {
-		t.Fatalf("Apply note = %q, want a relaunch caveat", res.Note)
+	if len(fr.calls) != 1 {
+		t.Fatalf("got %d defaults calls, want 1 (import)", len(fr.calls))
 	}
-	if len(fr.calls) != 2 {
-		t.Fatalf("got %d defaults calls, want 2 (PrefsCustomFolder + LoadPrefsFromCustomFolder)", len(fr.calls))
+	wantArgs := []string{"import", ITerm2Domain, "-"}
+	if !equalArgs(fr.last().args, wantArgs) {
+		t.Fatalf("Apply args = %v, want %v", fr.last().args, wantArgs)
 	}
-	// First call: PrefsCustomFolder -> repo path.
-	want1 := []string{"write", ITerm2Domain, "PrefsCustomFolder", "-string", "/repo/iterm2"}
-	if !equalArgs(fr.calls[0].args, want1) {
-		t.Fatalf("call 0 args = %v, want %v", fr.calls[0].args, want1)
+	if string(fr.last().stdin) != string(blob) {
+		t.Fatalf("Apply stdin = %q, want the rendered export blob", fr.last().stdin)
 	}
-	// Second call: LoadPrefsFromCustomFolder -> true.
-	want2 := []string{"write", ITerm2Domain, "LoadPrefsFromCustomFolder", "-bool", "true"}
-	if !equalArgs(fr.calls[1].args, want2) {
-		t.Fatalf("call 1 args = %v, want %v", fr.calls[1].args, want2)
+	if !proc.flushed {
+		t.Fatalf("cfprefsd was not flushed after a successful import")
+	}
+}
+
+// TestITerm2ApplyRefusesWhenRunning: a running iTerm2 must SKIP (ErrITerm2Running),
+// never import — a `defaults import` would be silently lost on quit. Nothing is
+// imported and cfprefsd is not flushed.
+func TestITerm2ApplyRefusesWhenRunning(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Apply mutation is darwin-only")
+	}
+	fr := &fakeRunner{}
+	proc := &fakeProc{running: true}
+	d := NewITerm2([]byte("<plist>x</plist>"), fr, proc)
+
+	res := Apply(d)
+	if !res.Skipped || !errors.Is(res.Err, ErrITerm2Running) {
+		t.Fatalf("Apply while running = %+v, want Skipped with ErrITerm2Running", res)
+	}
+	if res.Applied {
+		t.Fatalf("Apply reported Applied while iTerm2 was running")
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("imported into a running iTerm2 (%d defaults calls, want 0)", len(fr.calls))
+	}
+	if proc.flushed {
+		t.Fatalf("flushed cfprefsd despite skipping the import")
+	}
+}
+
+// TestITerm2ApplyNilBlobNoImport: a nil blob manages backup/restore only and never
+// imports (nor probes running / flushes).
+func TestITerm2ApplyNilBlobNoImport(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Apply mutation is darwin-only")
+	}
+	fr := &fakeRunner{}
+	proc := &fakeProc{running: true} // even "running" is irrelevant with no blob
+	d := NewITerm2(nil, fr, proc)
+	res := Apply(d)
+	if res.Err != nil || !res.Applied {
+		t.Fatalf("Apply result = %+v, want Applied (no-op import)", res)
+	}
+	if len(fr.calls) != 0 || proc.flushed {
+		t.Fatalf("nil-blob iTerm2 Apply shelled out (calls=%d flushed=%v), want none", len(fr.calls), proc.flushed)
 	}
 }
 
@@ -217,7 +281,7 @@ func TestApplyPropagatesRunnerError(t *testing.T) {
 		t.Skip("Apply mutation is darwin-only")
 	}
 	fr := &fakeRunner{err: errors.New("defaults boom")}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := NewITerm2([]byte("<plist>x</plist>"), fr, &fakeProc{})
 	res := Apply(d)
 	if res.Err == nil || res.Applied {
 		t.Fatalf("Apply result = %+v, want an error", res)
@@ -226,7 +290,7 @@ func TestApplyPropagatesRunnerError(t *testing.T) {
 
 func TestPlanMarksPreferenceDomain(t *testing.T) {
 	for _, d := range []*PreferenceDomain{
-		NewITerm2("/repo/iterm2", &fakeRunner{}),
+		newITerm2(nil, &fakeRunner{}),
 		NewAppleTerminal(nil, &fakeRunner{}),
 	} {
 		p := d.Plan()
@@ -247,7 +311,7 @@ func TestPlanMarksPreferenceDomain(t *testing.T) {
 }
 
 func TestPlanDomainIDs(t *testing.T) {
-	if got := NewITerm2("/x", &fakeRunner{}).Plan().Domain; got != ITerm2Domain {
+	if got := newITerm2(nil, &fakeRunner{}).Plan().Domain; got != ITerm2Domain {
 		t.Fatalf("iTerm2 plan domain = %q, want %q", got, ITerm2Domain)
 	}
 	if got := NewAppleTerminal(nil, &fakeRunner{}).Plan().Domain; got != AppleTerminalDomain {
@@ -261,7 +325,7 @@ func TestPlanDomainIDs(t *testing.T) {
 // runner-untouched assertion is gated on the platform.
 func TestNonDarwinSkips(t *testing.T) {
 	fr := &fakeRunner{}
-	d := NewITerm2("/repo/iterm2", fr)
+	d := newITerm2(nil, fr)
 
 	if platform.IsDarwin() {
 		// On darwin there is no skip; just confirm Apply runs the runner.

@@ -43,8 +43,8 @@ func TestApplyTargetSecretRoutedWrites0600(t *testing.T) {
 		content:      []byte("[github]\n\ttoken = super-secret-rendered-value\n"),
 		secretRouted: true,
 	}
-	if _, err := applyTarget(secretItem, store, b, false); err != nil {
-		t.Fatalf("applyTarget (secret): %v", err)
+	if _, err := dotfile.ApplyContentDeferred(secretItem.target, secretItem.content, dotfile.DefaultPerm(), store, b, false, secretItem.secretRouted); err != nil {
+		t.Fatalf("ApplyContentDeferred (secret): %v", err)
 	}
 	fi, err := os.Stat(secretTarget.Home)
 	if err != nil {
@@ -59,8 +59,8 @@ func TestApplyTargetSecretRoutedWrites0600(t *testing.T) {
 		content:      []byte("set number\n"),
 		secretRouted: false,
 	}
-	if _, err := applyTarget(plainItem, store, b, false); err != nil {
-		t.Fatalf("applyTarget (plain): %v", err)
+	if _, err := dotfile.ApplyContentDeferred(plainItem.target, plainItem.content, dotfile.DefaultPerm(), store, b, false, plainItem.secretRouted); err != nil {
+		t.Fatalf("ApplyContentDeferred (plain): %v", err)
 	}
 	fi, err = os.Stat(plainTarget.Home)
 	if err != nil {

@@ -11,6 +11,7 @@ import (
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
 
+	"github.com/REPPL/ferry/internal/deps"
 	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/platform"
 	"github.com/REPPL/ferry/internal/terminal"
@@ -78,22 +79,22 @@ func runStatus(c *cobra.Command, _ []string) error {
 			}
 			continue
 		}
-		// Agents targets share the three-way states but carry the domain's
-		// repo-authoritative guidance (capture never ingests them in v1), so
-		// their drift lines point at the repo copy, not `ferry capture`.
-		if it.kind == kindAgents {
-			reported++
+		// Converged FileDomain items (fn-5). Agents targets carry the domain's
+		// repo-authoritative guidance (capture never ingests them in v1), so their
+		// drift lines point at the repo copy, not `ferry capture`; dotfiles and
+		// config-file terminals share the three-way status rendering with capture
+		// guidance.
+		if it.kind != kindFile {
+			continue
+		}
+		reported++
+
+		if it.fileDomain == "agents" {
 			if reportAgentsStatus(out, colour, it.domain, it.state) {
 				drifted++
 			}
 			continue
 		}
-		// Config-file terminal targets are carried like dotfiles, so they share
-		// the three-way status rendering (capture guidance, not repo-authoritative).
-		if it.kind != kindDotfile && it.kind != kindOverlay && it.kind != kindTerminal {
-			continue
-		}
-		reported++
 
 		// A missing secret means apply would SKIP this target — report it as
 		// blocked (held back), NOT as drift, so it is not a false action item.
@@ -106,6 +107,14 @@ func runStatus(c *cobra.Command, _ []string) error {
 			drifted++
 		}
 	}
+
+	// Deps drift is an INDEPENDENT, read-only status pass (deps is a side-channel
+	// outside the FileDomain/ResourceDomain plan, so it is not in buildPlan). It
+	// surfaces Homebrew Brewfile drift and npm-globals drift when their domains are
+	// managed, WITHOUT installing anything or rewriting a manifest.
+	dr, dd := reportDepsStatus(ctx, out, colour)
+	reported += dr
+	drifted += dd
 
 	if reported == 0 {
 		fmt.Fprintln(out, "no managed config in scope; nothing to report")
@@ -164,7 +173,7 @@ func terminalLiveDiffers(repo, domain string) bool {
 	var d *terminal.PreferenceDomain
 	switch domain {
 	case "iterm2":
-		d = terminal.NewITerm2(filepath.Join(repo, "iterm2"), terminal.ExecRunner{})
+		d = terminal.NewITerm2(nil, terminal.ExecRunner{}, terminal.ExecProcessController{})
 	default: // "terminal" / Apple Terminal
 		d = terminal.NewAppleTerminal(nil, terminal.ExecRunner{})
 	}
@@ -187,17 +196,13 @@ func terminalLiveDiffers(repo, domain string) bool {
 	}
 	repoBytes, _ := os.ReadFile(statusSrc)
 	if domain == "iterm2" {
-		// iTerm2 ONLY: compare LIKE-FOR-LIKE with the machine-local control keys
-		// (PrefsCustomFolder / LoadPrefsFromCustomFolder) STRIPPED from BOTH sides. Those
-		// keys are how ferry POINTS iTerm2 at the repo (apply sets them via `defaults
-		// write`), NOT user prefs — `defaults export` can carry them, so status must
-		// exclude them or it would mis-report drift solely because the live domain holds
-		// the pointer ferry itself wrote. The repo plist apply deploys never contains
-		// them; stripping both sides compares the actual settings. The exact
-		// custom-folder-vs-export round-trip fidelity is Layer-2-deferred per
-		// AC-terminal-config (see terminal.StripITerm2ControlKeys).
-		liveBlob = terminal.StripITerm2ControlKeys(liveBlob)
-		repoBytes = terminal.StripITerm2ControlKeys(repoBytes)
+		// iTerm2 ONLY: compare LIKE-FOR-LIKE by reducing BOTH sides to the allowlisted
+		// global keys. `defaults export` carries volatile machine state (window
+		// geometry, NoSync* flags, the retired custom-prefs pointer) that the repo plist
+		// never contains; filtering both sides compares the actual carried settings and
+		// never mis-reports drift from a volatile key (see terminal.FilterAllowlist).
+		liveBlob = terminal.FilterAllowlist(liveBlob)
+		repoBytes = terminal.FilterAllowlist(repoBytes)
 	}
 	return string(repoBytes) != string(liveBlob)
 }
@@ -247,6 +252,58 @@ func reportAgentsStatus(out io.Writer, colour func(*color.Color, string) string,
 		fmt.Fprintf(out, "  %-22s %s\n", name, state)
 		return true
 	}
+}
+
+// reportDepsStatus prints the read-only deps drift lines and returns how many
+// deps domains it reported and how many drifted. It reuses the SAME dump/read
+// machinery apply/capture use, but read-only: Homebrew drift goes through
+// `brew bundle dump --file=-` (stdout, writes no file) and npm-globals drift
+// through `npm ls -g` — neither installs a package nor rewrites a manifest. Each
+// managed deps domain is gated on the SAME Scope.IsManaged predicate as capture,
+// keeping the managed surface consistent across status/capture (`apply --deps`
+// stays the explicit install override). A hard error or an absent tool is a
+// clean, non-drift note — status never fails on the read-only path.
+func reportDepsStatus(ctx *cmdContext, out io.Writer, colour func(*color.Color, string) string) (reported, drifted int) {
+	depsDir := filepath.Join(ctx.RepoPath, "deps")
+
+	if ctx.Scope.IsManaged("brew") {
+		reported++
+		drift, ok, err := deps.BrewDrift(depsDir, deps.ExecRunner{})
+		switch {
+		case err != nil:
+			fmt.Fprintf(out, "  %-22s %s (%v)\n", "brew", colour(colYellow, "skipped"), err)
+		case !ok:
+			fmt.Fprintf(out, "  %-22s %s (no Homebrew on this machine)\n", "brew", colour(colGreen, "n/a"))
+		case drift.Empty():
+			fmt.Fprintf(out, "  %-22s %s\n", "brew", colour(colGreen, "clean"))
+		default:
+			drifted++
+			fmt.Fprintf(out, "  %-22s %s (%d to capture, %d to install; `ferry capture` / `ferry apply --deps`)\n",
+				"brew", colour(colYellow, "drifted"), len(drift.Added), len(drift.Removed))
+		}
+	}
+
+	if ctx.Scope.IsManaged("npm-globals") {
+		reported++
+		switch {
+		case !platform.HasNpm():
+			fmt.Fprintf(out, "  %-22s %s (npm not installed)\n", "npm-globals", colour(colGreen, "n/a"))
+		default:
+			drift, err := deps.NpmGlobalsDrift(depsDir, deps.ExecRunner{})
+			switch {
+			case err != nil:
+				fmt.Fprintf(out, "  %-22s %s (%v)\n", "npm-globals", colour(colYellow, "skipped"), err)
+			case drift.Empty():
+				fmt.Fprintf(out, "  %-22s %s\n", "npm-globals", colour(colGreen, "clean"))
+			default:
+				drifted++
+				fmt.Fprintf(out, "  %-22s %s (%d to capture, %d to install; `ferry capture` / `ferry apply --deps`)\n",
+					"npm-globals", colour(colYellow, "drifted"), len(drift.Added), len(drift.Removed))
+			}
+		}
+	}
+
+	return reported, drifted
 }
 
 // reportStatus prints one git-status-like line for a target and reports whether

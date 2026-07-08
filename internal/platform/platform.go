@@ -61,6 +61,18 @@ func HasApt() bool {
 	return false
 }
 
+// HasNpm reports whether an npm executable is resolvable on the current PATH.
+// npm globals are ORTHOGONAL to the OS package manager: a machine can run
+// Homebrew (or apt) AND npm at the same time, so npm is DETECTED INDEPENDENTLY
+// here rather than through DetectPackageManager (which returns a single,
+// brew-preferred manager and would let a brew machine skip npm entirely).
+// PATH-gated for the same reason as HasBrew: detection stays consistent with how
+// npm is actually invoked.
+func HasNpm() bool {
+	_, err := exec.LookPath("npm")
+	return err == nil
+}
+
 // BrewPrefix returns the Homebrew installation prefix. It anchors to the
 // PATH-resolved brew (the resolved path's parent's parent, i.e. <prefix>/bin/brew
 // → <prefix>) so the prefix matches the brew that would actually run, falling

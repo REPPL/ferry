@@ -67,9 +67,6 @@ func (l *leakyPlugin) ApplyRepairs(blocks []plugin.Block, accepted []plugin.Find
 func (l *leakyPlugin) StarterQuestions() []plugin.Question      { return nil }
 func (l *leakyPlugin) Starter(a plugin.Answers) ([]byte, error) { return []byte("# starter\n"), nil }
 func (l *leakyPlugin) Describe(b plugin.Block) string           { return "synthetic block" }
-func (l *leakyPlugin) Deploy() plugin.DeploySpec {
-	return plugin.DeploySpec{DotfileName: ".zshrc", Overlay: plugin.Sidecar}
-}
 
 func leakyInputs(t *testing.T, p plugin.Plugin) *wizardInputs {
 	t.Helper()

@@ -34,8 +34,15 @@ func applyOne(t *testing.T, home string, it Item) os.FileMode {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if _, err := ApplyItem(it, store, permBackuper{}, false); err != nil {
-		t.Fatalf("ApplyItem: %v", err)
+	// Production reaches dotfile.ApplyContentDeferred directly via the converged
+	// kindFile apply arm; drive that same core here with the terminal domain's
+	// first-write mode policy (filePerm/execPerm keyed on Item.Exec).
+	perm := filePerm
+	if it.Exec {
+		perm = execPerm
+	}
+	if _, err := dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, permBackuper{}, false, it.SecretRouted); err != nil {
+		t.Fatalf("ApplyContentDeferred: %v", err)
 	}
 	fi, err := os.Stat(it.Target.Home)
 	if err != nil {
@@ -101,15 +108,21 @@ func TestApplyItemSecretRoutedClampsExistingMode(t *testing.T) {
 	}
 	// No last-applied recorded and live differs from the repo content, so this is a
 	// first-touch adoption: force it through (a default apply would refuse as a
-	// capture candidate) to exercise the write-over-existing-file branch.
-	if _, err := ApplyItem(Item{
+	// capture candidate) to exercise the write-over-existing-file branch. Drive the
+	// shared apply core directly, exactly as the converged kindFile arm does.
+	it := Item{
 		Key:          "terminals/wezterm",
 		Label:        "terminals:wezterm",
 		Target:       dotfile.Target{Name: "terminals/wezterm", Home: dst},
 		Content:      []byte("token = REAL-RENDERED-SECRET\n"),
 		SecretRouted: true,
-	}, store, permBackuper{}, true); err != nil {
-		t.Fatalf("ApplyItem: %v", err)
+	}
+	perm := filePerm
+	if it.Exec {
+		perm = execPerm
+	}
+	if _, err := dotfile.ApplyContentDeferred(it.Target, it.Content, perm, store, permBackuper{}, true, it.SecretRouted); err != nil {
+		t.Fatalf("ApplyContentDeferred: %v", err)
 	}
 
 	fi, err := os.Stat(dst)

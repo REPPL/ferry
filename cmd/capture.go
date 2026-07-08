@@ -64,6 +64,13 @@ func runCapture(c *cobra.Command, _ []string) error {
 		return fmt.Errorf("open secret store: %w", err)
 	}
 
+	// Converged registry (fn-5): capture drives its per-domain passes off the
+	// registry — the terminal preference pass enumerates ResourceDomains (no more
+	// {"iterm2","terminal"} literal), and the dotfile/agents passes run only when
+	// their FileDomain Captures(). termcfg's Captures() is false, which is why
+	// there is no config-file terminal capture pass (the deliberate asymmetry).
+	reg := buildRegistry(ctx)
+
 	captured := 0
 	offered := 0
 
@@ -81,7 +88,11 @@ func runCapture(c *cobra.Command, _ []string) error {
 	// enumerated, read, or special-cased. Skipped wholesale when dotfiles are
 	// unmanaged (no declarations), but that NO LONGER short-circuits the terminal /
 	// deps passes below.
-	for _, name := range declaredDotfilesIfManaged(ctx) {
+	var dotfileCandidates []string
+	if fileDomainCaptures(reg, "dotfiles") {
+		dotfileCandidates = declaredDotfilesIfManaged(ctx)
+	}
+	for _, name := range dotfileCandidates {
 		// SECURITY BOUNDARY: TargetFor refuses ~/.ssh + path-traversal names. A
 		// refused dotfile is SKIPPED with a clear message and never read/captured —
 		// so a manifest declaring `.ssh/config` never reads or ingests ~/.ssh.
@@ -124,7 +135,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 		// capture it back. Gated on a repo overlay existing (apply materialises the
 		// sidecar only when local/zsh/<bare>.local is present). Runs INDEPENDENTLY
 		// of the shared file's drift state.
-		if isZsh(strings.TrimPrefix(name, ".")) {
+		if usesIncludeSidecar(strings.TrimPrefix(name, ".")) {
 			wroteSide, offeredSide, err := captureZshSidecar(captureCtx{
 				out:         out,
 				errOut:      errOut,
@@ -154,7 +165,7 @@ func runCapture(c *cobra.Command, _ []string) error {
 	// refused with a diff — never auto-merged. New agent-shaped files under a
 	// tracked mapping's target dir are offered for adoption. A SourceCombined
 	// render cannot be decomposed, so its drift is reported, not captured.
-	if ctx.Scope.IsManaged("agents") {
+	if fileDomainCaptures(reg, "agents") && ctx.Scope.IsManaged("agents") {
 		wroteAgents, offeredAgents, aerr := captureAgents(ctx, home, in, out, lastApplied)
 		if aerr != nil {
 			return aerr
@@ -172,7 +183,8 @@ func runCapture(c *cobra.Command, _ []string) error {
 	// shared/local/reject, secret-gated as a whole value. macOS-only: a clean no-op
 	// on linux (platform-guarded; internal/terminal builds clean there).
 	if platform.IsDarwin() {
-		for _, domain := range []string{"iterm2", "terminal"} {
+		for _, rd := range reg.ResourceDomains {
+			domain := rd.Name()
 			if !ctx.Scope.IsManaged(domain) {
 				continue
 			}
@@ -204,6 +216,14 @@ func runCapture(c *cobra.Command, _ []string) error {
 	// wrote and counts as both an offered AND a captured change so the summary below
 	// reflects it. A missing/out-of-scope manager is a clean skip (no offer).
 	if reDumpDeps(ctx, out) {
+		offered++
+		captured++
+	}
+
+	// --- npm globals re-dump pass: an INDEPENDENT capture step ORTHOGONAL to the
+	// brew/apt re-dump above (a machine can carry both). Gated on the npm-globals
+	// domain being in scope AND npm being present; a missing npm is a clean skip.
+	if reDumpNpmGlobals(ctx, out) {
 		offered++
 		captured++
 	}
@@ -288,18 +308,19 @@ func (cc captureCtx) captureErrOut() io.Writer {
 // only reject / out-of-repo secret store are offered.
 func captureOne(cc captureCtx) (bool, error) {
 	bare := strings.TrimPrefix(cc.name, ".")
-	zsh := isZsh(bare)
+	zsh := usesIncludeSidecar(bare)
+	extractSpans := captureSpanExtractor(bare)
 	fmt.Fprintf(cc.out, "\n=== %s (drifted) ===\n", "."+bare)
 
 	// --- MANDATORY secret gate, BEFORE any write. ---
 	// Scan the reviewable content; a high-confidence secret blocks every repo
-	// route. For a placeholder-aware capture cc.liveBytes is the
-	// REVERSE-RENDERED live content: stored secrets sit behind their intact
-	// placeholders and never reach the gate — only a genuinely NEW secret
-	// trips it, and its consent choice comes AFTER the hunk review (the
-	// span-grained blocked path, r6-M1). In the missing-ref fallback a block
-	// is READ-ONLY (r9-M1: no whole-file store escape for a
-	// placeholder-bearing source).
+	// route. For a span-routable candidate (a placeholder-aware source, or tmux
+	// with its column-grained recogniser) cc.liveBytes carries the NEW secret
+	// only — stored secrets sit behind their intact placeholders and never reach
+	// the gate — and its consent choice comes AFTER the hunk review (the
+	// span-grained blocked path, r6-M1). A non-span-routable candidate falls back
+	// to the whole-file block. In the missing-ref fallback a block is READ-ONLY
+	// (r9-M1: no whole-file store escape for a placeholder-bearing source).
 	gate := secret.GateText(string(cc.liveBytes))
 	var hunkMasks []maskPair
 	if gate.BlockedFromRepo {
@@ -307,7 +328,7 @@ func captureOne(cc captureCtx) (bool, error) {
 			reportReadOnlyBlock(cc.out, "."+bare)
 			return false, nil
 		}
-		if !cc.placeholderAware {
+		if !spanRoutable(bare, cc.placeholderAware) {
 			return captureBlocked(cc, bare)
 		}
 		// Falling through to the hunk review with a gated NEW secret in the
@@ -349,15 +370,16 @@ func captureOne(cc captureCtx) (bool, error) {
 	// Re-scan the COMPOSED content too: an accepted hunk might carry a secret even
 	// if the whole-file scan was driven differently. Never write a secret.
 	if secret.IsBlockedFromRepo(captured) {
-		if !cc.placeholderAware {
+		if !spanRoutable(bare, cc.placeholderAware) {
 			fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare)
 			return false, nil
 		}
-		// Placeholder-bearing source + a NEW secret in the accepted change:
-		// the span-grained consent path (r6-M1) — store ONLY the new span(s),
-		// patch only those spans, preserve the curated remainder. Never the
-		// whole-file escape (it would overwrite the curated source).
-		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare, bare, captured)
+		// Span-routable source + a NEW secret in the accepted change: the
+		// span-grained consent path (r6-M1) — store ONLY the new span(s), patch
+		// only those spans (a tmux quoted option value is patched column-grained,
+		// preserving the `set -g @token '…'` syntax), preserve the curated
+		// remainder. Never the whole-file escape (it would overwrite the source).
+		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare, bare, captured, extractSpans)
 		if cerr != nil {
 			return false, cerr
 		}
@@ -384,8 +406,13 @@ func captureOne(cc captureCtx) (bool, error) {
 		// include line (apply re-appends it on deploy). Non-zsh dotfiles are unchanged.
 		sharedOut := []byte(captured)
 		if zsh {
-			sharedOut = stripSourceDirective(sharedOut, "."+bare+".local")
+			sharedOut = stripSourceDirective(sharedOut, "."+bare+".local", directiveSpecFor(bare))
 		}
+		// git identity firewall on the shared-capture WRITE: even if the user
+		// accepted an identity hunk and routed it [s]hared, strip every identity key
+		// + [includeIf …] block so a machine's commit identity can never be written
+		// into the shared repo (the STOP condition). A no-op for every other dotfile.
+		sharedOut = sharedGitTransform(bare, sharedOut)
 		// Write the captured content to every existing shared copy of this dotfile
 		// (canonical dotfiles/<bare>, dotted dotfiles/.<bare>, top-level .<bare>) so
 		// the committed shared source is consistent regardless of repo layout, plus
@@ -416,7 +443,16 @@ func captureOne(cc captureCtx) (bool, error) {
 		// deployed content IS the raw repo file).
 		if zsh || cc.placeholderAware {
 			staged := []byte(captured)
-			if cc.placeholderAware {
+			// Record the hash of the RENDERED-EFFECTIVE bytes — the same bytes apply
+			// deploys — whenever the captured composition carries a placeholder:
+			// either from a placeholder-aware source (r4-M2) OR from a span-store
+			// consent that just patched a NEW secret to a placeholder (spanPatched,
+			// e.g. a tmux `set -g @token '…'` value). Without rendering here,
+			// last-applied would hold the un-rendered placeholder hash while the
+			// deploy writes the rendered value, so status would show spurious drift.
+			// renderForLastApplied no-ops on content without placeholders, so the
+			// common zsh path (no secrets) is byte-for-byte unchanged.
+			if cc.placeholderAware || spanPatched {
 				staged = renderForLastApplied(cc.secretStore, staged)
 			}
 			if err := recordEffectiveLastApplied(cc.target, cc.lastApplied, staged); err != nil {
@@ -652,7 +688,7 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 	// apply/status compute so only GENUINE user edits (beyond the managed include
 	// line) are offered. Non-zsh dotfiles use the raw source unchanged.
 	bare := strings.TrimPrefix(cc.name, ".")
-	if isZsh(bare) && !firstCapture {
+	if usesIncludeSidecar(bare) && !firstCapture {
 		_, hasOverlay := resolveOverlaySource(cc.repoPath, bare)
 		repoBytes = effectiveZshShared(repoBytes, bare, hasOverlay)
 	}
@@ -745,6 +781,7 @@ func captureSharedDotfile(cc captureCtx) (wrote bool, offered bool, err error) {
 // presented (so the caller counts it even on a reject).
 func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, err error) {
 	bare := strings.TrimPrefix(cc.name, ".")
+	extractSpans := captureSpanExtractor(bare)
 
 	overlaySrc := localOverlayPath(cc.repoPath, bare) // local/zsh/<bare>.local
 	// Guard the overlay path (read below AND written by the sidecar capture routes)
@@ -822,12 +859,12 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 			reportReadOnlyBlock(cc.out, "."+bare+".local")
 			return false, true, nil
 		}
-		if !placeholderAware {
+		if !spanRoutable(bare, placeholderAware) {
 			w, berr := captureBlockedSidecar(cc, bare, overlaySrc, liveBytes)
 			return w, true, berr
 		}
-		// Gated NEW secret on the placeholder-aware sidecar leg: mask every
-		// flagged span value in the hunk output (never print the raw value).
+		// Gated NEW secret on a span-routable sidecar leg: mask every flagged
+		// span value in the hunk output (never print the raw value).
 		hunkMasks = captureSecretMasks(string(reviewLive), bare+".local")
 	}
 
@@ -860,13 +897,13 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 	var sidecarStoredRefs []string // refs Put by the span consent (for honest refusal notices)
 	// Re-scan the composed result: never write secret material to the overlay.
 	if secret.IsBlockedFromRepo(composed) {
-		if !placeholderAware {
+		if !spanRoutable(bare, placeholderAware) {
 			fmt.Fprintf(cc.out, "  %s: accepted change contains secret/credential material — blocked from the repo; handled out-of-band only\n", "."+bare+".local")
 			return false, true, nil
 		}
-		// Span-grained consent for a NEW secret on the placeholder-bearing
-		// sidecar leg (r6-M1) — the whole-file escape is never taken here.
-		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare+".local", bare+".local", composed)
+		// Span-grained consent for a NEW secret on a span-routable sidecar leg
+		// (r6-M1) — the whole-file escape is never taken here.
+		patched, refs, ok, cerr := consentSpanStoreRoute(cc.in, cc.out, cc.secretStore, "."+bare+".local", bare+".local", composed, extractSpans)
 		if cerr != nil {
 			return false, true, cerr
 		}
@@ -987,7 +1024,7 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	var d *terminal.PreferenceDomain
 	switch domain {
 	case "iterm2":
-		d = terminal.NewITerm2(filepath.Join(cc.repoPath, "iterm2"), terminal.ExecRunner{})
+		d = terminal.NewITerm2(nil, terminal.ExecRunner{}, terminal.ExecProcessController{})
 	default: // "terminal" / Apple Terminal
 		d = terminal.NewAppleTerminal(nil, terminal.ExecRunner{})
 	}
@@ -1006,21 +1043,19 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 		return false, false, nil
 	}
 
-	// iTerm2 ONLY: STRIP the machine-local control keys (PrefsCustomFolder /
-	// LoadPrefsFromCustomFolder) from the live export before it is compared, gated, or
-	// written. Those keys are how ferry POINTS iTerm2 at the repo (apply sets them via
-	// `defaults write`), NOT user preferences — `defaults export com.googlecode.iterm2`
-	// can carry them, but they must NEVER be captured into the repo or local overlay.
-	// Stripping here makes every downstream route (diff, gate, shared/local/secret
-	// write) operate on the pointer-free content, so the captured bytes are like-for-
-	// like with what apply deploys. The exact custom-folder-vs-export round-trip
-	// fidelity is Layer-2-deferred per AC-terminal-config (see StripITerm2ControlKeys).
+	// iTerm2 ONLY: reduce the live export to the ALLOWLISTED global keys before it is
+	// compared, gated, or written. `defaults export com.googlecode.iterm2` carries
+	// volatile machine state — window geometry, NoSync* one-shot flags, the retired
+	// custom-prefs-folder pointer — that must NEVER reach the repo; FilterAllowlist
+	// keeps ONLY the curated global-behaviour keys (see terminal.FilterAllowlist), so
+	// every downstream route (diff, gate, shared/local/secret write) operates on the
+	// stable, reviewable subset that is like-for-like with what apply imports.
 	if domain == "iterm2" {
-		liveBlob = terminal.StripITerm2ControlKeys(liveBlob)
+		liveBlob = terminal.FilterAllowlist(liveBlob)
 	}
 
 	// Repo path apply READS for this domain's plist (align with apply's
-	// buildTerminalDomain / appleTerminalExportBlob): iterm2/<id>.plist for iTerm2,
+	// buildTerminalDomain / terminalExportBlob): iterm2/<id>.plist for iTerm2,
 	// terminal/<id>.plist for Apple Terminal.
 	repoDest := terminalRepoDest(cc.repoPath, domain, prefID)
 	// Guard the terminal plist repo path (read here, written by the shared route /
@@ -1034,9 +1069,9 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	// would create it).
 	repoBytes, _ := os.ReadFile(repoDest)
 	if domain == "iterm2" {
-		// Compare LIKE-FOR-LIKE: strip the control keys from the repo side too, so a repo
-		// plist that happens to carry stale pointer keys never registers as drift here.
-		repoBytes = terminal.StripITerm2ControlKeys(repoBytes)
+		// Compare LIKE-FOR-LIKE: filter the repo side to the same allowlist so a repo
+		// plist that happens to carry stale volatile keys never registers as drift.
+		repoBytes = terminal.FilterAllowlist(repoBytes)
 	}
 	if string(repoBytes) == string(liveBlob) {
 		return false, false, nil
@@ -1119,9 +1154,9 @@ func captureBlockedTerminal(cc captureCtx, domain, prefID, repoDest string, live
 }
 
 // terminalRepoDest is the committed repo plist path apply READS for a terminal
-// domain — aligned with apply's buildTerminalDomain / appleTerminalExportBlob:
-// iTerm2 reads its custom-prefs folder <repo>/iterm2/, where the domain plist is
-// <id>.plist; Apple Terminal imports the committed <repo>/terminal/<id>.plist. A
+// domain — aligned with apply's buildTerminalDomain / terminalExportBlob: both
+// iTerm2 and Apple Terminal import the committed <repo>/<domain>/<id>.plist via
+// `defaults import` (iTerm2's is the allowlist-filtered global plist). A
 // shared-routed capture writes here so a later apply re-deploys exactly these bytes.
 func terminalRepoDest(repo, domain, prefID string) string {
 	if domain == "iterm2" {
@@ -1395,14 +1430,11 @@ func sharedTargets(repo, bare string) []string {
 }
 
 // localOverlayPath is the gitignored per-machine destination for a local-routed
-// capture: <repo>/local/<domain>/<bare>.local. zsh dotfiles map to the "zsh"
-// domain dir (mirrors apply's resolveOverlaySource).
+// capture: <repo>/local/<domain>/<bare>.local. The overlay directory is resolved
+// through overlayDomainDir (mirrors apply's resolveOverlaySource) so capture and
+// apply always agree on where a sidecar lives.
 func localOverlayPath(repo, bare string) string {
-	domain := bare
-	if isZsh(bare) {
-		domain = "zsh"
-	}
-	return filepath.Join(repo, "local", domain, bare+".local")
+	return filepath.Join(repo, "local", overlayDomainDir(bare), bare+".local")
 }
 
 // writeRepoFile writes content into the repo worktree, creating parent dirs. This
@@ -1472,5 +1504,38 @@ func reDumpDeps(ctx *cmdContext, out io.Writer) bool {
 		return false
 	}
 	fmt.Fprintf(out, "deps: re-dumped manifest %s\n", relTo(ctx.RepoPath, path))
+	return true
+}
+
+// reDumpNpmGlobals re-dumps THIS machine's global npm package NAMES to
+// deps/npm-globals.txt, gated on the npm-globals domain being in scope AND npm
+// being present. It is an INDEPENDENT capture step that COEXISTS with the brew
+// re-dump (a machine can carry both a Brewfile and an npm globals list). A missing
+// npm, or a symlinked/escaping target, is a clean skip — never a bootstrap, never
+// a write-through. Returns true ONLY when it actually (re)wrote the list, so the
+// caller counts it as an offered+captured change.
+func reDumpNpmGlobals(ctx *cmdContext, out io.Writer) bool {
+	if !ctx.Scope.IsManaged("npm-globals") {
+		return false
+	}
+	if !platform.HasNpm() {
+		fmt.Fprintln(out, "npm-globals: skipped (npm not installed)")
+		return false
+	}
+	depsDir := filepath.Join(ctx.RepoPath, "deps")
+	// Guard the target BEFORE the dump writes it (belt-and-suspenders: ReDumpNpmGlobals
+	// re-checks in the library). safeRepoPath refuses a symlinked deps/npm-globals.txt
+	// or a symlinked deps/ parent escaping the repo / resolving under ~/.ssh.
+	target := deps.NpmGlobalsFile(depsDir)
+	if _, err := safeRepoPath(ctx.RepoPath, target); err != nil {
+		fmt.Fprintf(out, "npm-globals: skipped manifest re-dump (%v)\n", err)
+		return false
+	}
+	path, err := deps.ReDumpNpmGlobals(depsDir, deps.ExecRunner{})
+	if err != nil {
+		fmt.Fprintf(out, "npm-globals: skipped manifest re-dump (%v)\n", err)
+		return false
+	}
+	fmt.Fprintf(out, "npm-globals: re-dumped %s\n", relTo(ctx.RepoPath, path))
 	return true
 }

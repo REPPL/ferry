@@ -80,6 +80,109 @@ func splitLinesLower(s string) []string {
 	return strings.Split(strings.ToLower(s), "\n")
 }
 
+// TestDoctorReportsInvariants covers the read-only managed-target invariant
+// checks: on a clean managed setup `ferry doctor` OBSERVES that the deployed
+// target is a regular-file copy (not a symlink), does not resolve under ~/.ssh,
+// and lives inside $HOME — reporting each as a pass and exiting 0. It is the
+// black-box proof that the invariant lines are present and pass on a healthy
+// machine.
+func TestDoctorReportsInvariants_AC_doctor_invariants(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	target := seedManagedDotfile(t, s, "export EDITOR=vim\n")
+
+	if _, errOut, code := s.Ferry("apply"); code != 0 {
+		t.Fatalf("setup apply exited %d; stderr:\n%s", code, errOut)
+	}
+	if fi, err := os.Lstat(target); err != nil || fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("setup: expected %s to be a regular file after apply (err=%v)", target, err)
+	}
+
+	out, errOut, code := s.Ferry("doctor")
+	combined := out + errOut
+	if code != 0 {
+		t.Fatalf("AC-doctor-invariants: doctor exited %d on a clean managed setup (want 0)\n%s", code, combined)
+	}
+	if !containsAnyFold(combined, "invariant") {
+		t.Errorf("AC-doctor-invariants: doctor did not report the managed-target invariant section\n%s", combined)
+	}
+	// The symlink invariant line must be present AND report a pass (no breach).
+	symLine := lineContaining(combined, "symlink")
+	if symLine == "" {
+		t.Errorf("AC-doctor-invariants: doctor did not report the no-symlink invariant\n%s", combined)
+	} else if !strings.Contains(symLine, "pass") {
+		t.Errorf("AC-doctor-invariants: clean setup did not report the no-symlink invariant as pass\n%s", combined)
+	}
+	// The ~/.ssh and containment invariants must be observed too.
+	if !containsAllFoldOK(combined, ".ssh") {
+		t.Errorf("AC-doctor-invariants: doctor did not report the ~/.ssh invariant\n%s", combined)
+	}
+	if !containsAnyFold(combined, "inside $home", "inside $HOME") {
+		t.Errorf("AC-doctor-invariants: doctor did not report the $HOME-containment invariant\n%s", combined)
+	}
+}
+
+// TestDoctorFlagsSymlinkTarget plants a symlink where a ferry-deployed regular
+// file should be and asserts doctor OBSERVES the breach: it names the offending
+// target as a symlink and exits non-zero. The symlink points at another in-$HOME
+// file (so it does not itself escape containment) — the breach is purely "a
+// symlink where a regular-file copy belongs", exactly what ferry's copy-not-link
+// invariant forbids. doctor detects it by lstat alone (never following the link,
+// never reading contents).
+func TestDoctorFlagsSymlinkTarget_AC_doctor_invariants(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	target := seedManagedDotfile(t, s, "export EDITOR=vim\n")
+
+	if _, errOut, code := s.Ferry("apply"); code != 0 {
+		t.Fatalf("setup apply exited %d; stderr:\n%s", code, errOut)
+	}
+
+	// Replace the deployed regular file with a symlink to another in-$HOME file.
+	decoy := s.HomePath("decoy.txt")
+	if err := os.WriteFile(decoy, []byte("export EDITOR=vim\n"), 0o644); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+	if err := os.Remove(target); err != nil {
+		t.Fatalf("remove target: %v", err)
+	}
+	if err := os.Symlink(decoy, target); err != nil {
+		t.Fatalf("plant symlink: %v", err)
+	}
+
+	out, errOut, code := s.Ferry("doctor")
+	combined := out + errOut
+	if code == 0 {
+		t.Errorf("AC-doctor-invariants: doctor exited 0 despite a symlinked managed target (want non-zero)\n%s", combined)
+	}
+	symLine := lineContaining(combined, "symlink")
+	if symLine == "" || !strings.Contains(symLine, "fail") {
+		t.Errorf("AC-doctor-invariants: doctor did not report the symlinked target as a [fail]\n%s", combined)
+	}
+	if !containsAnyFold(combined, ".zshrc") {
+		t.Errorf("AC-doctor-invariants: doctor did not name the offending target\n%s", combined)
+	}
+}
+
+// lineContaining returns the first lowercased line of out that contains substr
+// (case-insensitive), or "" if none does. Lets an assertion pair a signal
+// (pass/fail) with the specific invariant line it belongs to.
+func lineContaining(out, substr string) string {
+	sub := strings.ToLower(substr)
+	for _, line := range splitLinesLower(out) {
+		if strings.Contains(line, sub) {
+			return line
+		}
+	}
+	return ""
+}
+
+// containsAllFoldOK is a small case-insensitive substring check (the eval package
+// already has containsAnyFold; this is the single-needle "contains" variant).
+func containsAllFoldOK(haystack, needle string) bool {
+	return strings.Contains(strings.ToLower(haystack), strings.ToLower(needle))
+}
+
 // writeStub writes an executable shell stub at path.
 func writeStub(t *testing.T, path, script string) {
 	t.Helper()

@@ -18,8 +18,43 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/REPPL/ferry/internal/gitconfig"
 	"github.com/REPPL/ferry/internal/secret"
+	"github.com/REPPL/ferry/internal/tmux"
 )
+
+// spanExtractor returns the flagged secret spans of a capture candidate's text.
+// It is the seam that lets a format-specific recogniser (tmux's quoted
+// `set -g @token '…'` value) replace the generic line-grained secret.FlaggedSpans
+// for a domain that needs sub-value, column-grained isolation.
+type spanExtractor func(text string) []secret.SecretSpan
+
+// captureSpanExtractor selects the secret-span recogniser for a bare dotfile
+// name. tmux uses the column-grained tmux recogniser so ONLY the quoted option
+// value is stored/patched (the `set -g @token '…'` prefix and quotes survive
+// byte-for-byte); every other dotfile uses the generic line-grained extractor.
+func captureSpanExtractor(bare string) spanExtractor {
+	switch bare {
+	case "tmux.conf":
+		return tmux.SecretSpans
+	case gitconfigBare:
+		// git tokens live inside a URL userinfo (url.*.insteadOf) or after
+		// Bearer/Basic in http.extraHeader — the git recogniser isolates ONLY the
+		// token so the surrounding URL/header syntax survives byte-for-byte.
+		return gitconfig.SecretSpans
+	}
+	return secret.FlaggedSpans
+}
+
+// spanRoutable reports whether a capture candidate can route a NEW secret
+// span-by-span (store just the span, patch only that span to a placeholder,
+// preserve the curated remainder) rather than being blocked whole-file. A
+// placeholder-bearing source is span-routable (the r6-M1 path); so is tmux, whose
+// column-grained recogniser can isolate the secret inside a quoted option value
+// even in an otherwise plaintext source.
+func spanRoutable(bare string, placeholderAware bool) bool {
+	return placeholderAware || bare == "tmux.conf" || bare == gitconfigBare
+}
 
 // spliceReverseRender rebuilds the live bytes in SOURCE coordinates: unchanged
 // 1:1 lines take the repo-source line (placeholders intact — a placeholder can
@@ -141,6 +176,12 @@ func prepareReverseRender(store *secret.Store, label string, source, live []byte
 // line. refPrefix names the would-be positional ref shown as the mask.
 func captureSecretMasks(text, refPrefix string) []maskPair {
 	var masks []maskPair
+	// Mask with the BROAD line-grained detector, never a domain's narrow
+	// column extractor: preview masking must cover EVERY high-confidence line the
+	// gate caught (a secret that a domain recogniser does not isolate for storage
+	// must still never print), and over-masking a preview is always safe. Storage
+	// precision (a tmux column span) is a separate concern handled at the store
+	// site (consentSpanStoreRoute's extractor).
 	for _, sp := range secret.FlaggedSpans(text) {
 		ph := secret.Placeholder(fmt.Sprintf("%s.secret_%d", refPrefix, sp.StartLine))
 		for _, l := range strings.Split(sp.Value, "\n") {
@@ -178,7 +219,7 @@ func reportReadOnlyBlock(out io.Writer, label string) {
 // span's Value is stored under a positional ref and ONLY that span is patched
 // to its placeholder — the curated remainder (existing placeholders included)
 // is preserved, and stored values never contain placeholders.
-func consentSpanStoreRoute(in *bufio.Reader, out io.Writer, store *secret.Store, label, refPrefix, captured string) (patched string, refs []string, ok bool, err error) {
+func consentSpanStoreRoute(in *bufio.Reader, out io.Writer, store *secret.Store, label, refPrefix, captured string, spansOf spanExtractor) (patched string, refs []string, ok bool, err error) {
 	fmt.Fprintf(out, "  %s: SECRET / credential material detected in the accepted change (e.g. a private key or token).\n", label)
 	fmt.Fprintf(out, "  It is BLOCKED from the repo entirely (both shared and local). It is never committed.\n")
 	fmt.Fprintf(out, "  Only the out-of-band path is offered: [r]eject, or route ONLY the new secret span(s) to the out-of-repo secret store [x].\n")
@@ -187,7 +228,7 @@ func consentSpanStoreRoute(in *bufio.Reader, out io.Writer, store *secret.Store,
 		fmt.Fprintf(out, "  %s: rejected; secret kept out of the repo\n", label)
 		return "", nil, false, nil
 	}
-	spans := secret.FlaggedSpans(captured)
+	spans := spansOf(captured)
 	if len(spans) == 0 {
 		fmt.Fprintf(out, "  %s: rejected; the blocked span could not be isolated\n", label)
 		return "", nil, false, nil
@@ -297,14 +338,27 @@ func freeSecretRef(store *secret.Store, prefix string, line int, value string) (
 	}
 }
 
-// patchSpanLines replaces EXACTLY the span's line range (1-based, inclusive)
-// with a single placeholder line, preserving everything else — including any
-// earlier byte-equal occurrence of the same content — and the text's
-// trailing-newline shape.
+// patchSpanLines replaces a flagged span with a placeholder, preserving
+// everything else — including any earlier byte-equal occurrence of the same
+// content — and the text's trailing-newline shape.
+//
+// A COLUMN-grained span (HasColumns: a tmux quoted option value) replaces ONLY
+// the byte range [StartCol, EndCol) of its single line via secret.SwapColumns,
+// so the `set -g @token '…'` prefix and the surrounding quotes are byte-identical
+// after patching. A whole-line span replaces its entire 1-based inclusive line
+// range with the single placeholder line, as before.
 func patchSpanLines(text string, sp secret.SecretSpan, placeholder string) string {
 	lines := strings.Split(text, "\n")
 	if sp.StartLine < 1 || sp.EndLine < sp.StartLine || sp.EndLine > len(lines) {
 		return text
+	}
+	if sp.HasColumns() && sp.StartLine == sp.EndLine {
+		swapped, err := secret.SwapColumns(lines[sp.StartLine-1], sp.StartCol, sp.EndCol, placeholder)
+		if err != nil {
+			return text // out-of-range offsets: leave the text untouched (never a partial write)
+		}
+		lines[sp.StartLine-1] = swapped
+		return strings.Join(lines, "\n")
 	}
 	out := make([]string, 0, len(lines))
 	out = append(out, lines[:sp.StartLine-1]...)

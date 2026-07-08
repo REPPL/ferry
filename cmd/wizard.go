@@ -619,7 +619,7 @@ func printSeedPlanPreview(out io.Writer, plan *seedPlan) {
 	if plan.original != nil && plan.shared != nil {
 		future := plan.shared
 		if len(plan.local) > 0 {
-			future = appendSourceDirective(plan.shared, ".zshrc.local")
+			future = appendSourceDirective(plan.shared, ".zshrc.local", shellDirective)
 		}
 		fmt.Fprintln(out, "--- diff: ~/.zshrc after first apply vs current (dropped lines removed; secrets masked) ---")
 		hunks := diffHunks(plan.maskSecrets(string(plan.original)), plan.maskSecrets(string(future)))

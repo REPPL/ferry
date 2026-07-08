@@ -25,7 +25,8 @@ and withheld if any are found, otherwise bundled. The result is a self-contained
 .zip you move to another account or
 machine and ingest with "ferry import". Secrets and the per-machine local layer
 are never included unless you pass --include-local. export prints the bundle's
-SHA256 so you can verify the move with "ferry import --expect-sha256".`,
+reproducible SHA256 — exporting the same tracked sources always yields the same
+digest — so you can verify the move with "ferry import --expect-sha256".`,
 	Args: cobra.NoArgs,
 	RunE: runExport,
 }
@@ -149,8 +150,9 @@ func runExport(c *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, w)
 	}
 	fmt.Fprintf(out, "wrote bundle: %s\n", absOut)
-	fmt.Fprintf(out, "bundle sha256: %s\n", sha)
+	fmt.Fprintf(out, "bundle sha256 (reproducible): %s\n", sha)
 	fmt.Fprintf(out, "summary: %d file(s) bundled, %d withheld\n", len(sources), len(withheld))
+	fmt.Fprintln(out, "this sha256 is reproducible: exporting the same tracked sources always yields the same digest (no timestamps or randomness are bundled).")
 	fmt.Fprintln(out, "convey the sha256 out-of-band; import with `ferry import --expect-sha256 <sha256>` to verify.")
 	return nil
 }

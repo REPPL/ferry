@@ -169,6 +169,24 @@ var (
 	// it must never block on its own (F3, adversarial A-1).
 	hexSecret = regexp.MustCompile(`^[0-9a-fA-F]{32,}$`)
 
+	// npmAuthLine matches an npm registry auth assignment whose value is a
+	// literal credential — the `~/.npmrc` token shapes: a registry-scoped
+	// `//<host>/[path]:_authToken=`, `:_auth=`, or `:_password=` line. These
+	// bypass secretAssignment (the credential keyword is NOT at line-start — it
+	// sits after `//<host>/:`) and are too short/low-entropy to trip the entropy
+	// heuristic (a base64 `_auth`, a UUID legacy `_authToken`), so they need their
+	// own detector or a real npm token would leak to the shared repo. Only the
+	// captured VALUE (group 1) gates the finding, via the shared
+	// placeholder/interpolation rule (isNonPlaceholderSecret) and — like the
+	// URL-userinfo path — WITHOUT a length floor: the `:_authToken=` structure is
+	// itself the signal that the value is a credential, so a short legacy token
+	// still blocks. A `${NPM_TOKEN}` env-ref (npm expands it at read time) or a
+	// ferry placeholder is therefore left un-flagged and carried verbatim. The
+	// non-secret registry keys (:username, :email, :certfile, :keyfile) and plain
+	// config lines (registry=, save-exact=true) are NOT matched. Case is
+	// insensitive so `_authToken`/`_authtoken` both match.
+	npmAuthLine = regexp.MustCompile(`(?i)^\s*//\S*:_(?:authtoken|auth|password)\s*=\s*(.+)$`)
+
 	// urlCredential matches a password embedded in a URL's userinfo, i.e.
 	// `scheme://[user][:pass]@host` (DATABASE_URL=postgres://user:pass@host,
 	// REDIS_URL=redis://:pw@host). These bypass secretAssignment (the key name is
@@ -414,6 +432,24 @@ func scanLine(text string, lineNo int) Findings {
 				Confidence: High,
 				Line:       lineNo,
 				Detail:     "credential in URL userinfo",
+			})
+			return out
+		}
+	}
+
+	// npm registry auth line (//<host>/:_authToken= / :_auth= / :_password=). The
+	// credential keyword is not at line-start, so secretAssignment misses it; the
+	// value is often a short base64/UUID token below the entropy floor, so the
+	// entropy path misses it too. Only the captured value gates the finding, via
+	// the shared placeholder/interpolation rule, so a `${NPM_TOKEN}` env-ref is
+	// left un-flagged and carried verbatim. The detail never echoes the token.
+	if m := npmAuthLine.FindStringSubmatch(text); m != nil {
+		if isNonPlaceholderSecret(strings.TrimSpace(m[1])) {
+			out = append(out, Finding{
+				Rule:       "npm-auth-token",
+				Confidence: High,
+				Line:       lineNo,
+				Detail:     "npm registry auth token",
 			})
 			return out
 		}

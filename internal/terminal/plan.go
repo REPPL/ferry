@@ -59,7 +59,7 @@ func (d *PreferenceDomain) Plan() PlanEntry {
 	var summary string
 	switch d.domain {
 	case ITerm2Domain:
-		summary = "set custom prefs folder + load-from-custom-folder via defaults write"
+		summary = "import global preferences via defaults import (quit iTerm2 first)"
 	case AppleTerminalDomain:
 		summary = "import preferences via defaults import"
 	default:

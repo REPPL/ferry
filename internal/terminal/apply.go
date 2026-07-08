@@ -1,6 +1,10 @@
 package terminal
 
-import "github.com/REPPL/ferry/internal/platform"
+import (
+	"errors"
+
+	"github.com/REPPL/ferry/internal/platform"
+)
 
 // ApplyResult reports the outcome of applying a terminal preference domain.
 // Skipped is true (with ErrNotDarwin in Err) when run on a non-darwin host —
@@ -30,6 +34,12 @@ func Apply(d *PreferenceDomain) ApplyResult {
 		return ApplyResult{Domain: d.domain, Skipped: true, Err: ErrNotDarwin}
 	}
 	if err := d.apply(d.runner); err != nil {
+		// A running iTerm2 is a clean SKIP, not a failure: importing would be
+		// silently lost on quit. Report it as skipped (Applied=false) so the caller
+		// leaves live config intact and never rolls back (nothing was imported).
+		if errors.Is(err, ErrITerm2Running) {
+			return ApplyResult{Domain: d.domain, Skipped: true, Err: err}
+		}
 		return ApplyResult{Domain: d.domain, Err: err, Note: d.note}
 	}
 	return ApplyResult{Domain: d.domain, Applied: true, Note: d.note}

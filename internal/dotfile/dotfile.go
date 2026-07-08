@@ -37,7 +37,7 @@ const (
 	// `[l]ocal` routing is allowed.
 	OverlayIncludeSidecar OverlayMode = "include-sidecar"
 	// OverlayWholeFileReplace: a generic dotfile WITHOUT an include mechanism
-	// (e.g. .gitconfig) has NO safe merge point, so `.local` is WHOLE-FILE: a
+	// (e.g. .vimrc) has NO safe merge point, so `.local` is WHOLE-FILE: a
 	// per-machine full copy in local/<domain>/ is deployed INSTEAD OF the shared
 	// content (local wins). When no local copy exists the shared content is
 	// deployed. Hunk-level `[l]ocal` routing is DISALLOWED for these.

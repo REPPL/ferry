@@ -45,9 +45,6 @@ type Plugin interface {
 
 	// Describe renders a one-line human explanation of a block for the adopt UI.
 	Describe(b Block) string
-
-	// Deploy reports which EXISTING dotfile deploy mode the domain uses.
-	Deploy() DeploySpec
 }
 
 // Reassemble concatenates the blocks' Raw bytes. Because blocks partition their
@@ -239,20 +236,6 @@ type Question struct {
 	Kind                    QuestionKind
 	Options                 []string
 	Default                 string
-}
-
-// OverlayKind maps 1:1 onto the EXISTING dotfile deploy modes.
-type OverlayKind int
-
-const (
-	Sidecar OverlayKind = iota
-	WholeFile
-)
-
-// DeploySpec reports the existing dotfile deploy mode the domain uses.
-type DeploySpec struct {
-	DotfileName string // e.g. ".zshrc"
-	Overlay     OverlayKind
 }
 
 // Registry maps domain -> Plugin. Duplicate registration panics (programmer

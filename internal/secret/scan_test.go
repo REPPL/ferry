@@ -182,6 +182,62 @@ func TestScanText_URLUserinfoCredential(t *testing.T) {
 	}
 }
 
+// TestScanText_NpmAuthToken covers the npm `~/.npmrc` auth token shapes: a
+// registry-scoped `//<host>/:_authToken=`, `:_auth=`, or `:_password=` line
+// whose value is a literal credential must block, even when the value is a short
+// base64/UUID token below the entropy floor and the credential keyword is not at
+// line-start (so secretAssignment and the entropy heuristic both miss it).
+func TestScanText_NpmAuthToken(t *testing.T) {
+	block := []string{
+		// Automation token (npm_ prefix).
+		`//registry.npmjs.org/:_authToken=npm_FAKE0000aaaa1111bbbb2222cccc3333`,
+		// Low-entropy authToken value — would slip the entropy path; caught by the
+		// line shape, not the value format. Deliberately not a real npm token
+		// format (no `npm_` prefix, not a UUID) so provider secret scanners do not
+		// flag this fixture, yet it carries no placeholder marker so ferry still
+		// blocks it.
+		`//registry.npmjs.org/:_authToken=faketoken0000000000000000legacy`,
+		// Basic-auth base64 blob (_auth) — short, misses the entropy floor.
+		`//registry.npmjs.org/:_auth=aGVsbG86d29ybGRzZWNyZXQ=`,
+		// Legacy password (base64).
+		`//registry.npmjs.org/:_password=c2VjcmV0cGFzc3dvcmQxMjM=`,
+		// A scoped/private registry with a path prefix.
+		`//npm.pkg.github.com/:_authToken=ghp_FAKE0000aaaa1111bbbb2222`,
+		// Mixed case on the key.
+		`//registry.npmjs.org/:_authtoken=npm_FAKE9999zzzz8888yyyy7777dddd`,
+	}
+	for _, c := range block {
+		fs := ScanText(c)
+		if !fs.HasHigh() {
+			t.Errorf("expected high finding for npm auth line %q, got %+v", c, fs)
+		}
+	}
+	// The token must never appear in the finding detail.
+	for _, f := range ScanText(`//registry.npmjs.org/:_authToken=npm_FAKE0000aaaa1111bbbb2222cccc3333`) {
+		if strings.Contains(f.Detail, "npm_FAKE") {
+			t.Errorf("finding detail leaked the npm token: %q", f.Detail)
+		}
+	}
+	// Negatives: an env-ref (npm expands it at read time), a ferry placeholder,
+	// and ordinary non-secret npmrc lines must NOT be flagged.
+	pass := []string{
+		`//registry.npmjs.org/:_authToken=${NPM_TOKEN}`,               // env-ref, carried verbatim
+		`//registry.npmjs.org/:_authToken={{ferry.secret "npm.tok"}}`, // ferry placeholder
+		`//registry.npmjs.org/:_authToken=`,                           // empty value
+		`//registry.npmjs.org/:username=alex`,                         // username is not a secret
+		`//registry.npmjs.org/:email=alex@example.com`,                // email is not a secret
+		`registry=https://registry.npmjs.org/`,                        // plain registry line
+		`save-exact=true`,                                             // ordinary config flag
+		`@myscope:registry=https://npm.pkg.github.com/`,               // scoped registry mapping
+	}
+	for _, c := range pass {
+		fs := ScanText(c)
+		if fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: npmrc non-secret line %q flagged: %+v", c, fs)
+		}
+	}
+}
+
 func TestScanText_LineNumbers(t *testing.T) {
 	content := "line one\nline two\npassword = realSecretValue99\nline four"
 	fs := ScanText(content)

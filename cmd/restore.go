@@ -342,14 +342,23 @@ func registerTerminalDomains(ctx *cmdContext) error {
 	if err != nil {
 		return err
 	}
-	eng.Register(terminal.NewITerm2(filepath.Join(ctx.RepoPath, "iterm2"), terminal.ExecRunner{}))
-	eng.Register(terminal.NewAppleTerminal(nil, terminal.ExecRunner{}))
+	// Register every ResourceDomain from the converged registry (fn-5), in its
+	// load-bearing order, instead of the hardcoded iTerm2 + Apple Terminal pair.
+	// The runner/blob are irrelevant for restore (the engine replays the captured
+	// blob via Restore), so the registry's default construction suffices.
+	for _, rd := range buildRegistry(ctx).ResourceDomains {
+		eng.Register(rd)
+	}
 	return nil
 }
 
 // restorePackages uninstalls ONLY the packages ferry recorded as self-installed
 // (the newline list apply --deps persisted). Homebrew / the package manager
 // itself is NEVER removed. An empty or absent record means there is nothing to do.
+//
+// npm globals are deliberately OUT of this rail: apply --deps reconciles them
+// install-only and records nothing for them (mirroring the Homebrew cleanup-out
+// decision), so restore --packages never uninstalls an npm global.
 func restorePackages(out io.Writer) error {
 	pkgs, err := readInstalledSet()
 	if err != nil {

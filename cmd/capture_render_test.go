@@ -103,7 +103,7 @@ func TestConsentSpanStoreRoute_UncleanSpanReadOnly(t *testing.T) {
 		"alias keep='me'\n"
 
 	var out bytes.Buffer
-	_, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured)
+	_, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured, secret.FlaggedSpans)
 	if err != nil {
 		t.Fatalf("consentSpanStoreRoute: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestConsentSpanStoreRoute_CleanSpanStores(t *testing.T) {
 	captured := "# curated\n" + `{{ferry.secret "zsh.github_token"}}` + "\n" + line + "\n"
 
 	var out bytes.Buffer
-	patched, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured)
+	patched, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured, secret.FlaggedSpans)
 	if err != nil || !ok {
 		t.Fatalf("consent failed: ok=%v err=%v\n%s", ok, err, out.String())
 	}
@@ -270,9 +270,10 @@ func TestCaptureOne_WholeFileLocalWritesPatchedComposition(t *testing.T) {
 	storeDir := t.TempDir()
 	store := secret.OpenAt(storeDir)
 	repoPath := t.TempDir()
-	// A NON-zsh dotfile (whole-file local overlay, no include point).
-	src := "[user]\n\tname = tester\n# stored key\n" + `{{ferry.secret "gitconfig.secret_9"}}` + "\n"
-	if err := store.Put("gitconfig.secret_9", "synthetic-old-value"); err != nil {
+	// A NON-zsh, non-include whole-file dotfile (.npmrc: whole-file local overlay,
+	// no include point, generic line-grained secret extractor).
+	src := "registry=https://registry.npmjs.org/\n# stored key\n" + `{{ferry.secret "npmrc.secret_9"}}` + "\n"
+	if err := store.Put("npmrc.secret_9", "synthetic-old-value"); err != nil {
 		t.Fatal(err)
 	}
 	newLine := "export NEW_TOKEN=" + synthWizardSecret
@@ -283,7 +284,7 @@ func TestCaptureOne_WholeFileLocalWritesPatchedComposition(t *testing.T) {
 		out:              &out,
 		in:               bufio.NewReader(strings.NewReader("y\nx\nl\n")), // accept, store consent, LOCAL route
 		repoPath:         repoPath,
-		name:             ".gitconfig",
+		name:             ".npmrc",
 		repoBytes:        []byte(src),
 		liveBytes:        []byte(live),
 		secretStore:      store,
@@ -295,7 +296,7 @@ func TestCaptureOne_WholeFileLocalWritesPatchedComposition(t *testing.T) {
 	if !wrote {
 		t.Fatalf("store-then-local whole-file capture refused\n%s", out.String())
 	}
-	dest := filepath.Join(repoPath, "local", "gitconfig", "gitconfig")
+	dest := filepath.Join(repoPath, "local", "npmrc", "npmrc")
 	data, err := os.ReadFile(dest)
 	if err != nil {
 		t.Fatalf("whole-file local overlay not written at %s: %v\n%s", dest, err, out.String())
@@ -303,11 +304,11 @@ func TestCaptureOne_WholeFileLocalWritesPatchedComposition(t *testing.T) {
 	if strings.Contains(string(data), synthWizardSecret) {
 		t.Errorf("CRITICAL: the raw secret value reached the repo worktree at %s:\n%s", dest, data)
 	}
-	if !strings.Contains(string(data), "{{ferry.secret") || !strings.Contains(string(data), "name = tester") {
+	if !strings.Contains(string(data), "{{ferry.secret") || !strings.Contains(string(data), "registry=https://registry.npmjs.org/") {
 		t.Errorf("local overlay is not the patched composition:\n%s", data)
 	}
 	// The printed message names exactly what was written.
-	if !strings.Contains(out.String(), "captured -> local (local/gitconfig/gitconfig") {
+	if !strings.Contains(out.String(), "captured -> local (local/npmrc/npmrc") {
 		t.Errorf("capture message does not match the written file:\n%s", out.String())
 	}
 	// The consented value is in the store, and never printed.
@@ -458,7 +459,7 @@ func TestConsentSpanStoreRoute_PartialPutFailureNamesStoredRefs(t *testing.T) {
 	t.Cleanup(func() { storePut = orig })
 
 	var out bytes.Buffer
-	_, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured)
+	_, _, ok, err := consentSpanStoreRoute(bufio.NewReader(strings.NewReader("x\n")), &out, store, ".zshrc", "zshrc", captured, secret.FlaggedSpans)
 	if ok {
 		t.Fatal("partial Put failure reported success")
 	}

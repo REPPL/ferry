@@ -18,7 +18,6 @@ func (s stubPlugin) ApplyRepairs(b []Block, a []Finding) ([]Block, error) {
 func (s stubPlugin) StarterQuestions() []Question      { return nil }
 func (s stubPlugin) Starter(a Answers) ([]byte, error) { return nil, nil }
 func (s stubPlugin) Describe(b Block) string           { return "" }
-func (s stubPlugin) Deploy() DeploySpec                { return DeploySpec{} }
 
 // AC-plugin-registry: the registry resolves a registered domain.
 func TestRegistryResolve(t *testing.T) {

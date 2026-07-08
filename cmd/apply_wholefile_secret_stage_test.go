@@ -1,14 +1,15 @@
 package cmd
 
-// WS4(a): applyTarget must deploy a WHOLE-FILE-REPLACE dotfile (e.g. .gitconfig)
-// through the IN-MEMORY apply core too, never staging its effective bytes to a
-// $TMPDIR temp file. A generic dotfile defaults to OverlayWholeFileReplace and is
-// arguably the most likely to carry a {{ferry.secret}} token (a GitHub token in
-// .gitconfig), so for a secret-routed target those bytes are ALREADY-RENDERED
+// WS4(a): the shared apply core (dotfile.ApplyContentDeferred) — the one the
+// converged kindFile arm calls — must deploy a WHOLE-FILE-REPLACE dotfile
+// (e.g. .gitconfig) through the IN-MEMORY path too, never staging its effective
+// bytes to a $TMPDIR temp file. A generic dotfile defaults to OverlayWholeFileReplace
+// and is arguably the most likely to carry a {{ferry.secret}} token (a GitHub token
+// in .gitconfig), so for a secret-routed target those bytes are ALREADY-RENDERED
 // plaintext; a crash between staging and cleanup would leave the secret at rest in
 // /tmp. The test points $TMPDIR at an empty dir and inspects it at the moment of
 // the deploy write (inside the Backuper), when the pre-fix stageContent temp would
-// still exist (its cleanup was deferred until applyTarget returned).
+// still exist (its cleanup was deferred until the apply call returned).
 
 import (
 	"os"
@@ -54,16 +55,16 @@ func TestApplyTargetWholeFileSecretRoutedStagesNoTempFile(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 
-	res, err := applyTarget(it, store, b, false)
+	res, err := dotfile.ApplyContentDeferred(it.target, it.content, dotfile.DefaultPerm(), store, b, false, it.secretRouted)
 	if err != nil {
-		t.Fatalf("applyTarget: %v", err)
+		t.Fatalf("ApplyContentDeferred: %v", err)
 	}
 	if res.Action != dotfile.ActionCreated {
 		t.Fatalf("Action = %q, want created (fresh missing target should be written)", res.Action)
 	}
 
 	if len(tmpEntriesAtWrite) != 0 {
-		t.Fatalf("applyTarget staged %d file(s) in $TMPDIR during a whole-file secret-routed deploy: %v; "+
+		t.Fatalf("the apply core staged %d file(s) in $TMPDIR during a whole-file secret-routed deploy: %v; "+
 			"the rendered plaintext must never touch /tmp", len(tmpEntriesAtWrite), tmpEntriesAtWrite)
 	}
 
