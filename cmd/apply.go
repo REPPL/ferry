@@ -29,7 +29,7 @@ import (
 func init() {
 	// --force is an apply-only override (overwrite uncaptured local edits on a
 	// conflict). Registered here so commands.go stays owned by the skeleton wave;
-	// --deps and --dry-run are already declared there.
+	// --deps is already declared there.
 	applyCmd.Flags().Bool("force", false, "overwrite uncaptured local edits on conflict")
 	// --skip-wizard is the expert opt-out from the guided walkthrough: safe changes
 	// still auto-apply, but risky changes are NOT prompted — they FAIL CLOSED
@@ -115,7 +115,7 @@ type planItem struct {
 	// item: true when an immutable baseline exists for this domain's resource path
 	// (HasBaseline(ResourcePath(prefID))), i.e. ferry applied it on this machine
 	// before. It is the write-free, read-only proxy for "the terminal domain is
-	// already managed", so a clean machine's diff/dry-run shows "managed (re-apply
+	// already managed", so a clean machine's diff shows "managed (re-apply
 	// on demand)" instead of an unconditional pending "would apply". Computed from
 	// the live engine on the mutating path, and from a NON-MUTATING baseline stat
 	// (baselineHasBeenApplied) on the read-only preview path — never by constructing
@@ -127,7 +127,6 @@ type planItem struct {
 // runApply is the idempotent, transactional, non-interactive reconcile.
 func runApply(c *cobra.Command, _ []string) error {
 	depsFlag, _ := c.Flags().GetBool("deps")
-	dryRun, _ := c.Flags().GetBool("dry-run")
 	force, _ := c.Flags().GetBool("force")
 	skipWizard, _ := c.Flags().GetBool("skip-wizard")
 
@@ -138,26 +137,6 @@ func runApply(c *cobra.Command, _ []string) error {
 
 	out := c.OutOrStdout()
 	in := bufio.NewReader(c.InOrStdin())
-
-	// --dry-run is a pure preview: take NO lock, write NOTHING. The plan is
-	// read-only here, so it is safe to compute it without the lock — it never
-	// drives a mutation on this path.
-	if dryRun {
-		// Read-only preview: buildPlan creates no ferry state (no engine, no
-		// state-dir mkdir). Terminal items probe the already-applied baseline via a
-		// non-mutating stat, so a managed domain shows "managed (re-apply on demand)"
-		// without ever writing.
-		plan, warnings, err := buildPlan(ctx)
-		if err != nil {
-			return err
-		}
-		for _, w := range warnings {
-			fmt.Fprintln(out, w)
-		}
-		printPlan(out, plan)
-		fmt.Fprintln(out, "dry-run: no changes written")
-		return nil
-	}
 
 	// Mutating apply: acquire the lock and roll back any incomplete prior run
 	// FIRST, then compute the plan UNDER the lock so it cannot be stale, then
@@ -182,11 +161,11 @@ func runApply(c *cobra.Command, _ []string) error {
 // buildPlan computes, without writing anything, what apply would do for every
 // in-scope domain. It also returns de-scope warnings for the DOTFILE domain
 // (dotfiles previously applied but now out of scope). It is read-only — it opens
-// the last-applied store read-only so a pure preview (diff / apply --dry-run)
+// the last-applied store read-only so a pure preview (diff / status)
 // never creates ferry state. Terminal de-scope warnings are computed separately
 // on the mutating path (they need the backup engine's baseline).
 //
-// This is the READ-ONLY entry point (diff / status / apply --dry-run / init
+// This is the READ-ONLY entry point (diff / status / init
 // preview). It stays write-free: it NEVER creates ferry's state dir OR any of its
 // subdirs. The terminal already-applied check is a NON-MUTATING stat of the
 // immutable baseline metadata (baselineHasBeenApplied → backup.HasBaselineReadOnly)
@@ -316,7 +295,7 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 		// the live engine; the read-only preview path (eng == nil) reads it via a
 		// NON-MUTATING baseline stat (baselineHasBeenApplied) that never builds an
 		// engine and so never creates the state dir/subdirs. Both observe the same
-		// immutable baseline, so diff/dry-run and apply agree. Only meaningful on
+		// immutable baseline, so diff and apply agree. Only meaningful on
 		// darwin — a non-darwin host has no terminal baseline to record.
 		applied := false
 		if isDarwin() {
@@ -541,7 +520,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 // its EFFECTIVE (composed + secret-rendered) content — the exact bytes apply would
 // deploy — PLUS the guided-apply risk verdict. It hashes the effective content IN
 // MEMORY via dotfile.ClassifyContent: NO temp file is staged and NO secret-rendered
-// byte is ever written to disk, so the diff/status/dry-run preview path is fully
+// byte is ever written to disk, so the diff/status preview path is fully
 // write-free while still observing the identical state apply's deploy path sees
 // (zsh source-last, whole-file local-wins, rendered secrets all agree). It then
 // runs the risk gate (assessRisk) over the resulting Status so planning computes
@@ -630,7 +609,7 @@ func refusalWarning(name string, err error) string {
 // change apply unattended, and the bytes written are never stale.
 func applyPlan(ctx *cmdContext, force bool, gopts guidedOpts, in *bufio.Reader, out io.Writer) (retErr error) {
 	// Obtain the transactional engine (built lazily; this is the first mutating
-	// use, so it creates ferry's state dir). Read-only diff/dry-run never reach here.
+	// use, so it creates ferry's state dir). Read-only diff/status never reach here.
 	eng, err := ctx.Engine()
 	if err != nil {
 		return err
@@ -1048,7 +1027,7 @@ func applyNpmGlobals(ctx *cmdContext, out io.Writer) error {
 	return nil
 }
 
-// printPlan renders the planned actions (dry-run / diff). For dotfile/overlay
+// printPlan renders the planned actions (diff / status). For dotfile/overlay
 // targets it prints the REAL three-way classification computed during planning
 // (it.state) — the same resolution apply acts on — rather than a blanket "would
 // deploy": a clean target is shown clean, a conflict as conflict, a missing

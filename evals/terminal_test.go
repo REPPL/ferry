@@ -73,7 +73,7 @@ func diffPlansTerminalChange(diffLower string, app terminalApp) bool {
 }
 
 // nativePrefMarkers are words that, when associated with a terminal domain in
-// diff/dry-run output, signal NATIVE-PREFERENCE handling distinct from a generic
+// diff output, signal NATIVE-PREFERENCE handling distinct from a generic
 // file/dotfile copy. The bare domain NAME is intentionally excluded — a plain
 // dotfile-copy impl could also print the name; only a preference/native qualifier
 // (or the `defaults` recorder firing) proves native handling.
@@ -92,7 +92,7 @@ var fileCopyMarkers = []string{
 
 // TestTerminalConfig covers AC-terminal-config (GATING on macOS): for BOTH iTerm2
 // AND Apple Terminal, an in-scope terminal domain is handled as a macOS-native
-// preference domain (named as such in diff/dry-run output, OR a stubbed `defaults`
+// preference domain (named as such in diff output, OR a stubbed `defaults`
 // recorder fires), NOT as a plain dotfile copy. An impl that handles no terminal
 // domain — or only one of the two — must not fully pass. Out-of-scope => no
 // terminal change (tripwire).

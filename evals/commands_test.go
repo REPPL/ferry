@@ -12,7 +12,7 @@ import (
 // documentedCommands is the exact set from the README "Commands" table
 // (AC-cmd-set-complete).
 var documentedCommands = []string{
-	"init", "apply", "capture", "status", "doctor", "diff", "restore",
+	"init", "apply", "capture", "status", "doctor", "diff", "restore", "bundle",
 }
 
 // TestTopLevelHelpListsAllCommands covers AC-cmd-set-complete: `ferry --help`
@@ -240,16 +240,12 @@ func TestApplyDepsFlagParses_AC_cmd_apply_deps_flag(t *testing.T) {
 	}
 }
 
-// TestApplyDryRunFlagDocumented covers AC-cmd-apply-dryrun-flag — NON-GATING /
-// OPTIONAL. The mandatory preview path is `ferry diff` (AC-cmd-diff /
-// AC-diff-preview-only); `apply --dry-run` is not doc-named.
-//
-// NOTE (doc ambiguity, ACCEPTANCE.md §ambiguities): the docs give a dedicated
-// `ferry diff` command and never spell out `apply --dry-run` in prose. If
-// --dry-run is NOT exposed, we SKIP (gate falls back to AC-cmd-diff). If it IS
-// exposed, we additionally do a non-gating no-write check here (the behavioural
-// no-write half is not in apply_test.go — it lives inline below when the flag exists).
-func TestApplyDryRunFlagDocumented_AC_cmd_apply_dryrun_flag(t *testing.T) {
+// TestApplyDryRunFlagRemoved regression-tests the v0.8.0 breaking removal of
+// `apply --dry-run`. The read-only preview is now ONLY `ferry diff` (AC-cmd-diff),
+// which shares buildPlan/printPlan with apply. The removed flag must be gone: it is
+// not listed in `apply --help`, and invoking it fails with an unknown-flag parse
+// error (never silently accepted). `ferry diff` still previews without writing.
+func TestApplyDryRunFlagRemoved_AC_cmd_apply_dryrun_flag(t *testing.T) {
 	t.Parallel()
 	s := NewSandbox(t)
 	out, errOut, code := s.Ferry("apply", "--help")
@@ -257,21 +253,30 @@ func TestApplyDryRunFlagDocumented_AC_cmd_apply_dryrun_flag(t *testing.T) {
 		t.Fatalf("`ferry apply --help` exited %d; stderr:\n%s", code, errOut)
 	}
 	help := out + errOut
-	if _, ok := containsAllFold(help, "--dry-run"); !ok {
-		t.Skipf("AC-cmd-apply-dryrun-flag: `apply --dry-run` not exposed; only `ferry diff` is doc-mandatory (see ACCEPTANCE.md ambiguities). Covered by AC-cmd-diff.")
+	if _, ok := containsAllFold(help, "--dry-run"); ok {
+		t.Fatalf("`apply --dry-run` is removed in v0.8.0 but still appears in help:\n%s", help)
 	}
 
-	// Flag IS exposed: non-gating no-write check — `apply --dry-run` must report a
-	// would-be change without writing the managed target.
+	// Invoking the removed flag must fail with an unknown-flag parse error.
 	s2 := NewSandbox(t)
 	s2.SeedSharedManifest(t, baseManifest)
 	s2.WriteRepoFile(t, ".zshrc", "# would be deployed\n")
 	s2.WriteRepoFile(t, "dotfiles/.zshrc", "# would be deployed\n")
 	tw := s2.SnapshotFile(t, s2.HomePath(".zshrc")) // absent
-	if _, _, code := s2.Ferry("apply", "--dry-run"); code != 0 {
-		t.Logf("AC-cmd-apply-dryrun-flag (non-gating): `apply --dry-run` exited %d", code)
+	dOut, dErr, dCode := s2.Ferry("apply", "--dry-run")
+	if dCode == 0 {
+		t.Fatalf("`apply --dry-run` should fail (flag removed) but exited 0; stdout:\n%s", dOut)
 	}
-	tw.AssertUnchanged(t) // dry-run must not write the managed target
+	if !looksLikeUnknownFlag(dOut + dErr) {
+		t.Errorf("`apply --dry-run` failed but not with an unknown-flag error; output:\n%s", dOut+dErr)
+	}
+	tw.AssertUnchanged(t) // a rejected flag must not write the managed target
+
+	// `ferry diff` is the surviving read-only preview: it must run and write nothing.
+	if _, dfErr, dfCode := s2.Ferry("diff"); dfCode != 0 {
+		t.Fatalf("`ferry diff` exited %d; stderr:\n%s", dfCode, dfErr)
+	}
+	tw.AssertUnchanged(t) // diff must not write the managed target
 }
 
 // looksLikeUnknownFlag reports whether output contains a typical "flag not

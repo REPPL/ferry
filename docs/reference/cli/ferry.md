@@ -24,11 +24,10 @@ ferry [flags]
 
 * [ferry agents](ferry_agents.md)	 - Onboard project repos and migrate agent-instruction setups
 * [ferry apply](ferry_apply.md)	 - Reconcile this machine to the repo (deploy dotfiles, terminal settings)
+* [ferry bundle](ferry_bundle.md)	 - Move the config repo offline as a portable bundle
 * [ferry capture](ferry_capture.md)	 - Pull local changes back into the repo (interactive, selective)
 * [ferry diff](ferry_diff.md)	 - Preview what apply would change
 * [ferry doctor](ferry_doctor.md)	 - Report machine/tool health
-* [ferry export](ferry_export.md)	 - Write a portable, secret-scanned bundle of the config repo
-* [ferry import](ferry_import.md)	 - Ingest a ferry bundle into a fresh config repo
 * [ferry init](ferry_init.md)	 - First-run setup: locate/clone the config repo and write ferry's config
 * [ferry restore](ferry_restore.md)	 - Reverse ferry's changes, returning to the pre-ferry state from backup
 * [ferry status](ferry_status.md)	 - Report config drift (what changed on this machine)
