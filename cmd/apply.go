@@ -16,6 +16,9 @@ import (
 	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/deps"
 	"github.com/REPPL/ferry/internal/dotfile"
+	"github.com/REPPL/ferry/internal/emacs"
+	"github.com/REPPL/ferry/internal/iterm2profiles"
+	"github.com/REPPL/ferry/internal/keybindings"
 	"github.com/REPPL/ferry/internal/paths"
 	"github.com/REPPL/ferry/internal/platform"
 	"github.com/REPPL/ferry/internal/secret"
@@ -39,24 +42,32 @@ func init() {
 type planKind int
 
 const (
-	kindDotfile    planKind = iota // a file-domain target reconciled by copy
-	kindOverlay                    // a .local overlay materialised to its home path
+	// kindFile is the converged FileDomain item: any regular-file target under
+	// $HOME reconciled by content -> target -> dotfile.ApplyContentDeferred. It
+	// replaces the pre-fn-5 kindDotfile/kindOverlay/kindAgents/kindTerminal
+	// quartet; the owning domain (planItem.fileDomain) selects the per-domain
+	// report wording that used to be keyed on the kind.
+	kindFile       planKind = iota // a FileDomain target (dotfile/overlay/agents/terminal config)
 	kindPreference                 // a native macOS preference (plist/defaults) domain
-	kindAgents                     // an agents-domain target (derived content, repo-authoritative)
-	kindTerminal                   // a config-file terminal target (carried like a dotfile)
 )
 
 // planItem is one unit of work apply would perform. It carries the fully
 // resolved, secret-rendered content so diff and apply share identical planning.
 type planItem struct {
-	kind    planKind
-	domain  string         // human label (e.g. "zsh", "iterm2", ".zshrc")
-	target  dotfile.Target // dotfile/overlay targets only
-	content []byte         // effective content to materialise (post-render)
-	action  string         // computed action for reporting (created/updated/noop/conflict/skipped/preview)
-	skip    bool           // true when a missing secret forces a skip
-	missing []string       // refs that were missing (when skip)
-	note    string         // free-form note (de-scope warnings, preference TODO)
+	kind planKind
+	// fileDomain is the owning FileDomain's scope name ("dotfiles", "agents",
+	// "terminals") for a kindFile item. It selects the per-domain report wording
+	// (capture guidance vs repo-authoritative vs repo-source) and the
+	// agents-target recording that used to be keyed on the collapsed kinds. Empty
+	// for kindPreference.
+	fileDomain string
+	domain     string         // human label (e.g. "zsh", "iterm2", ".zshrc")
+	target     dotfile.Target // dotfile/overlay targets only
+	content    []byte         // effective content to materialise (post-render)
+	action     string         // computed action for reporting (created/updated/noop/conflict/skipped/preview)
+	skip       bool           // true when a missing secret forces a skip
+	missing    []string       // refs that were missing (when skip)
+	note       string         // free-form note (de-scope warnings, preference TODO)
 
 	// risky/riskReason are the guided-apply risk gate's per-item verdict, computed
 	// during planning by assessRisk. A risky change halts for confirmation in the
@@ -99,16 +110,6 @@ type planItem struct {
 	// kindPreference item (iTerm2 / Apple Terminal). diff renders its Plan();
 	// apply Registers + BackupResources + Applies it. nil for non-preference kinds.
 	prefDomain *terminal.PreferenceDomain
-
-	// stagePlistPath / stageContent carry the iTerm2 RENDERED STAGING write. When
-	// stagePlistPath is non-empty (iterm2 only), mutate writes stageContent — the
-	// repo plist with its {{ferry.secret ...}} placeholders already substituted —
-	// into the ferry-owned staging folder (com.googlecode.iterm2.plist) via the
-	// backup engine BEFORE terminal.Apply points PrefsCustomFolder at that folder.
-	// So iTerm2 loads the rendered plist, never the raw repo one. Empty on the
-	// read-only preview path and for non-iterm2 kinds.
-	stagePlistPath string
-	stageContent   []byte
 
 	// prefApplied is the observable "already applied" signal for a kindPreference
 	// item: true when an immutable baseline exists for this domain's resource path
@@ -237,49 +238,39 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 		return nil, nil, err
 	}
 
-	if ctx.Scope.IsManaged("dotfiles") {
-		ditems, dwarn, derr := planDotfiles(ctx, home, secretStore, lastApplied)
-		if derr != nil {
-			return nil, nil, derr
-		}
-		items = append(items, ditems...)
-		warnings = append(warnings, dwarn...)
-	}
+	reg := buildRegistry(ctx)
 
-	// Agents domain: the harness registry × instruction sources × optional
-	// devtree × asset trees, expanded to 1:1 (content, target) items by
-	// planAgents and reconciled through the same three-way machinery as
-	// dotfiles. Gated behind `[manage] agents = true` (default off). When the
-	// domain is de-scoped, previously applied targets collapse into one
-	// de-scope warning (files left untouched).
-	if ctx.Scope.IsManaged("agents") {
-		aitems, awarn, aerr := planAgents(ctx, home, lastApplied)
-		if aerr != nil {
-			return nil, nil, aerr
+	// FileDomain fan-out (fn-5): plan each in-scope FileDomain through the
+	// converged registry, in the registry's LOAD-BEARING order (dotfiles, agents,
+	// terminals), so item AND warning ORDERING matches the pre-fn-5 dispatch
+	// byte-for-byte. Each managed domain's rich planItems — secrets rendered,
+	// three-way state classified, risk assessed — is produced by its per-domain
+	// planner via the filePlanner upcast (the frozen domains.FileItem cannot carry
+	// state/skip/risk). An out-of-scope domain emits its own de-scope warnings
+	// instead; dotfiles DEFER theirs to the END of the plan (after the preference
+	// domains) via descopeDotfileWarnings, so descopeUnmanaged returns nil for it.
+	// This replaces the hardcoded IsManaged("dotfiles"/"agents"/"terminals")
+	// sequence — the agents/terminals per-domain gating notes still hold: each is
+	// gated behind its own `[manage]` bool (default off) and collapses de-scoped
+	// targets into de-scope warnings.
+	for _, fd := range reg.FileDomains {
+		fp, ok := fd.(filePlanner)
+		if !ok {
+			continue
 		}
-		items = append(items, aitems...)
-		warnings = append(warnings, awarn...)
-	} else {
-		warnings = append(warnings, descopeAgentsWarnings(lastApplied, nil, false)...)
-	}
-
-	// Config-file terminal domain: the built-in terminal registry × the repo's
-	// terminals/ configs, expanded to 1:1 (content, target) items by
-	// planTerminals and reconciled through the same three-way machinery as
-	// dotfiles (they ARE carried like dotfiles: capturable, .local overlay wins).
-	// Gated behind `[manage] terminals = true` (default off). When de-scoped,
-	// previously applied targets collapse into one de-scope warning (files left
-	// untouched). Distinct from the macOS `terminal`/`iterm2` preference domains
-	// below.
-	if ctx.Scope.IsManaged("terminals") {
-		titems, twarn, terr := planTerminals(ctx, home, secretStore, lastApplied)
-		if terr != nil {
-			return nil, nil, terr
+		if ctx.Scope.IsManaged(fd.Name()) {
+			fitems, fwarn, ferr := fp.planItems(ctx, home, secretStore, lastApplied)
+			if ferr != nil {
+				return nil, nil, ferr
+			}
+			for i := range fitems {
+				fitems[i].fileDomain = fd.Name()
+			}
+			items = append(items, fitems...)
+			warnings = append(warnings, fwarn...)
+		} else {
+			warnings = append(warnings, fp.descopeUnmanaged(ctx, lastApplied)...)
 		}
-		items = append(items, titems...)
-		warnings = append(warnings, twarn...)
-	} else {
-		warnings = append(warnings, descopeTerminalConfigWarnings(lastApplied, nil, false)...)
 	}
 
 	// Terminal preference domains: represent in-scope iterm2 / Apple Terminal as
@@ -297,27 +288,26 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 	// and never shells out. The already-applied baseline probe is darwin-only (the
 	// engine baseline is a macOS apply artifact); on Linux the entry is a pure
 	// no-op skip that apply never mutates (terminal.Apply no-ops via ErrNotDarwin).
-	for _, domain := range []string{"iterm2", "terminal"} {
+	for _, rd := range reg.ResourceDomains {
+		domain := rd.Name()
 		if !ctx.Scope.IsManaged(domain) {
 			continue
 		}
-		d, stage, derr := buildTerminalDomain(ctx.RepoPath, domain, secretStore)
+		d, missing, derr := buildTerminalDomain(ctx.RepoPath, domain, secretStore)
 		if derr != nil {
-			// The repo-side prefs folder / export blob is a symlink, escapes the repo,
-			// or resolves under ~/.ssh / a system location. REFUSE the domain rather than
-			// hand a poisoned folder to `defaults write PrefsCustomFolder` — skip it with
-			// a clear notice instead of persisting a symlinked prefs folder.
+			// The repo-side export blob is a symlink, escapes the repo, or resolves under
+			// ~/.ssh / a system location. REFUSE the domain rather than `defaults import`
+			// a poisoned blob — skip it with a clear notice.
 			warnings = append(warnings, refusalWarning(domain, derr))
 			continue
 		}
-		// Secret render-or-SKIP parity with dotfiles: the plist/export bytes this
-		// domain would deploy carry unrendered {{ferry.secret ...}} placeholders whose
-		// secret is MISSING from the store. SKIP the whole terminal domain (live config
-		// left intact) rather than point iTerm2 at — or `defaults import` — an
-		// unrendered placeholder, which would expose it to the terminal preference
-		// mechanism. With the secret PRESENT the bytes are rendered and applied.
-		if len(stage.Missing) > 0 {
-			warnings = append(warnings, fmt.Sprintf("%-22s skipped (missing secret: %s)", domain, strings.Join(stage.Missing, ", ")))
+		// Secret render-or-SKIP parity with dotfiles: the export bytes this domain
+		// would deploy carry unrendered {{ferry.secret ...}} placeholders whose secret
+		// is MISSING from the store. SKIP the whole terminal domain (live config left
+		// intact) rather than `defaults import` an unrendered placeholder. With the
+		// secret PRESENT the bytes are rendered and applied.
+		if len(missing) > 0 {
+			warnings = append(warnings, fmt.Sprintf("%-22s skipped (missing secret: %s)", domain, strings.Join(missing, ", ")))
 			continue
 		}
 		// Observable "already applied": a recorded immutable baseline for this
@@ -339,13 +329,11 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 			}
 		}
 		items = append(items, planItem{
-			kind:           kindPreference,
-			domain:         domain,
-			action:         "preview",
-			prefDomain:     d,
-			prefApplied:    applied,
-			stagePlistPath: stage.plistPath,
-			stageContent:   stage.content,
+			kind:        kindPreference,
+			domain:      domain,
+			action:      "preview",
+			prefDomain:  d,
+			prefApplied: applied,
 		})
 	}
 
@@ -361,10 +349,12 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 
 // planDotfiles builds the per-target plan for the dotfiles domain, honouring the
 // PER-DOMAIN overlay strategy (PLAN.md "Per-domain overlay strategy"):
-//   - zsh (include-style): build the target with IncludeSidecarTarget, always
-//     deploy the SHARED file (with `source ~/.zshrc.local` appended last so the
-//     per-machine sidecar wins), and materialise the sidecar (~/.zshrc.local).
-//   - generic dotfiles (whole-file replace, e.g. .gitconfig): deploy the LOCAL
+//   - include-style (zsh/tmux/git): build the target with IncludeSidecarTarget,
+//     always deploy the SHARED file (with the format's include directive appended
+//     last so the per-machine sidecar wins — shell `source`, tmux `source-file`,
+//     git `[include]`), and materialise the sidecar (~/.<bare>.local). For git the
+//     shared bytes are additionally identity-firewalled before the include.
+//   - generic dotfiles (whole-file replace, e.g. .vimrc): deploy the LOCAL
 //     copy (local/<domain>/<bare>) INSTEAD OF shared when one exists (local wins),
 //     else the shared content — the chosen bytes are composed into the effective
 //     content and deployed via the shared apply core (dotfile.ApplyContentDeferred).
@@ -383,7 +373,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 
 	for _, name := range ctx.Scope.DeclaredDotfiles() {
 		bare := strings.TrimPrefix(name, ".")
-		zsh := isZsh(bare)
+		zsh := usesIncludeSidecar(bare)
 
 		// SECURITY BOUNDARY: build the validated target. zsh is include-style; every
 		// other dotfile is whole-file-replace. An ~/.ssh / traversal name is refused
@@ -432,10 +422,18 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 			if err != nil {
 				return nil, nil, err
 			}
-			content := raw
+			// git identity firewall: strip every identity key + [includeIf …] block
+			// from the SHARED bytes before ferry's include directive is appended, so
+			// a machine's commit identity can never deploy into the shared ~/.gitconfig
+			// (a no-op for every other include-style dotfile, and for a clean git
+			// source). Identity lives only in the ~/.<bare>.local sidecar below.
+			base := sharedGitTransform(bare, raw)
+			content := base
 			if hasOverlay {
-				content = appendSourceDirective(raw, "."+bare+".local")
+				content = appendSourceDirective(base, "."+bare+".local", directiveSpecFor(bare))
 			}
+			// Warn when git's credential.helper is `store` (plaintext ~/.git-credentials).
+			warnings = append(warnings, gitCredentialHelperWarnings(bare, raw)...)
 
 			rendered, missing, skip, err := renderSecrets(secretStore, content)
 			if err != nil {
@@ -443,7 +441,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 			}
 			if skip {
 				items = append(items, planItem{
-					kind: kindDotfile, domain: "." + bare, target: t,
+					kind: kindFile, domain: "." + bare, target: t,
 					action: "skipped", skip: true, missing: missing,
 				})
 				continue
@@ -454,7 +452,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 				return nil, nil, err
 			}
 			items = append(items, planItem{
-				kind: kindDotfile, domain: "." + bare, target: t, content: rendered,
+				kind: kindFile, domain: "." + bare, target: t, content: rendered,
 				state: state, secretRouted: secretRouted, risky: risky, riskReason: reason,
 			})
 
@@ -478,7 +476,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 				}
 				if oskip {
 					items = append(items, planItem{
-						kind: kindOverlay, domain: "." + bare + ".local", target: ot,
+						kind: kindFile, domain: "." + bare + ".local", target: ot,
 						action: "skipped", skip: true, missing: omissing,
 					})
 					continue
@@ -489,7 +487,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 					return nil, nil, err
 				}
 				items = append(items, planItem{
-					kind: kindOverlay, domain: "." + bare + ".local",
+					kind: kindFile, domain: "." + bare + ".local",
 					target: ot, content: orendered, state: ostate,
 					secretRouted: oSecretRouted, risky: orisky, riskReason: oreason,
 				})
@@ -520,7 +518,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 		}
 		if skip {
 			items = append(items, planItem{
-				kind: kindDotfile, domain: "." + bare, target: t,
+				kind: kindFile, domain: "." + bare, target: t,
 				action: "skipped", skip: true, missing: missing,
 			})
 			continue
@@ -531,7 +529,7 @@ func planDotfiles(ctx *cmdContext, home string, secretStore *secret.Store, lastA
 			return nil, nil, err
 		}
 		items = append(items, planItem{
-			kind: kindDotfile, domain: "." + bare, target: t, content: rendered,
+			kind: kindFile, domain: "." + bare, target: t, content: rendered,
 			state: state, secretRouted: secretRouted, risky: risky, riskReason: reason,
 		})
 	}
@@ -570,10 +568,15 @@ func classifyItem(t dotfile.Target, content []byte, secretRouted bool, store *do
 // local route, into a self-sourcing sidecar). raw is the shared repo source
 // bytes; hasOverlay is whether local/zsh/<bare>.local exists (resolveOverlaySource).
 func effectiveZshShared(raw []byte, bare string, hasOverlay bool) []byte {
+	// git identity firewall: the effective SHARED bytes have identity stripped
+	// (matching the deploy composition in planDotfiles), so capture classifies and
+	// diffs against the same firewalled content and never offers an identity line
+	// as a shared hunk. A no-op for zsh/tmux and for a clean git source.
+	base := sharedGitTransform(bare, raw)
 	if !hasOverlay {
-		return raw
+		return base
 	}
-	return appendSourceDirective(raw, "."+bare+".local")
+	return appendSourceDirective(base, "."+bare+".local", directiveSpecFor(bare))
 }
 
 // effectiveSource resolves the source apply would actually DEPLOY for a
@@ -798,29 +801,6 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "  %-22s skipped (macOS only)\n", it.domain)
 				continue
 			}
-			// iTerm2 RENDERED STAGING: materialise the secret-rendered repo plist into
-			// the ferry-owned staging folder (com.googlecode.iterm2.plist) BEFORE Apply
-			// points PrefsCustomFolder at it, so iTerm2 loads the rendered plist and
-			// never the raw {{ferry.secret}} one. The write goes through the backup
-			// engine (b) — tracked in the journal + reversible on rollback, just like a
-			// dotfile. The folder is created 0700 (StateDir convention) and the plist
-			// 0600 (it carries substituted secret values). A refused/missing leaf or a
-			// missing secret already SKIPPED this domain at build time, so stagePlistPath
-			// is set only when there is a rendered plist to write.
-			if it.stagePlistPath != "" {
-				// Symlink-harden the staging dir under StateDir before writing: a
-				// rendered plist must not be written through a symlinked store
-				// component. Lexical; never touches ~/.ssh.
-				if err := paths.HardenStoreDir(filepath.Dir(it.stagePlistPath)); err != nil {
-					return err
-				}
-				if err := os.MkdirAll(filepath.Dir(it.stagePlistPath), 0o700); err != nil {
-					return fmt.Errorf("stage %s rendered plist dir: %w", it.domain, err)
-				}
-				if err := b.BackupAndWrite(it.stagePlistPath, it.stageContent, 0o600); err != nil {
-					return fmt.Errorf("stage %s rendered plist: %w", it.domain, err)
-				}
-			}
 			// Register so restore (and incomplete-run rollback) can find this
 			// resource, then export its CURRENT state into baseline-if-first +
 			// this run's journal FIRST (export-before-mutate). The captured blob
@@ -853,6 +833,15 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "  %-22s skipped (macOS only)\n", it.domain)
 				continue
 			}
+			if res.Skipped && errors.Is(res.Err, terminal.ErrITerm2Running) {
+				// iTerm2 is running: importing its global plist now would be silently
+				// lost (iTerm2 rewrites the domain on quit; cfprefsd caches it). SKIP
+				// the domain, leaving live config intact — nothing was imported, so
+				// there is NOTHING to roll back (rolling back would itself `defaults
+				// import` into the running iTerm2). Warn loudly with the fix.
+				fmt.Fprintf(out, "  %-22s skipped: quit iTerm2, then re-run `ferry apply` (a running iTerm2 would overwrite the imported preferences on quit)\n", it.domain)
+				continue
+			}
 			if res.Err != nil {
 				// A partial preference mutation must be reverted IMMEDIATELY: re-import
 				// the captured pre-mutation export via the resource's own Restore hook
@@ -871,111 +860,53 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "  %-22s note: %s\n", "", res.Note)
 			}
 			continue
-		case kindAgents:
-			// Agents targets deploy their DERIVED in-memory content through the
-			// same Backuper/journal as dotfiles (agents.ApplyItem), with the
-			// domain's repo-authoritative wording on refusals: a live edit is
-			// never captured back in v1, so the fix is the repo copy (or --force).
-			//
-			// Every planned agents target is also collected for the persisted
-			// target record (agents-targets.json, unioned post-commit): scoped
-			// restore reverts from that record, so a later de-scope — or a
-			// deleted repo — can never hide a previously applied target.
-			agentsTargets[it.target.Name] = it.target.Home
-			res, err := agents.ApplyItem(agents.Item{
-				Key:     it.target.Name,
-				Label:   it.domain,
-				Target:  it.target,
-				Content: it.content,
-				Exec:    it.execBit,
-			}, lastApplied, b, force)
-			if err != nil {
-				var conflict *dotfile.ConflictError
-				if errors.As(err, &conflict) {
-					conflicts = append(conflicts, it.domain)
-					fmt.Fprintf(out, "  %-22s CONFLICT: edited live AND in the repo; not overwritten (agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain)
-					continue
-				}
-				// The empty-over-substantial data-loss guard aborts the run, same
-				// as a dotfile target (the run rolls back inline).
-				return err
+		case kindFile:
+			// Converged FileDomain arm (fn-5): every regular-file target —
+			// dotfile/overlay, agents, config-file terminal — deploys its effective
+			// in-memory content through the ONE shared apply core
+			// (dotfile.ApplyContentDeferred): the three-way decision table,
+			// first-touch adoption, conflict refusal, the empty-over-substantial
+			// data-loss guard, and the Backuper-mediated atomic write. The owning
+			// domain (it.fileDomain) selects the report wording that used to be keyed
+			// on the separate kinds; the deploy mechanics are identical.
+
+			// Every planned agents target is collected for the persisted target record
+			// (agents-targets.json, unioned post-commit): scoped restore reverts from
+			// that record, so a later de-scope — or a deleted repo — can never hide a
+			// previously applied target. Dotfiles/terminals restore from the backup
+			// baseline instead. Agents items never carry a missing-secret skip.
+			if it.fileDomain == "agents" {
+				agentsTargets[it.target.Name] = it.target.Home
 			}
-			if res.ForcedEmptyOverSubstantial {
-				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
-			}
-			if res.Action == dotfile.ActionSkipped {
-				fmt.Fprintf(out, "  %-22s skipped (edited live; agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain)
-				continue
-			}
-			deferred = append(deferred, res)
-			it.action = string(res.Action)
-			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
-			continue
-		case kindTerminal:
 			// A missing referenced secret SKIPPED rendering during planning (never
-			// deploy a literal {{ferry.secret}} to the terminal's live config); report
-			// it exactly like a skipped secret-routed dotfile and move on.
+			// deploy a literal {{ferry.secret}} to a live config); report it and move
+			// on. Agents items are never secret-routed, so skip is ALWAYS false for
+			// them and this shared guard is inert — which is why recording the agents
+			// target (above) BEFORE this guard is currently safe. If agents ever gains
+			// secret routing, a missing secret would skip here AFTER the target was
+			// already recorded, so revisit the record-then-skip ordering then.
 			if it.skip {
 				fmt.Fprintf(out, "  %-22s skipped (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
 				continue
 			}
-			// Config-file terminal targets deploy their overlay-or-shared Content
-			// through the same Backuper/journal as dotfiles (termcfg.ApplyItem).
-			// Unlike dotfiles, though, capture has NO config-file terminal pass
-			// (cmd/capture.go handles only declared dotfiles and the iterm2/terminal
-			// PREFERENCE domains), so a drifted/conflicting terminal target is NOT a
-			// capture candidate: the guidance points at updating the repo source or
-			// `ferry apply --force`, never `ferry capture`.
-			res, err := termcfg.ApplyItem(termcfg.Item{
-				Key:          it.target.Name,
-				Label:        it.domain,
-				Target:       it.target,
-				Content:      it.content,
-				Exec:         it.execBit,
-				SecretRouted: it.secretRouted,
-			}, lastApplied, b, force)
+			// Fresh-write mode: 0755 for an executable source (agents hooks / terminal
+			// helper scripts), else 0644; an existing destination's mode is preserved
+			// by the core, and secretRouted clamps the written mode to owner-only and
+			// records hash-only last-applied.
+			perm := dotfile.DefaultPerm()
+			if it.execBit {
+				perm = 0o755
+			}
+			res, err := dotfile.ApplyContentDeferred(it.target, it.content, perm, lastApplied, b, force, it.secretRouted)
 			if err != nil {
 				var conflict *dotfile.ConflictError
 				if errors.As(err, &conflict) {
 					conflicts = append(conflicts, it.domain)
-					fmt.Fprintf(out, "  %-22s CONFLICT: local edits AND repo change; not overwritten (update the repo source to match, or `ferry apply --force`)\n", it.domain)
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, fileConflictMessage(it.fileDomain))
 					continue
 				}
-				// The empty-over-substantial data-loss guard aborts the run, same
-				// as a dotfile target (the run rolls back inline).
-				return err
-			}
-			if res.ForcedEmptyOverSubstantial {
-				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
-			}
-			if res.Action == dotfile.ActionSkipped {
-				fmt.Fprintf(out, "  %-22s skipped (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain)
-				continue
-			}
-			// res.SecretRouted was already stamped by the apply core (via ApplyItem)
-			// from the plan's secret-routing flag, so CommitLastApplied records only
-			// this terminal target's hash, never the plaintext bytes.
-			deferred = append(deferred, res)
-			it.action = string(res.Action)
-			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
-			continue
-		case kindDotfile, kindOverlay:
-			if it.skip {
-				fmt.Fprintf(out, "  %-22s skipped (missing secret: %s)\n", it.domain, strings.Join(it.missing, ", "))
-				continue
-			}
-			res, err := applyTarget(it, lastApplied, b, force)
-			if err != nil {
-				var conflict *dotfile.ConflictError
-				if errors.As(err, &conflict) {
-					conflicts = append(conflicts, it.domain)
-					fmt.Fprintf(out, "  %-22s CONFLICT: uncaptured local edits; not overwritten (run `ferry capture`, or `ferry apply --force`)\n", it.domain)
-					continue
-				}
-				// The empty-over-substantial data-loss guard: a default apply refuses
-				// to zero a substantial live file with an empty/near-empty repo source.
-				// This is a hard abort (not a skip) so the run rolls back and exits
-				// non-zero; the error names the file and both sides of the hazard.
+				// The empty-over-substantial data-loss guard aborts the run (rolled
+				// back inline by the caller); a conflict is reported and skipped above.
 				return err
 			}
 			// --force pushed an empty/near-empty repo source OVER a substantial live
@@ -985,9 +916,18 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			if res.ForcedEmptyOverSubstantial {
 				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
 			}
-			// res.SecretRouted was already stamped by the apply core (via applyTarget ->
-			// ApplyContentDeferred) from the plan's secret-routing flag, so
-			// CommitLastApplied records only this target's hash, never the plaintext bytes.
+			// Agents and config-file terminal targets carry the domain's own wording
+			// when apply SKIPS a locally-drifted target (repo-authoritative); a dotfile
+			// skip has no special wording and falls through to the generic action line.
+			if res.Action == dotfile.ActionSkipped {
+				if msg := fileSkippedMessage(it.fileDomain); msg != "" {
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, msg)
+					continue
+				}
+			}
+			// res.SecretRouted was already stamped by the apply core from the plan's
+			// secret-routing flag, so CommitLastApplied records only this target's
+			// hash, never the plaintext bytes.
 			deferred = append(deferred, res)
 			it.action = string(res.Action)
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
@@ -1023,33 +963,37 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	return nil
 }
 
-// applyTarget materialises one dotfile/overlay through the dotfile domain using
-// the DEFERRED apply: it writes the file (backed up first, atomically) but does
-// NOT persist last-applied — the recorded hash rides on Result.PendingHash for the
-// caller to commit via CommitLastApplied AFTER the journal commit. Every target —
-// whole-file-replace (generic, e.g. .gitconfig) and include-style (zsh sidecar)
-// alike — deploys the effective bytes IN MEMORY via the shared apply core the
-// agents domain uses, so no temp file is ever staged and a crash cannot leave the
-// ALREADY-RENDERED plaintext of a secret-routed dotfile behind in $TMPDIR.
-// it.content is the effective source: the local-wins decision (whole-file overlay)
-// and zsh source-last composition are already baked in during planning, and any
-// {{ferry.secret}} tokens are already rendered, so behaviour is preserved without
-// re-selecting a source at write time.
-func applyTarget(it *planItem, store *dotfile.Store, b dotfile.Backuper, force bool) (dotfile.Result, error) {
-	t := it.target
-
-	// DEFERRED semantics (last-applied via CommitLastApplied post-commit) keep
-	// last-applied from advancing ahead of a rolled-back file. freshPerm governs only
-	// a first-ever write — an existing home destination's mode is preserved by the
-	// shared core. Secret routing is declared to the core (it.secretRouted): for such
-	// a target the core strips group/other from the written mode (0600), even on an
-	// update to an existing file, so the rendered plaintext credential is never
-	// group-/world-readable, and it records only the content hash.
-	res, err := dotfile.ApplyContentDeferred(t, it.content, dotfile.DefaultPerm(), store, b, force, it.secretRouted)
-	if err != nil {
-		return dotfile.Result{}, err
+// fileConflictMessage renders the per-domain CONFLICT report line body for a
+// FileDomain target apply refused to overwrite (edited live AND in the repo).
+// The wording is the domain's remedy: dotfiles point at `ferry capture`, while
+// agents and config-file terminals are repo-authoritative (no capture pass) so
+// they point at updating the repo copy/source. It is exactly the text the
+// pre-fn-5 per-kind mutate arms printed, now selected by owning domain.
+func fileConflictMessage(fileDomain string) string {
+	switch fileDomain {
+	case "agents":
+		return "CONFLICT: edited live AND in the repo; not overwritten (agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)"
+	case "terminals", "keybindings", "emacs":
+		return "CONFLICT: local edits AND repo change; not overwritten (update the repo source to match, or `ferry apply --force`)"
+	default:
+		return "CONFLICT: uncaptured local edits; not overwritten (run `ferry capture`, or `ferry apply --force`)"
 	}
-	return res, nil
+}
+
+// fileSkippedMessage renders the per-domain "skipped (locally drifted)" report
+// line body for a FileDomain target apply left for its repo-authoritative
+// remedy. Dotfiles have NO special wording — a locally-drifted dotfile is a
+// capture candidate that falls through to the generic action line — so this
+// returns "" for them.
+func fileSkippedMessage(fileDomain string) string {
+	switch fileDomain {
+	case "agents":
+		return "skipped (edited live; agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)"
+	case "terminals", "keybindings", "emacs":
+		return "skipped (local edits; update the repo source to match, or `ferry apply --force`)"
+	default:
+		return ""
+	}
 }
 
 // applyDeps runs the gated dependency install and persists the recorded
@@ -1058,18 +1002,49 @@ func applyTarget(it *planItem, store *dotfile.Store, b dotfile.Backuper, force b
 func applyDeps(ctx *cmdContext, out io.Writer) error {
 	depsDir := filepath.Join(ctx.RepoPath, "deps")
 	result, err := deps.Install(depsDir, deps.ExecRunner{})
-	if err != nil {
-		if errors.Is(err, deps.ErrNoPackageManager) {
-			fmt.Fprintln(out, "deps: no package manager present; skipping dependency install")
-			return nil
-		}
+	switch {
+	case errors.Is(err, deps.ErrNoPackageManager):
+		// No OS package manager: report and fall through to npm globals, which are
+		// ORTHOGONAL (a machine can have npm but no brew/apt).
+		fmt.Fprintln(out, "deps: no package manager present; skipping dependency install")
+	case err != nil:
 		return fmt.Errorf("install dependencies: %w", err)
+	default:
+		installed := result.RecordedInstalledSet()
+		if err := persistInstalledSet(installed); err != nil {
+			return fmt.Errorf("record installed packages: %w", err)
+		}
+		fmt.Fprintf(out, "deps: installed %d package(s)\n", len(installed))
 	}
-	installed := result.RecordedInstalledSet()
-	if err := persistInstalledSet(installed); err != nil {
-		return fmt.Errorf("record installed packages: %w", err)
+
+	// npm globals: a SEPARATE, coexisting manager beside brew/apt (NOT another
+	// DetectPackageManager choice — npm is detected independently by presence on
+	// PATH, so a brew machine still reconciles npm). Gated on the npm-globals domain
+	// being managed; install/reconcile-only (never uninstalls, so nothing is
+	// recorded for `restore --packages`, mirroring the Homebrew cleanup-out rule).
+	if ctx.Scope.IsManaged("npm-globals") {
+		if err := applyNpmGlobals(ctx, out); err != nil {
+			return err
+		}
 	}
-	fmt.Fprintf(out, "deps: installed %d package(s)\n", len(installed))
+	return nil
+}
+
+// applyNpmGlobals reconciles this machine's global npm packages to the committed
+// deps/npm-globals.txt via `npm i -g`. A missing npm is a clean skip (mirrors the
+// no-package-manager report): npm is optional and orthogonal to brew/apt. It never
+// uninstalls, so there is nothing to persist for restore.
+func applyNpmGlobals(ctx *cmdContext, out io.Writer) error {
+	if !platform.HasNpm() {
+		fmt.Fprintln(out, "npm-globals: npm not present; skipping global package install")
+		return nil
+	}
+	depsDir := filepath.Join(ctx.RepoPath, "deps")
+	names, err := deps.InstallNpmGlobals(depsDir, deps.ExecRunner{})
+	if err != nil {
+		return fmt.Errorf("install npm globals: %w", err)
+	}
+	fmt.Fprintf(out, "npm-globals: reconciled %d global package(s)\n", len(names))
 	return nil
 }
 
@@ -1129,76 +1104,84 @@ func printPlan(out io.Writer, plan []planItem) {
 					fmt.Fprintf(out, "  %-22s [preference domain] %s — %s\n", it.domain, pe.Domain, pe.Summary)
 				}
 			}
-		case kindAgents:
-			// Agents targets share the dotfile states but carry the domain's
-			// repo-authoritative guidance: a live edit is fixed in the repo copy
-			// (capture never ingests these in v1), so the pointers differ.
-			switch it.state {
-			case dotfile.StateClean:
-				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
-			case dotfile.StateMissing:
-				create++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
-			case dotfile.StateRepoAhead:
-				update++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
-			case dotfile.StateLocallyDrifted:
-				fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
-			case dotfile.StateConflict:
-				conflict++
-				fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+		case kindFile:
+			// Converged FileDomain rendering (fn-5): all file targets share the
+			// three-way state lines; the owning domain (it.fileDomain) selects the
+			// locally-drifted / conflict guidance that used to be keyed on the kind —
+			// dotfiles point at `ferry capture`, agents and config-file terminals are
+			// repo-authoritative (no capture pass).
+			switch it.fileDomain {
+			case "agents":
+				// Agents targets carry the domain's repo-authoritative guidance: a live
+				// edit is fixed in the repo copy (capture never ingests these in v1).
+				switch it.state {
+				case dotfile.StateClean:
+					fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
+				case dotfile.StateMissing:
+					create++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
+				case dotfile.StateRepoAhead:
+					update++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
+				case dotfile.StateLocallyDrifted:
+					fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
+				case dotfile.StateConflict:
+					conflict++
+					fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+				default:
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+				}
+			case "terminals", "keybindings", "emacs":
+				// A missing referenced secret blocks this terminal target (render-or-SKIP);
+				// surface it, exactly like a blocked dotfile, rather than a state line.
+				// (keybindings carries no secrets, so it.skip is always false there.)
+				if it.skip {
+					fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
+					continue
+				}
+				// Config-file terminal targets share the dotfile states but, unlike
+				// dotfiles, capture has NO config-file terminal pass, so a drift/conflict
+				// is NOT a capture candidate: the guidance points at updating the repo
+				// source or `ferry apply --force`, never `ferry capture`.
+				switch it.state {
+				case dotfile.StateClean:
+					fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
+				case dotfile.StateMissing:
+					create++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
+				case dotfile.StateRepoAhead:
+					update++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
+				case dotfile.StateLocallyDrifted:
+					fmt.Fprintf(out, "  %-22s %s (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
+				case dotfile.StateConflict:
+					conflict++
+					fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; update the repo source, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+				default:
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+				}
 			default:
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
-			}
-		case kindTerminal:
-			// A missing referenced secret blocks this terminal target (render-or-SKIP);
-			// surface it, exactly like a blocked dotfile, rather than a state line.
-			if it.skip {
-				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
-				continue
-			}
-			// Config-file terminal targets share the dotfile states but, unlike
-			// dotfiles, capture has NO config-file terminal pass, so a drift/conflict
-			// is NOT a capture candidate: the guidance points at updating the repo
-			// source or `ferry apply --force`, never `ferry capture`.
-			switch it.state {
-			case dotfile.StateClean:
-				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
-			case dotfile.StateMissing:
-				create++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
-			case dotfile.StateRepoAhead:
-				update++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
-			case dotfile.StateLocallyDrifted:
-				fmt.Fprintf(out, "  %-22s %s (local edits; update the repo source to match, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
-			case dotfile.StateConflict:
-				conflict++
-				fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; update the repo source, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
-			default:
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
-			}
-		default:
-			if it.skip {
-				fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
-				continue
-			}
-			switch it.state {
-			case dotfile.StateClean:
-				fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
-			case dotfile.StateMissing:
-				create++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
-			case dotfile.StateRepoAhead:
-				update++
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
-			case dotfile.StateLocallyDrifted:
-				fmt.Fprintf(out, "  %-22s %s (uncaptured local edits; run `ferry capture`)\n", it.domain, colour(colYellow, "would skip"))
-			case dotfile.StateConflict:
-				conflict++
-				fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
-			default:
-				fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+				if it.skip {
+					fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
+					continue
+				}
+				switch it.state {
+				case dotfile.StateClean:
+					fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
+				case dotfile.StateMissing:
+					create++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would create"))
+				case dotfile.StateRepoAhead:
+					update++
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
+				case dotfile.StateLocallyDrifted:
+					fmt.Fprintf(out, "  %-22s %s (uncaptured local edits; run `ferry capture`)\n", it.domain, colour(colYellow, "would skip"))
+				case dotfile.StateConflict:
+					conflict++
+					fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; `ferry capture` or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))
+				default:
+					fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
+				}
 			}
 		}
 	}
@@ -1233,7 +1216,7 @@ func planSummary(create, update, conflict int) string {
 // mechanism). Only a StateClean dotfile/overlay is "nothing to do".
 func planItemPending(it planItem) bool {
 	switch it.kind {
-	case kindDotfile, kindOverlay, kindAgents, kindTerminal:
+	case kindFile:
 		if it.skip {
 			return true
 		}
@@ -1310,6 +1293,27 @@ func descopeDotfileWarnings(ctx *cmdContext, store *dotfile.Store) []string {
 		if strings.HasPrefix(name, termcfg.KeyPrefix) {
 			continue
 		}
+		// Key-bindings records are namespaced under "keybindings/" and report their
+		// OWN de-scope (descopeKeybindingsWarnings) — they are never declared
+		// dotfiles, so warning here would falsely report a still-managed
+		// key-bindings target as de-scoped on every apply.
+		if strings.HasPrefix(name, keybindings.KeyPrefix) {
+			continue
+		}
+		// Emacs-domain records are namespaced under "emacs/" and report their OWN
+		// de-scope (descopeEmacsConfigWarnings) — they are never declared dotfiles,
+		// so warning here would falsely report every still-managed Emacs target as
+		// de-scoped on every apply.
+		if strings.HasPrefix(name, emacs.KeyPrefix) {
+			continue
+		}
+		// iTerm2 Dynamic Profiles records are namespaced under "iterm2-profiles/" and
+		// report their OWN de-scope (descopeIterm2ProfilesWarnings) — they are never
+		// declared dotfiles, so warning here would falsely report every still-managed
+		// profile target as de-scoped on every apply.
+		if strings.HasPrefix(name, iterm2profiles.KeyPrefix) {
+			continue
+		}
 		if inScope[strings.TrimPrefix(name, ".")] {
 			continue
 		}
@@ -1338,7 +1342,7 @@ func descopeDotfileWarnings(ctx *cmdContext, store *dotfile.Store) []string {
 func isSidecarKey(name string) bool {
 	bare := strings.TrimPrefix(name, ".")
 	base := strings.TrimSuffix(bare, ".local")
-	return base != bare && isZsh(base)
+	return base != bare && usesIncludeSidecar(base)
 }
 
 // descopeTerminalWarnings warns about terminal preference DOMAINS ferry
@@ -1349,7 +1353,9 @@ func isSidecarKey(name string) bool {
 // fully revert via `ferry restore <domain>`.
 func descopeTerminalWarnings(ctx *cmdContext, eng *backup.Engine) []string {
 	var out []string
-	for _, domain := range []string{"iterm2", "terminal"} {
+	reg := buildRegistry(ctx)
+	for _, rd := range reg.ResourceDomains {
+		domain := rd.Name()
 		if ctx.Scope.IsManaged(domain) {
 			continue
 		}
@@ -1420,63 +1426,65 @@ func resolveDotfileSource(repo, name string) (string, bool) {
 }
 
 // resolveOverlaySource finds the repo-side .local overlay for a dotfile, under
-// local/<domain>/<bare>.local. zsh maps to the "zsh" domain dir.
+// local/<domain>/<bare>.local. The overlay directory is resolved through
+// overlayDomainDir (zsh's bares map to local/zsh/, tmux.conf to local/tmux/,
+// every other dotfile to its own bare name).
 func resolveOverlaySource(repo, bare string) (string, bool) {
-	domain := bare
-	if isZsh(bare) {
-		domain = "zsh"
-	}
-	cand := filepath.Join(repo, "local", domain, bare+".local")
+	cand := filepath.Join(repo, "local", overlayDomainDir(bare), bare+".local")
 	if regularRepoFile(repo, cand) {
 		return cand, true
 	}
 	return "", false
 }
 
-func isZsh(bare string) bool { return bare == "zshrc" || bare == "zshenv" || bare == "zprofile" }
-
-// appendSourceDirective appends a real `source ~/<file>` line so the overlay is
-// sourced LAST (after the shared file's own content) and therefore wins. It is
-// idempotent: if the directive is already present (uncommented), raw is returned
-// unchanged so re-apply produces byte-identical content.
-func appendSourceDirective(raw []byte, file string) []byte {
-	directive := "[ -f ~/" + file + " ] && source ~/" + file
-	if sourceDirectivePresent(raw, file) {
+// appendSourceDirective appends spec's include line for `file` so the overlay is
+// sourced LAST (after the shared file's own content) and therefore wins. spec is
+// the per-format directive syntax (shell `source`, tmux `source-file`) selected
+// by directiveSpecFor; every other byte of the injected block (the leading blank
+// line, the marker comment, the trailing newline) is format-agnostic, so the zsh
+// output is byte-identical to what ferry has always injected. It is idempotent:
+// if the directive is already present (uncommented), raw is returned unchanged so
+// re-apply produces byte-identical content.
+func appendSourceDirective(raw []byte, file string, spec directiveSpec) []byte {
+	directive := spec.render(file)
+	if sourceDirectivePresent(raw, file, spec) {
 		return raw
 	}
 	body := raw
 	if len(body) > 0 && body[len(body)-1] != '\n' {
 		body = append(append([]byte{}, body...), '\n')
 	}
-	return append(body, []byte("\n# ferry: per-machine overlay, sourced last so it wins\n"+directive+"\n")...)
+	return append(body, []byte("\n"+spec.marker+"\n"+directive+"\n")...)
 }
 
 // stripSourceDirective removes ferry's managed include boilerplate for file (the
-// `# ferry: per-machine overlay …` comment and the `[ -f ~/<file> ] && source
-// ~/<file>` line appendSourceDirective injects) from content, so capture's
-// EFFECTIVE-content diff can route the user's real edits to shared WITHOUT
-// committing ferry's own generated include line. It is the inverse of
-// appendSourceDirective and is conservative: it drops only the exact managed
-// marker comment and an uncommented source/`.`-include line naming file; any
-// user-authored source line for a different target is left untouched. Used on
-// the shared-capture write path for zsh so shared never gains ferry boilerplate.
-func stripSourceDirective(content []byte, file string) []byte {
-	const marker = "# ferry: per-machine overlay, sourced last so it wins"
+// marker comment and the format-specific include line appendSourceDirective
+// injects) from content, so capture's EFFECTIVE-content diff can route the user's
+// real edits to shared WITHOUT committing ferry's own generated include line. It
+// is the FILE-KEYED inverse of appendSourceDirective (spec.namesFile recognises
+// the include line naming this exact overlay file) and is conservative: it drops
+// only the exact managed marker comment and an uncommented include line naming
+// file; any user-authored include line for a different target is left untouched.
+// Used on the shared-capture write path so shared never gains ferry boilerplate.
+func stripSourceDirective(content []byte, file string, spec directiveSpec) []byte {
 	lines := strings.Split(string(content), "\n")
 	kept := make([]string, 0, len(lines))
 	for _, raw := range lines {
 		trimmed := strings.TrimSpace(raw)
-		if trimmed == marker {
+		if trimmed == spec.marker {
 			continue
 		}
-		// Drop an uncommented include line (`source …file…` / `. …file…`) naming
-		// this overlay file — ferry's injected directive. A commented or unrelated
-		// line is kept.
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && strings.Contains(trimmed, file) {
-			lc := strings.ToLower(trimmed)
-			if strings.Contains(lc, "source ") || strings.Contains(trimmed, ". ") {
-				continue
+		// Drop an uncommented include line (this format's `source`/`source-file`/
+		// git `path`) naming this overlay file — ferry's injected directive. A
+		// commented or unrelated line is kept. For a MULTI-LINE directive (git's
+		// `[include]` block) also pop the preceding section-header line (spec.header)
+		// so no orphan `[include]` survives; single-line directives leave header ""
+		// and this pop never fires.
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") && spec.namesFile(trimmed, file) {
+			if spec.header != "" && len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == spec.header {
+				kept = kept[:len(kept)-1]
 			}
+			continue
 		}
 		kept = append(kept, raw)
 	}
@@ -1492,8 +1500,8 @@ func stripSourceDirective(content []byte, file string) []byte {
 }
 
 // sourceDirectivePresent reports whether content already has an uncommented
-// `source <…file…>` / `. <…file…>` directive for file.
-func sourceDirectivePresent(content []byte, file string) bool {
+// include directive (in spec's format) naming file.
+func sourceDirectivePresent(content []byte, file string, spec directiveSpec) bool {
 	for _, raw := range strings.Split(string(content), "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -1503,11 +1511,7 @@ func sourceDirectivePresent(content []byte, file string) bool {
 		if h := strings.IndexByte(code, '#'); h >= 0 {
 			code = strings.TrimSpace(code[:h])
 		}
-		if !strings.Contains(code, file) {
-			continue
-		}
-		lc := strings.ToLower(code)
-		if strings.Contains(lc, "source ") || strings.Contains(code, ". ") {
+		if spec.namesFile(code, file) {
 			return true
 		}
 	}
@@ -1597,251 +1601,85 @@ func persistInstalledSet(installed []string) error {
 
 func isDarwin() bool { return platform.IsDarwin() }
 
-// buildTerminalDomain constructs the native macOS preference domain for a
-// terminal scope name, applying the documented LOCAL-WINS overlay rule: a
-// per-machine local capture (local/<domain>/<id>.plist) takes WHOLE-DOMAIN
-// precedence over the shared repo copy, exactly like a plist-domain dotfile
-// ("machine-divergent settings go local wholesale"). Capture can route a terminal
-// domain to local/<domain>/<id>.plist; without this, apply only ever read the
-// shared repo path, so a local-routed terminal capture was DEAD (never
-// materialised). Both branches now prefer the local overlay when present:
+// buildTerminalDomain constructs the native macOS preference domain for a terminal
+// scope name via the import-blob model both iTerm2 and Apple Terminal now use
+// (v0.7.0 D4 retired iTerm2's custom-prefs-folder mechanism). It reads the committed
+// export blob (terminalExportBlob, which applies the LOCAL-WINS overlay rule —
+// local/<domain>/<id>.plist takes whole-domain precedence over the shared
+// <domain>/<id>.plist), renders its {{ferry.secret ...}} placeholders, and wraps the
+// rendered bytes in a PreferenceDomain whose Apply `defaults import`s them:
 //
-//   - iTerm2: when local/iterm2/<id>.plist exists, point PrefsCustomFolder at the
-//     LOCAL overlay folder (local/iterm2/) so iTerm2 loads the per-machine plist;
-//     otherwise the shared repo iterm2/ folder. iTerm2 reads
-//     com.googlecode.iterm2.plist from whichever folder it is pointed at, and
-//     capture writes the local plist under exactly that name.
-//   - Apple Terminal: import the LOCAL export blob (local/terminal/<id>.plist) when
-//     present, else the shared committed blob, else nil (manage backup/restore only,
-//     Apply no-ops the import).
+//   - Apple Terminal: NewAppleTerminal imports the rendered blob.
+//   - iTerm2: NewITerm2 imports the rendered ALLOWLIST-FILTERED global plist,
+//     REFUSING when iTerm2 is running (a running iTerm2 rewrites the domain on quit)
+//     and flushing cfprefsd after a successful import.
 //
-// Both share the production ExecRunner (which shells `defaults` via PATH). Callers
-// gate on platform.IsDarwin(); the terminal package itself stays darwin-guarded.
+// Both share the production ExecRunner (which shells `defaults` via PATH); iTerm2
+// also gets the production ExecProcessController (pgrep/killall). Callers gate on
+// platform.IsDarwin(); the terminal package itself stays darwin-guarded.
 //
-// Secret render-or-SKIP parity with dotfiles: the bytes the domain would deploy are
-// passed through the secret renderer BEFORE the domain is constructed:
-//   - Apple Terminal: the export blob's {{ferry.secret ...}} placeholders are
-//     rendered; the RENDERED bytes are what `defaults import` imports. A MISSING
-//     secret returns its refs in `missing` and a nil domain — the caller skips the
-//     import entirely, leaving live Apple Terminal config intact.
-//   - iTerm2: iTerm2 loads a FOLDER (PrefsCustomFolder). Rather than point it at the
-//     RAW repo folder (whose com.googlecode.iterm2.plist may contain unrendered
-//     {{ferry.secret ...}} placeholders), ferry RENDERS the chosen repo plist and
-//     STAGES the rendered copy into a ferry-owned staging folder, then points
-//     PrefsCustomFolder at THAT folder — so iTerm2 always loads the rendered plist,
-//     never the raw placeholder one. The leaf plist is safeRepoPath-validated: a
-//     REFUSED leaf (symlink/escape/under ~/.ssh) returns err so the caller SKIPS the
-//     domain (the refusal is honoured for the very file iTerm2 would load, not
-//     swallowed). A MISSING referenced secret returns its refs in `missing` and a nil
-//     domain — caller skips, live iTerm2 config intact. The returned iterm2Stage
-//     carries the rendered bytes + staging plist path the mutating path materialises
-//     via the backup engine before Apply.
+// Secret render-or-SKIP parity with dotfiles: a MISSING referenced secret returns its
+// refs in `missing` and a nil domain, so the caller SKIPS the whole domain rather
+// than `defaults import` an unrendered {{ferry.secret ...}} placeholder into it.
 //
-// Returns (domain, stage, missing, err): a non-empty `missing` means SKIP this domain
-// with a reported notice; err is the symlink/escape REFUSAL (also a skip). stage is
-// meaningful only for iterm2 (the rendered plist to materialise).
-func buildTerminalDomain(repo, scopeName string, store *secret.Store) (*terminal.PreferenceDomain, iterm2Stage, error) {
-	switch scopeName {
-	case "iterm2":
-		folder, err := iterm2PrefsFolder(repo)
-		if err != nil {
-			return nil, iterm2Stage{}, err
-		}
-		stage, missing, err := iterm2RenderStage(repo, folder, store)
-		if err != nil {
-			// REFUSED leaf plist (symlink/escape/under ~/.ssh): skip the iterm2 domain.
-			// Returning err here means iTerm2 is NEVER pointed at the staging folder for
-			// a poisoned leaf — the refusal is honoured, not swallowed.
-			return nil, iterm2Stage{}, err
-		}
-		if len(missing) > 0 {
-			return nil, iterm2Stage{Missing: missing}, nil
-		}
-		return terminal.NewITerm2(stage.folder, terminal.ExecRunner{}), stage, nil
-	default: // "terminal" / Apple Terminal
-		blob, err := appleTerminalExportBlob(repo)
-		if err != nil {
-			// PRESENT-but-REFUSED local overlay (symlink/escape/under ~/.ssh): skip the
-			// Apple Terminal domain with the refusal rather than importing shared.
-			return nil, iterm2Stage{}, err
-		}
-		rendered, missing, skip, err := renderSecrets(store, blob)
-		if err != nil {
-			return nil, iterm2Stage{}, err
-		}
-		if skip {
-			return nil, iterm2Stage{Missing: missing}, nil
-		}
-		return terminal.NewAppleTerminal(rendered, terminal.ExecRunner{}), iterm2Stage{}, nil
+// Returns (domain, missing, err): a non-empty `missing` means SKIP this domain with a
+// reported notice; err is the symlink/escape REFUSAL of the repo blob (also a skip).
+func buildTerminalDomain(repo, scopeName string, store *secret.Store) (*terminal.PreferenceDomain, []string, error) {
+	prefID, ok := terminalPrefDomainID(scopeName)
+	if !ok {
+		return nil, nil, fmt.Errorf("terminal: unknown preference domain %q", scopeName)
 	}
-}
-
-// iterm2Stage carries the RENDERED STAGING result for the iTerm2 domain: the
-// ferry-owned staging folder PrefsCustomFolder points at, the absolute staging
-// plist path the mutating apply writes, and the rendered bytes to write there.
-// Missing carries the unresolved secret refs when rendering must SKIP the domain.
-type iterm2Stage struct {
-	folder    string   // staging folder -> PrefsCustomFolder
-	plistPath string   // <folder>/com.googlecode.iterm2.plist (absolute)
-	content   []byte   // rendered plist bytes to materialise
-	Missing   []string // unresolved secret refs (skip the domain when non-empty)
-}
-
-// iterm2RenderStage validates + renders the iTerm2 leaf plist the chosen prefs
-// folder would load (com.googlecode.iterm2.plist) and computes the ferry-owned
-// RENDERED STAGING destination PrefsCustomFolder will point at instead of the raw
-// repo folder.
-//
-//   - The leaf plist is safeRepoPath-validated. A REFUSED leaf (symlink / repo
-//     escape / resolving under ~/.ssh or a system path) returns the refusal ERROR so
-//     the caller SKIPS the whole iterm2 domain — iTerm2 is never pointed anywhere for
-//     a poisoned leaf (fixes "refused plist swallowed": the refusal governs the very
-//     file iTerm2 loads, not just the containing folder).
-//   - The plist is read and secret-rendered. A MISSING referenced secret returns its
-//     refs in `missing` (the caller skips; live iTerm2 config left intact).
-//   - On success (all referenced secrets present, or no placeholders) the rendered
-//     bytes + staging destination are returned. The mutating path writes them into
-//     the staging folder via the backup engine (tracked + reversible) before pointing
-//     PrefsCustomFolder there. We ALWAYS stage (even a placeholder-free plist that
-//     renders to itself) so the path is uniform and the leaf is always validated +
-//     rendered.
-//
-// The staging folder is <StateDir>/rendered/iterm2 (created 0700 by the mutating
-// path; the plist written 0600). A missing leaf plist (fresh repo folder, nothing to
-// load) yields empty content and no staging — there is nothing for iTerm2 to render.
-func iterm2RenderStage(repo, folder string, store *secret.Store) (iterm2Stage, []string, error) {
-	plist := filepath.Join(folder, terminal.ITerm2Domain+".plist")
-	safe, err := safeRepoPath(repo, plist)
+	// Read the committed export blob apply imports (local overlay wins). A
+	// PRESENT-but-REFUSED overlay (symlink/escape/under ~/.ssh) returns the refusal
+	// so the caller SKIPS the domain rather than importing shared behind it.
+	blob, err := terminalExportBlob(repo, scopeName, prefID)
 	if err != nil {
-		// REFUSED leaf: surface the error so the caller skips the domain.
-		return iterm2Stage{}, nil, err
+		return nil, nil, err
 	}
-	data, err := os.ReadFile(safe)
+	// Secret render-or-SKIP parity with dotfiles: a MISSING referenced secret returns
+	// its refs so the caller skips the whole domain (never `defaults import` an
+	// unrendered {{ferry.secret}} placeholder into the live domain).
+	rendered, missing, skip, err := renderSecrets(store, blob)
 	if err != nil {
-		if os.IsNotExist(err) {
-			// GENUINELY ABSENT leaf plist (fresh folder) — nothing for iTerm2 to load,
-			// nothing to stage. Point at the (empty) staging folder so the path is still
-			// uniform and never the raw repo folder; no plist is written.
-			stateDir, serr := paths.StateDir()
-			if serr != nil {
-				return iterm2Stage{}, nil, serr
-			}
-			return iterm2Stage{folder: filepath.Join(stateDir, "rendered", "iterm2")}, nil, nil
-		}
-		// PRESENT-but-UNREADABLE leaf (permission / I/O / any non-NotExist error):
-		// FAIL-CLOSED. A present plist that cannot be read must NEVER be downgraded to
-		// "absent" and then mutate live state by pointing PrefsCustomFolder at an empty
-		// staging folder. Surface the error so the caller SKIPS the iterm2 domain with a
-		// warning, leaving live iTerm2 state intact.
-		return iterm2Stage{}, nil, fmt.Errorf("iterm2: read leaf plist %s: %w", plist, err)
-	}
-	rendered, missing, skip, err := renderSecrets(store, data)
-	if err != nil {
-		return iterm2Stage{}, nil, err
+		return nil, nil, err
 	}
 	if skip {
-		return iterm2Stage{}, missing, nil
+		return nil, missing, nil
 	}
-	stateDir, err := paths.StateDir()
-	if err != nil {
-		return iterm2Stage{}, nil, err
+	switch scopeName {
+	case "iterm2":
+		// Import-blob model (v0.7.0 D4): iTerm2 no longer uses a custom-prefs folder.
+		// Apply imports the rendered global plist via `defaults import`, REFUSING when
+		// iTerm2 is running and flushing cfprefsd afterwards (see terminal.NewITerm2).
+		return terminal.NewITerm2(rendered, terminal.ExecRunner{}, terminal.ExecProcessController{}), nil, nil
+	default: // "terminal" / Apple Terminal
+		return terminal.NewAppleTerminal(rendered, terminal.ExecRunner{}), nil, nil
 	}
-	stageFolder := filepath.Join(stateDir, "rendered", "iterm2")
-	return iterm2Stage{
-		folder:    stageFolder,
-		plistPath: filepath.Join(stageFolder, terminal.ITerm2Domain+".plist"),
-		content:   rendered,
-	}, nil, nil
 }
 
-// iterm2PrefsFolder picks the prefs folder iTerm2 is pointed at: the per-machine
-// LOCAL overlay folder local/iterm2/ when a local plist exists there (local wins
-// whole-domain), else the shared repo iterm2/ folder. iTerm2 loads
-// com.googlecode.iterm2.plist from PrefsCustomFolder, and capture's local route
-// writes local/iterm2/<id>.plist under that same id, so pointing iTerm2 at the
-// local folder deploys the captured per-machine plist.
-//
-// The CHOSEN folder (local OR shared) is safeRepoPath-validated BEFORE it is
-// returned to be handed to `defaults write ... PrefsCustomFolder`. A repo-side
-// `iterm2 -> ~/.ssh` (or a folder escaping the repo / resolving under a system
-// location) must NEVER be persisted as iTerm2's prefs folder — that would bypass
-// the repo-side symlink policy for a managed terminal domain.
-//
-// Local overlay PRESENCE is decided GUARD-FIRST: safeRepoPath(repo, localPlist)
-// runs BEFORE any os.Lstat of the leaf, then presence is Lstat'd on the SAFE path
-// safeRepoPath returns. This closes a symlinked-PARENT bypass: a raw
-// os.Lstat(<repo>/local/iterm2/<id>.plist) does NOT follow the final leaf but DOES
-// traverse a symlinked PARENT (e.g. `local/iterm2 -> ~/.ssh`), touching outside the
-// repo BEFORE the guard runs. safeRepoPath walks component-by-component from the
-// repo root and never traverses a symlinked parent, so a poisoned parent (or a
-// symlinked/escaping leaf) is REFUSED before any leaf stat. A PRESENT-but-REFUSED
-// local overlay returns the refusal error so the caller SKIPS the iterm2 domain —
-// it must NOT silently fall back to the shared settings (that would let a malicious
-// local overlay mask its own refusal). Only an ABSENT local leaf (the safe path
-// Lstats as not-exist) legitimately falls back to shared, whose own leaf/folder is
-// then likewise validated; on refusal of the shared folder the error is returned so
-// the domain is skipped rather than writing a poisoned PrefsCustomFolder.
-func iterm2PrefsFolder(repo string) (string, error) {
-	localFolder := filepath.Join(repo, "local", "iterm2")
-	localPlist := filepath.Join(localFolder, terminal.ITerm2Domain+".plist")
-	// GUARD FIRST: validate the leaf (component-by-component from the repo root,
-	// never traversing a symlinked parent) BEFORE we stat it. A refusal here —
-	// symlinked parent, symlinked/escaping leaf, or a target under ~/.ssh — SKIPS the
-	// domain; we must NOT fall back to shared behind a present, poisoned overlay.
-	safeLocalPlist, err := safeRepoPath(repo, localPlist)
-	if err != nil {
-		return "", err
-	}
-	// Presence is decided on the SAFE path WITHOUT following the final link, so a
-	// symlinked leaf (already cleared by safeRepoPath as in-repo) still counts as
-	// PRESENT and governs the domain.
-	if li, lerr := os.Lstat(safeLocalPlist); lerr == nil {
-		// Local overlay leaf EXISTS. It governs the domain. Validate the chosen prefs
-		// folder too; a refusal SKIPS the domain rather than falling back to shared.
-		if !li.Mode().IsRegular() {
-			return "", fmt.Errorf("iterm2: local overlay leaf %s is not a regular file", localPlist)
-		}
-		if _, err := safeRepoPath(repo, localFolder); err != nil {
-			return "", err
-		}
-		return localFolder, nil
-	} else if !os.IsNotExist(lerr) {
-		// A present-but-unstatable safe leaf is not a clean absence; skip the domain
-		// rather than silently reaching for shared.
-		return "", fmt.Errorf("iterm2: stat local overlay %s: %w", localPlist, lerr)
-	}
-	// ABSENT local leaf: legitimately fall back to shared. VALIDATE before use — a
-	// symlinked/escaping <repo>/iterm2 is refused so `defaults write
-	// PrefsCustomFolder` never persists it.
-	sharedFolder := filepath.Join(repo, "iterm2")
-	if _, err := safeRepoPath(repo, sharedFolder); err != nil {
-		return "", err
-	}
-	return sharedFolder, nil
-}
-
-// appleTerminalExportBlob reads the `defaults export com.apple.Terminal` blob apply
-// should import, applying local-wins: the per-machine LOCAL overlay
-// (local/terminal/<id>.plist) takes precedence over the shared committed copy when
-// present, so a local-routed Apple Terminal capture is actually re-imported on this
-// machine. Returns (nil, nil) when neither exists (Apply then manages backup/restore
+// terminalExportBlob reads the `defaults export <prefID>` blob apply should import
+// for a terminal preference domain, applying local-wins: the per-machine LOCAL
+// overlay (local/<domain>/<id>.plist) takes precedence over the shared committed
+// copy (<domain>/<id>.plist) when present, so a local-routed capture is actually
+// re-imported on this machine. Both iTerm2 (D4 import-blob model) and Apple Terminal
+// use it. Returns (nil, nil) when neither exists (Apply then manages backup/restore
 // only). Probes the conventional committed locations under each tree.
 //
 // Local-overlay probing is GUARD-FIRST: safeRepoPath(repo, cand) runs BEFORE any
 // os.Lstat of the candidate, then presence is Lstat'd on the SAFE path. A raw
 // os.Lstat of a local candidate does NOT follow the final leaf but DOES traverse a
-// symlinked PARENT (e.g. `local/terminal -> <outside-repo>`), touching outside the
+// symlinked PARENT (e.g. `local/<domain> -> <outside-repo>`), touching outside the
 // repo BEFORE the guard runs; the guard-first walk never traverses a symlinked
 // parent. A LOCAL candidate that is PRESENT (the safe path Lstats) but REFUSED by
 // safeRepoPath (symlinked parent/leaf, escape, or under ~/.ssh) returns a non-nil
-// ERROR so buildTerminalDomain SKIPS the Apple Terminal domain with a refusal
-// notice, rather than masking the poisoned overlay by importing the shared blob.
-// Only an ABSENT local candidate falls through to the shared committed export,
-// whose own candidate is then validated before the symlink-following read.
-func appleTerminalExportBlob(repo string) ([]byte, error) {
+// ERROR so buildTerminalDomain SKIPS the domain with a refusal notice, rather than
+// masking the poisoned overlay by importing the shared blob. Only an ABSENT local
+// candidate falls through to the shared committed export, whose own candidate is
+// then validated before the symlink-following read.
+func terminalExportBlob(repo, domain, prefID string) ([]byte, error) {
 	localCands := []string{
-		filepath.Join(repo, "local", "terminal", terminal.AppleTerminalDomain+".plist"),
-		filepath.Join(repo, "local", "terminal", terminal.AppleTerminalDomain),
+		filepath.Join(repo, "local", domain, prefID+".plist"),
+		filepath.Join(repo, "local", domain, prefID),
 	}
 	for _, cand := range localCands {
 		// GUARD FIRST: a refusal (symlinked parent/leaf, escape, under ~/.ssh) SKIPS
@@ -1872,8 +1710,8 @@ func appleTerminalExportBlob(repo string) ([]byte, error) {
 	}
 	// No local overlay present — use the shared committed export.
 	for _, cand := range []string{
-		filepath.Join(repo, "terminal", terminal.AppleTerminalDomain+".plist"),
-		filepath.Join(repo, "terminal", terminal.AppleTerminalDomain),
+		filepath.Join(repo, domain, prefID+".plist"),
+		filepath.Join(repo, domain, prefID),
 	} {
 		// Refuse a symlinked/escaping plist before the symlink-following read.
 		safe, err := safeRepoPath(repo, cand)

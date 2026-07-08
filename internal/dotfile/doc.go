@@ -47,9 +47,10 @@
 // Per-domain `.local` overlay (PLAN.md "Per-domain overlay strategy"). A
 // Target's OverlayMode tells the apply command how the per-machine overlay
 // composes: OverlayIncludeSidecar for an include-style domain (zsh: shared
-// ~/.zshrc sources ~/.zshrc.local) where the overlay is a separate sidecar file;
-// OverlayWholeFileReplace (the TargetFor default) for a generic dotfile with no
-// include point (e.g. .gitconfig) where the per-machine copy in local/<domain>/
+// ~/.zshrc sources ~/.zshrc.local; also tmux and git) where the overlay is a
+// separate sidecar file; OverlayWholeFileReplace (the TargetFor default) for a
+// generic dotfile with no include point (e.g. .vimrc) where the per-machine copy
+// in local/<domain>/
 // is deployed INSTEAD OF the shared content. The apply command composes that
 // local-vs-shared choice into the effective content and deploys it through the
 // shared apply core (ApplyContentDeferred); sidecar materialization stays the

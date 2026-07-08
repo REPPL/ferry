@@ -89,10 +89,3 @@ func (p *Plugin) Describe(b plugin.Block) string {
 	}
 	return fmt.Sprintf("%s: %s", b.Kind, first)
 }
-
-// Deploy: zsh uses the existing include-sidecar deploy (shared dotfiles/zshrc
-// deployed whole; per-machine local/zsh/zshrc.local materialised as
-// ~/.zshrc.local, sourced last).
-func (p *Plugin) Deploy() plugin.DeploySpec {
-	return plugin.DeploySpec{DotfileName: ".zshrc", Overlay: plugin.Sidecar}
-}

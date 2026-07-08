@@ -20,4 +20,12 @@ paths = [
   '''internal/plugin/zsh/analyze_test\.go$''',
   # A fake AWS key fixture in the untrusted-git-transport tests.
   '''cmd/sync_round3_test\.go$''',
+  # v0.7.0 config-plugin secret tests: credential-shaped fixtures that exercise
+  # the git/tmux/npm token recognisers and prove a literal token never reaches
+  # the shared repo. Fake tokens only; every non-test file stays fully scanned.
+  '''internal/gitconfig/secret_test\.go$''',
+  '''internal/tmux/secret_test\.go$''',
+  '''evals/git_test\.go$''',
+  '''evals/tmux_test\.go$''',
+  '''evals/npmrc_test\.go$''',
 ]

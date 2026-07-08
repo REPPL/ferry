@@ -3,7 +3,6 @@ package terminal
 import (
 	"errors"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/REPPL/ferry/internal/platform"
@@ -14,48 +13,6 @@ const (
 	ITerm2Domain        = "com.googlecode.iterm2"
 	AppleTerminalDomain = "com.apple.Terminal"
 )
-
-// ITerm2ControlKeys are the MACHINE-LOCAL keys ferry writes to POINT iTerm2 at the
-// repo (the custom-prefs-folder pointer), NOT user preferences. apply sets them via
-// `defaults write` (see NewITerm2). They are how ferry deploys the repo plist, so
-// capture must never ingest them into the repo and status must never report drift
-// because of them. capture/status strip these from BOTH the live export and the repo
-// plist before comparing/capturing (compare like-for-like).
-var ITerm2ControlKeys = []string{"PrefsCustomFolder", "LoadPrefsFromCustomFolder"}
-
-// iterm2ControlKeyRE matches one `<key>NAME</key>` plus the value element that
-// immediately follows it in a `defaults export`/plist XML body, for each control
-// key. The value is either a self-closing element (`<true/>`) or an open/close pair
-// (`<string>…</string>`); both forms are removed together so no orphan key or value
-// is left behind. The keys carry scalar string/bool values only, so nested
-// containers are not handled — that is acceptable here (and the exact custom-folder
-// vs `defaults export` round-trip is Layer-2-deferred per AC-terminal-config).
-var iterm2ControlKeyRE = func() *regexp.Regexp {
-	alt := strings.Join(ITerm2ControlKeys, "|")
-	// (?s) so `.` spans newlines between the key and its value element.
-	return regexp.MustCompile(`(?s)[\t ]*<key>(?:` + alt + `)</key>\s*(?:<[a-zA-Z]+/>|<([a-zA-Z]+)>.*?</[a-zA-Z]+>)\s*\n?`)
-}()
-
-// StripITerm2ControlKeys removes the machine-local iTerm2 control keys
-// (PrefsCustomFolder / LoadPrefsFromCustomFolder) and their values from a plist /
-// `defaults export` XML body, returning the remaining content. It is a TEXT-LEVEL
-// strip over the opaque export bytes (the codebase treats these exports as opaque
-// byte blobs; there is no plist parser), used by capture/status so the live domain
-// is compared LIKE-FOR-LIKE against the repo plist with the pointer keys excluded
-// from both sides. Non-iTerm2 / absent inputs are returned unchanged.
-//
-// NOTE: This is a deliberate consistency fix — never capturing the pointer state and
-// comparing both sides without it. The deeper reconciliation of iTerm2's
-// custom-prefs-FOLDER plist vs the `defaults export` domain (which can diverge in
-// edge cases) is Layer-2-deferred per ACCEPTANCE.md's AC-terminal-config, which
-// gates the native-mechanism differential and defers concrete plist key/value
-// semantics. Do not grow this into a full custom-folder differ.
-func StripITerm2ControlKeys(export []byte) []byte {
-	if len(export) == 0 {
-		return export
-	}
-	return iterm2ControlKeyRE.ReplaceAll(export, nil)
-}
 
 // PreferenceDomain models one macOS terminal preference DOMAIN as a backup
 // resource. It implements backup.Resource (Domain/Backup/Restore) so the engine
@@ -68,43 +25,59 @@ type PreferenceDomain struct {
 	domain string
 	runner Runner
 	// apply performs the domain-specific mutation via the runner. Set by the
-	// constructors; iTerm2 sets PrefsCustomFolder + LoadPrefsFromCustomFolder,
-	// Apple Terminal imports a prepared export blob.
+	// constructors; both iTerm2 and Apple Terminal import a prepared export blob
+	// via `defaults import` (iTerm2 additionally refuses when it is running and
+	// flushes cfprefsd afterwards — see NewITerm2).
 	apply func(r Runner) error
 	// note is the human-readable caveat surfaced in the apply result (e.g. the
 	// iTerm2 relaunch / cfprefsd-cache note).
 	note string
 }
 
-// NewITerm2 builds the iTerm2 preference domain. On Apply it points iTerm2 at
-// prefsFolder by setting PrefsCustomFolder to that folder and
-// LoadPrefsFromCustomFolder to true via `defaults write`. The returned result
-// notes that iTerm2 must be relaunched (and cfprefsd may cache) for the change
-// to take effect.
+// NewITerm2 builds the iTerm2 GLOBAL preference domain. On Apply it imports the
+// prepared, allowlist-filtered export blob into com.googlecode.iterm2 via
+// `defaults import <domain> -` (mirroring Apple Terminal), then flushes cfprefsd
+// so the change is not masked by the daemon's cache. Pass nil to manage the domain
+// for backup/restore only (Apply then no-ops the import).
 //
-// prefsFolder is the ferry-owned RENDERED STAGING FOLDER (e.g.
-// ~/.local/state/ferry/rendered/iterm2/) into which apply has materialised the
-// repo plist with its {{ferry.secret ...}} placeholders already substituted —
-// NOT the raw repo iterm2/ folder. iTerm2 loads com.googlecode.iterm2.plist from
-// whatever folder it is pointed at; pointing it at the staging folder guarantees
-// it reads the RENDERED plist and never the raw placeholder one. cmd/apply.go
-// stages that plist (refused leaf / missing secret → it skips this domain and
-// never calls NewITerm2).
-func NewITerm2(prefsFolder string, runner Runner) *PreferenceDomain {
+// CRITICAL: iTerm2 keeps its preferences in memory and REWRITES the domain on
+// quit, and cfprefsd caches it — so importing while iTerm2 is RUNNING is silently
+// lost. Apply therefore consults proc.Running() first and, when iTerm2 is up,
+// REFUSES with ErrITerm2Running (a clean skip; live config left intact) so the
+// user can quit iTerm2 and re-run. After a successful import into a not-running
+// iTerm2 it calls proc.FlushPrefsCache() (best-effort `killall cfprefsd`).
+//
+// exportBlob is the RENDERED bytes (any {{ferry.secret ...}} already substituted
+// by cmd/apply.go, which skips this domain on a missing secret or a refused repo
+// plist so a placeholder is never imported). This retires the previous
+// custom-prefs-folder mechanism (v0.7.0 D4): ferry no longer points iTerm2 at a
+// folder — it imports the domain like Apple Terminal.
+func NewITerm2(exportBlob []byte, runner Runner, proc ProcessController) *PreferenceDomain {
 	d := &PreferenceDomain{
 		domain: ITerm2Domain,
 		runner: runner,
-		note:   "iTerm2 must be relaunched for the custom prefs folder to take effect (cfprefsd may cache the old value).",
+		note:   "iTerm2 preferences imported; relaunch iTerm2 for them to take effect (cfprefsd was flushed).",
 	}
 	d.apply = func(r Runner) error {
-		// PrefsCustomFolder -> rendered staging folder (a string default).
-		if _, err := r.Run(nil, "write", ITerm2Domain, "PrefsCustomFolder", "-string", prefsFolder); err != nil {
-			return fmt.Errorf("iterm2: set PrefsCustomFolder: %w", err)
+		if len(exportBlob) == 0 {
+			return nil // manage backup/restore only; nothing to import.
 		}
-		// LoadPrefsFromCustomFolder -> true (a bool default).
-		if _, err := r.Run(nil, "write", ITerm2Domain, "LoadPrefsFromCustomFolder", "-bool", "true"); err != nil {
-			return fmt.Errorf("iterm2: set LoadPrefsFromCustomFolder: %w", err)
+		// REFUSE if iTerm2 is running: a running iTerm2 overwrites the domain on
+		// quit, silently losing the import. Fail closed on a probe error too.
+		running, err := proc.Running()
+		if err != nil {
+			return fmt.Errorf("iterm2: check whether iTerm2 is running: %w", err)
 		}
+		if running {
+			return ErrITerm2Running
+		}
+		if _, err := r.Run(exportBlob, "import", ITerm2Domain, "-"); err != nil {
+			return fmt.Errorf("iterm2: import: %w", err)
+		}
+		// Flush cfprefsd so the imported values are not masked by its cache. This is
+		// best-effort: the bytes are already on disk, so a flush hiccup must not fail
+		// (or roll back) an otherwise successful import.
+		_ = proc.FlushPrefsCache()
 		return nil
 	}
 	return d
@@ -135,6 +108,23 @@ func NewAppleTerminal(exportBlob []byte, runner Runner) *PreferenceDomain {
 
 // Domain returns the preference domain identifier (backup.Resource).
 func (d *PreferenceDomain) Domain() string { return d.domain }
+
+// Name returns the user-facing [manage] scope key for this preference domain
+// (iTerm2 -> "iterm2", Apple Terminal -> "terminal") — distinct from Domain(),
+// which is the native `defaults` identifier (com.googlecode.iterm2 /
+// com.apple.Terminal). It is the key Scope.IsManaged gates on and the converged
+// domains.ResourceDomain registry enumerates by, replacing the hardcoded
+// {"iterm2","terminal"} literal that drove the preference-domain arm.
+func (d *PreferenceDomain) Name() string {
+	switch d.domain {
+	case ITerm2Domain:
+		return "iterm2"
+	case AppleTerminalDomain:
+		return "terminal"
+	default:
+		return ""
+	}
+}
 
 // Backup captures the domain's CURRENT state via `defaults export <domain> -`
 // (backup.Resource). It is darwin-only: on a non-darwin host it returns

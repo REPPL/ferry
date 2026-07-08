@@ -614,3 +614,45 @@ func TestExtractIntoFreshStagingDir(t *testing.T) {
 		t.Errorf("extraction leaked into the outside dir: %v", ents)
 	}
 }
+
+// TestWriteReproducibleSHA is the reproducibility guarantee: two exports of
+// BYTE-IDENTICAL sources produce a BYTE-IDENTICAL bundle and therefore the same
+// overall SHA256. bundle.Write injects no timestamps or randomness — member order
+// is a deterministic sort and zip mtimes are zero-valued — so the returned anchor
+// is a pure function of the tracked inputs. This is what lets a user recompute the
+// SHA and confirm a bundle was produced from the same sources.
+func TestWriteReproducibleSHA(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	if err := os.WriteFile(a, []byte("alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(b, []byte("beta\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sources := []Source{
+		{RelPath: "z/b.txt", AbsPath: b, Data: []byte("beta\n")},
+		{RelPath: "a.txt", AbsPath: a, Data: []byte("alpha\n")},
+	}
+
+	out1 := filepath.Join(dir, "one.zip")
+	out2 := filepath.Join(dir, "two.zip")
+	sha1, err := Write(out1, "1.2.3", false, sources)
+	if err != nil {
+		t.Fatalf("Write one: %v", err)
+	}
+	sha2, err := Write(out2, "1.2.3", false, sources)
+	if err != nil {
+		t.Fatalf("Write two: %v", err)
+	}
+
+	if sha1 != sha2 {
+		t.Errorf("reproducibility broken: two writes of identical sources gave different SHAs\n one=%s\n two=%s", sha1, sha2)
+	}
+	bytes1, _ := os.ReadFile(out1)
+	bytes2, _ := os.ReadFile(out2)
+	if !bytes.Equal(bytes1, bytes2) {
+		t.Errorf("reproducibility broken: two bundles of identical sources are not byte-identical (%d vs %d bytes)", len(bytes1), len(bytes2))
+	}
+}

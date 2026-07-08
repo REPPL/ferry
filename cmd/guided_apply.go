@@ -60,7 +60,7 @@ type guidedOutcome struct {
 // the walkthrough and risk gate cover. Terminal preference domains (kindPreference)
 // are NOT: they auto-apply through their own reversible backup-first path.
 func isGuidedKind(k planKind) bool {
-	return k == kindDotfile || k == kindOverlay || k == kindAgents || k == kindTerminal
+	return k == kindFile
 }
 
 // itemKey is the stable per-machine identity used for skip-always exclusions: a
@@ -269,10 +269,10 @@ type riskyGroup struct {
 func groupRisky(risky []planItem) []riskyGroup {
 	var dot, ag, term []planItem
 	for _, it := range risky {
-		switch it.kind {
-		case kindAgents:
+		switch it.fileDomain {
+		case "agents":
 			ag = append(ag, it)
-		case kindTerminal:
+		case "terminals":
 			term = append(term, it)
 		default:
 			dot = append(dot, it)

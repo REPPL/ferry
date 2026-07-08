@@ -1,12 +1,13 @@
 package cmd
 
-// WS4(a): applyTarget must deploy an include-style (non-whole-file) dotfile
-// through the IN-MEMORY apply core, never staging its effective bytes to a
+// WS4(a): the shared apply core (dotfile.ApplyContentDeferred) — the one the
+// converged kindFile arm calls — must deploy an include-style (non-whole-file)
+// dotfile through the IN-MEMORY path, never staging its effective bytes to a
 // $TMPDIR temp file. For a secret-routed dotfile those bytes are ALREADY-RENDERED
 // plaintext, so a crash between staging and cleanup would leave the secret at
 // rest in /tmp. The test points $TMPDIR at an empty dir and inspects it at the
 // moment of the deploy write (inside the Backuper), when the pre-fix stageContent
-// temp would still exist (its cleanup is deferred until applyTarget returns).
+// temp would still exist (its cleanup is deferred until the apply call returns).
 
 import (
 	"os"
@@ -24,8 +25,8 @@ func TestApplyTargetSecretRoutedStagesNoTempFile(t *testing.T) {
 
 	home := t.TempDir()
 	target := dotfile.Target{Name: "gitconfig", Home: filepath.Join(home, ".gitconfig")}
-	// Overlay is the zero value (NOT OverlayWholeFileReplace), so applyTarget takes
-	// the in-memory ApplyContentDeferred branch — the one WS4(a) fixed.
+	// Overlay is the zero value (NOT OverlayWholeFileReplace); ApplyContentDeferred
+	// takes the in-memory branch — the one WS4(a) fixed.
 
 	plaintext := []byte("[user]\n\ttoken = super-secret-rendered-value\n")
 	it := &planItem{target: target, content: plaintext, secretRouted: true}
@@ -50,16 +51,16 @@ func TestApplyTargetSecretRoutedStagesNoTempFile(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 
-	res, err := applyTarget(it, store, b, false)
+	res, err := dotfile.ApplyContentDeferred(it.target, it.content, dotfile.DefaultPerm(), store, b, false, it.secretRouted)
 	if err != nil {
-		t.Fatalf("applyTarget: %v", err)
+		t.Fatalf("ApplyContentDeferred: %v", err)
 	}
 	if res.Action != dotfile.ActionCreated {
 		t.Fatalf("Action = %q, want created (fresh missing target should be written)", res.Action)
 	}
 
 	if len(tmpEntriesAtWrite) != 0 {
-		t.Fatalf("applyTarget staged %d file(s) in $TMPDIR during a secret-routed deploy: %v; "+
+		t.Fatalf("the apply core staged %d file(s) in $TMPDIR during a secret-routed deploy: %v; "+
 			"the rendered plaintext must never touch /tmp", len(tmpEntriesAtWrite), tmpEntriesAtWrite)
 	}
 

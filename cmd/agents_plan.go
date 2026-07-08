@@ -63,7 +63,7 @@ func planAgents(ctx *cmdContext, home string, lastApplied *dotfile.Store) ([]pla
 			return nil, nil, cerr
 		}
 		items = append(items, planItem{
-			kind:       kindAgents,
+			kind:       kindFile,
 			domain:     ai.Label,
 			target:     ai.Target,
 			content:    ai.Content,

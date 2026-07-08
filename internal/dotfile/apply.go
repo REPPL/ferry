@@ -352,10 +352,15 @@ func stripFerryOverlayDirective(content []byte) []byte {
 	kept := make([]string, 0, len(lines))
 	for i := 0; i < len(lines); i++ {
 		if strings.TrimSpace(lines[i]) == ferryOverlayMarker {
-			// Drop the marker, and the next line too when it is ferry's generated
-			// include directive (`[ -f ~/… ] && source ~/…`). A non-matching next
-			// line is left in place (so nothing user-authored is silently removed).
-			if i+1 < len(lines) && isFerryOverlayInclude(lines[i+1]) {
+			// Drop the marker plus ferry's generated include directive that follows.
+			// The zsh/tmux directive is ONE line (`[ -f ~/… ] && source ~/…` /
+			// `source-file -q ~/…`); the git directive is a TWO-line `[include]`
+			// block (`[include]` then `\tpath = ~/…`). Consume whichever follows; a
+			// non-matching next line is left in place (nothing user-authored removed).
+			if i+1 < len(lines) && strings.TrimSpace(lines[i+1]) == "[include]" &&
+				i+2 < len(lines) && isFerryGitIncludePath(lines[i+2]) {
+				i += 2
+			} else if i+1 < len(lines) && isFerryOverlayInclude(lines[i+1]) {
 				i++
 			}
 			continue
@@ -366,12 +371,38 @@ func stripFerryOverlayDirective(content []byte) []byte {
 }
 
 // isFerryOverlayInclude reports whether line is ferry's generated per-machine
-// overlay include — the exact `[ -f ~/<file> ] && source ~/<file>` shape
-// appendSourceDirective emits. Matching the guarded `[ -f ~/… ] && source ~/…`
-// structure (not a bare `source …`) keeps stripping narrow to ferry's own output.
+// overlay include, in any include-style file format ferry emits:
+//   - shell/zsh: the guarded `[ -f ~/<file> ] && source ~/<file>` shape;
+//   - tmux:      the `source-file -q ~/<file>` shape.
+//
+// This is the SHAPE-keyed half of the two-strip contract: it recognises ferry's
+// own generated line by its structure (never a bare user `source …`), and only
+// ever runs on the line that FOLLOWS ferry's marker, so recognising both formats
+// stays narrow to ferry's own output. Matching the precise structure (a guarded
+// shell include, or `source-file -q ~/`, not a bare directive) keeps a
+// user-authored line from being stripped.
 func isFerryOverlayInclude(line string) bool {
 	t := strings.TrimSpace(line)
-	return strings.HasPrefix(t, "[ -f ~/") && strings.Contains(t, "] && source ~/")
+	if strings.HasPrefix(t, "[ -f ~/") && strings.Contains(t, "] && source ~/") {
+		return true
+	}
+	return strings.HasPrefix(t, "source-file -q ~/")
+}
+
+// isFerryGitIncludePath reports whether line is the `path = ~/…` line of ferry's
+// generated git `[include]` block (the second line of the two-line git-INI
+// directive). It is the git-INI branch of the shape-keyed strip: recognised by
+// the `path` key with a `~/`-anchored value, never a bare user directive, and only
+// ever tested on the line that follows ferry's marker + `[include]` header.
+func isFerryGitIncludePath(line string) bool {
+	t := strings.TrimSpace(line)
+	eq := strings.IndexByte(t, '=')
+	if eq < 0 {
+		return false
+	}
+	key := strings.ToLower(strings.TrimSpace(t[:eq]))
+	val := strings.TrimSpace(t[eq+1:])
+	return key == "path" && strings.HasPrefix(val, "~/")
 }
 
 // StripFerryOverlayDirective is the exported form of stripFerryOverlayDirective

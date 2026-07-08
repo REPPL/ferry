@@ -61,7 +61,7 @@ func planTerminals(ctx *cmdContext, home string, secretStore *secret.Store, last
 		secretRouted := isSecretRouted(ti.Content)
 		if skip {
 			items = append(items, planItem{
-				kind:         kindTerminal,
+				kind:         kindFile,
 				domain:       ti.Label,
 				target:       ti.Target,
 				action:       "skipped",
@@ -87,7 +87,7 @@ func planTerminals(ctx *cmdContext, home string, secretStore *secret.Store, last
 			return nil, nil, cerr
 		}
 		items = append(items, planItem{
-			kind:         kindTerminal,
+			kind:         kindFile,
 			domain:       ti.Label,
 			target:       ti.Target,
 			content:      rendered,

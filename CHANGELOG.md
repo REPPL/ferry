@@ -11,7 +11,123 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-08
+
 ### Added
+
+- **git (`~/.gitconfig`) is now a carried dotfile with a native `[include]`
+  overlay and a machine-identity firewall.** Declare `".gitconfig"` in the
+  `dotfiles` list and ferry carries `dotfiles/gitconfig` to `~/.gitconfig`. Like
+  the zsh and tmux files it is an include-sidecar dotfile, but the injected
+  directive is git's own two-line `[include]` block (`path = ~/.gitconfig.local`)
+  appended last, so git last-wins-merges the machine-local file — a native
+  equivalent of ferry's overlay. Machine **identity is never shared**:
+  `user.email`, `user.name`, `user.signingkey`, `gpg.program`,
+  `credential.helper`, `credential.<host>.username`, and every
+  `[includeIf "gitdir:…"]` block are forced to the
+  never-shared `~/.gitconfig.local` layer, so one machine's commit identity can
+  never reach the shared `~/.gitconfig` or the shared repo — even a source that
+  mistakenly commits identity has it stripped on deploy. A literal token embedded
+  in a `url.*.insteadOf` value (`https://<TOKEN>@host/`, `https://oauth2:<TOKEN>@…`)
+  or after `Bearer`/`Basic` in an `http.extraHeader` is caught on capture: only
+  the token is routed to the out-of-repo secret store and replaced with a
+  `{{ferry.secret …}}` placeholder — the surrounding URL scheme/host and the
+  `Authorization: Bearer ` prefix stay byte-identical — and rendered back on
+  deploy. A `${GIT_TOKEN}` env-ref is left in the repo verbatim.
+  `credential.helper = store` (which writes plaintext `~/.git-credentials`) is
+  warned about and never carried; ferry never reads or writes `~/.git-credentials`.
+
+- **npm's `~/.npmrc` is now a carried dotfile with registry-token redaction.**
+  Declare `".npmrc"` in the `dotfiles` list and ferry carries `dotfiles/npmrc`
+  to `~/.npmrc` as a plain whole-file dotfile (no include sidecar). Only the
+  user-level `~/.npmrc` is carried, never a per-project one. A registry auth line
+  — `//host/:_authToken=…`, `:_auth=…`, or `:_password=…` — is recognised by the
+  secret scanner as a high-confidence credential, so a literal token is blocked
+  from the shared repo on capture: route it to the out-of-repo secret store and a
+  `{{ferry.secret …}}` placeholder is committed in its place, which `apply`
+  renders back to the real token (deployed `0600`) so npm reads it. The
+  recommended pattern is an environment reference (`_authToken=${NPM_TOKEN}`),
+  which npm expands at read time and which ferry carries to the shared repo
+  verbatim; the token then never lives in the config at all. The token is never
+  written as plaintext into the committed repo.
+
+- **tmux is now a carried dotfile with a per-machine `.local` sidecar.** Declare
+  `".tmux.conf"` in the `dotfiles` list and ferry carries `dotfiles/tmux.conf`
+  to `~/.tmux.conf`. Like the zsh shell files, it is an include-sidecar dotfile:
+  when a per-machine overlay exists at `local/tmux/tmux.conf.local`, `apply`
+  appends `source-file -q ~/.tmux.conf.local` last (so the sidecar wins) and
+  materialises `~/.tmux.conf.local`; `capture` strips that injected directive
+  before writing the shared source and routes per-machine edits to the sidecar.
+  A secret inside a quoted tmux option (`set -g @token '…'`) is caught on
+  capture — only the quoted value is routed to the out-of-repo secret store and
+  replaced with a `{{ferry.secret …}}` placeholder, leaving the `set -g @token '…'`
+  syntax and quotes byte-identical — and rendered back on deploy. A `${ENV}`
+  reference is left in the repo verbatim.
+
+- **macOS key bindings are now a managed domain.** Enable `keybindings = true`
+  under `[manage]` and ferry carries `keybindings/DefaultKeyBinding.dict` from the
+  config repo to `~/Library/KeyBindings/DefaultKeyBinding.dict` as a regular-file
+  copy reconciled by hash. The domain is repo-authoritative (edit the repo copy
+  and `apply` deploys it; a live edit shows as drift and `apply` skips it) with no
+  per-machine `.local` overlay. The source must stay the readable old-style
+  (NeXT/ASCII) text property list: ferry validates it with `plutil -lint` on macOS
+  and refuses a binary plist (`bplist00` header), a UTF-8 byte-order mark, or
+  non-UTF-8 bytes before deploying, and never runs `plutil -convert` on it.
+  Bindings load at app launch, so relaunch an affected app to pick up changes.
+
+- **The Emacs configuration tree is now a managed domain.** Enable `emacs = true`
+  under `[manage]` and ferry carries the config repo's `emacs/` tree to
+  `~/.emacs.d/`, fanned out file by file as regular-file copies reconciled by hash
+  (ferry never symlinks `~/.emacs.d/`). Volatile, machine-generated paths are
+  pruned and never deployed even if present: `elpa/`, `eln-cache/`, `*.elc`, the
+  tangled `inits/repp.el`, `auto-save-list/`, `transient/`, `url/`,
+  `network-security.data`, and session state (`recentf`, `savehist`, `saveplace`).
+  The domain is repo-authoritative (edit the repo source and `apply` deploys it; a
+  live edit shows as drift and `apply` skips it) with no capture pass. The
+  per-machine `.local` overlay applies per file: `local/emacs/<relpath>` wins over
+  the shared `emacs/<relpath>`, the home for a Customize-written `inits/custom.el`
+  or a hand-authored `init.local.el`. Emacs files participate in the secret store
+  like dotfiles. Note `~/.emacs.d` shadows the XDG `~/.config/emacs`.
+
+- **iTerm2 Dynamic Profiles are now a managed domain.** Enable
+  `iterm2-profiles = true` under `[manage]` and ferry carries the config repo's
+  `iterm2/DynamicProfiles/*.json` to
+  `~/Library/Application Support/iTerm2/DynamicProfiles/`, fanned out file by file
+  as regular-file copies reconciled by hash (ferry never symlinks them). The
+  domain is repo-authoritative (edit the JSON and `apply` deploys it; a live edit
+  shows as drift and `apply` skips it) with no capture pass; set
+  `"Rewritable": false` in the profile so iTerm2 will not rewrite it either. A
+  profile's `"Guid"` is a **frozen identity** — ferry copies the JSON byte-for-byte
+  and never generates or rewrites a GUID. Each file is validated (as JSON on every
+  platform, and through `plutil` on macOS) before it lands, because one malformed
+  file disables all of iTerm2's dynamic profiles; a file that fails is warned about
+  and skipped. The per-machine `.local` overlay applies per file:
+  `local/iterm2-profiles/<name>.json` wins over the shared copy, and a file present
+  only there deploys as a machine-only profile (e.g. a child profile referencing a
+  shared parent's GUID). Profiles participate in the secret store like dotfiles.
+
+- **`ferry doctor` now observes ferry's managed-target invariants** (read-only):
+  it reports whether any deployed target is a symlink (ferry deploys regular-file
+  copies, never symlinks), whether any managed target resolves under `~/.ssh`,
+  and whether every managed target resolves inside `$HOME`. A genuine breach —
+  a symlink where a copy belongs, an escape from `$HOME`, or a target under
+  `~/.ssh` — is reported `[fail]` and makes doctor exit non-zero; a machine with
+  nothing managed yet is advisory. The check is stat/lstat-only and never reads
+  file contents.
+
+- **npm globals are a new managed deps domain.** Enable `npm-globals = true`
+  under `[manage]` and ferry carries the machine's globally-installed npm package
+  **names** (never versions) in `deps/npm-globals.txt`. `ferry capture` re-dumps
+  the list from `npm ls -g` (sorted, names-only, npm itself excluded);
+  `ferry apply --deps` reconciles it with `npm i -g`; `ferry status` reports drift
+  (packages installed but unrecorded, or recorded but not installed). npm globals
+  are **install/reconcile-only** — ferry never uninstalls them and `restore
+  --packages` leaves them intact. npm is detected independently of the OS package
+  manager, so it runs **alongside** Homebrew/apt, not instead of it; when npm is
+  absent the domain skips cleanly. Entries are validated as plain package names,
+  so a git-URL, tarball-URL, local-path, or version-tagged spec in the list is
+  refused before `npm i -g` runs. The `~/.npmrc` config file and its registry
+  auth token are carried separately, as a dotfile (see below).
 
 - A "Built with Claude Code" attribution badge in the README, and an
   **Attribution** policy in `AGENTS.md`: the badge is the one sanctioned place
@@ -21,9 +137,53 @@ called out in a **Breaking** section. See
 
 ### Changed
 
+- **`ferry status` now reports Homebrew Brewfile drift.** When `brew = true` is
+  managed, status compares the live `brew bundle dump` against the repo Brewfile
+  (shared plus per-machine overlay) and reports how many entries would be captured
+  or installed — READ-ONLY: it never installs a package and never rewrites the
+  Brewfile. The comparison is by package identity (directive plus name), so a
+  benign option or version difference does not read as drift. This reconciles the
+  deps managed surface: `status` and `capture` both key on `[manage] brew`, while
+  `apply --deps` remains the explicit opt-in that performs the install. Homebrew
+  stays install/reconcile-only — no `brew bundle cleanup` path exists.
+
+- **`ferry export` labels its bundle SHA256 as reproducible.** The digest is a
+  deterministic function of the tracked sources — exporting the same sources
+  always yields the same SHA (no timestamps or randomness are bundled) — so a
+  recipient can recompute it and confirm a bundle was produced from the same
+  inputs. The output line and `--help` text now say so; `import --expect-sha256`
+  remains the verification path.
+
+- **The iTerm2 global preferences (`iterm2 = true`) now use an import-blob model
+  with an allowlist.** `capture` exports the live `com.googlecode.iterm2` domain
+  and keeps **only** an allowlisted set of stable, machine-agnostic global keys
+  (quit/close prompts, tab and window chrome behaviour, dimming, clipboard
+  behaviour, the auto-update preference, the default-profile pointer), dropping
+  everything else — so volatile machine state (window geometry, one-shot `NoSync…`
+  flags) can never reach the repo. `apply` imports the committed filtered plist
+  (`iterm2/com.googlecode.iterm2.plist`) via `defaults import`. Because a running
+  iTerm2 rewrites the domain on quit, `apply` **refuses the import while iTerm2 is
+  running** and asks you to quit it and re-run; after a successful import ferry runs
+  `killall cfprefsd` so the daemon does not serve a stale cache (relaunch iTerm2 to
+  see the change). The `.local` layer applies whole-domain
+  (`local/iterm2/com.googlecode.iterm2.plist`).
+
 - The default built-in harness registry ships a trimmed set of coding CLIs;
   any additional harness is declared via `[agents.harness.<name>]` — data, not
   a code change.
+
+### Breaking
+
+- **iTerm2's custom-prefs-folder mechanism is retired** (v0.7.0 D4). Earlier
+  releases deployed `iterm2 = true` by pointing iTerm2's `PrefsCustomFolder` at the
+  repo folder via `defaults write`; ferry now imports an allowlist-filtered plist
+  with `defaults import` instead, and `apply` refuses while iTerm2 is running. An
+  existing committed `iterm2/com.googlecode.iterm2.plist` still applies, but it is
+  now imported into the live domain (quit iTerm2 first) rather than loaded from a
+  folder, and the next `capture` reduces it to the allowlisted global keys. Re-run
+  `ferry capture` (with iTerm2 quit for a subsequent `apply`) to record the filtered
+  plist. Profiles now belong in the separate `iterm2-profiles` domain as Dynamic
+  Profiles JSON.
 
 ## [0.6.0] - 2026-07-07
 

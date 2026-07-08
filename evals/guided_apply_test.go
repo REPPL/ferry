@@ -32,10 +32,13 @@ const guidedRiskyManifest = "[manage]\ndotfiles = [\".gitconfig\"]\n"
 func seedRiskyAdoption(t *testing.T, s *Sandbox) (target, repoContent, liveContent string) {
 	t.Helper()
 	s.SeedSharedManifest(t, guidedRiskyManifest)
-	repoContent = "[user]\n\tname = Repo Managed\n\temail = managed@example.com\n"
+	// Non-identity gitconfig content (core.* ergonomics): the git identity firewall
+	// leaves it byte-for-byte, so the deploy is verbatim and the risky-adoption of a
+	// pre-existing, differing live file is what this exercises.
+	repoContent = "[core]\n\teditor = vim\n\tpager = less\n"
 	s.WriteRepoFile(t, ".gitconfig", repoContent)
 	s.WriteRepoFile(t, filepath.Join("dotfiles", ".gitconfig"), repoContent)
-	liveContent = "[user]\n\tname = My Pre-Ferry Name\n\temail = me@personal.example\n"
+	liveContent = "[core]\n\teditor = nano\n"
 	target = s.WriteHomeFile(t, ".gitconfig", liveContent, 0o644)
 	return target, repoContent, liveContent
 }

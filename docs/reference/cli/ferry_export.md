@@ -13,7 +13,8 @@ and withheld if any are found, otherwise bundled. The result is a self-contained
 .zip you move to another account or
 machine and ingest with "ferry import". Secrets and the per-machine local layer
 are never included unless you pass --include-local. export prints the bundle's
-SHA256 so you can verify the move with "ferry import --expect-sha256".
+reproducible SHA256 — exporting the same tracked sources always yields the same
+digest — so you can verify the move with "ferry import --expect-sha256".
 
 ```
 ferry export [flags]

@@ -10,9 +10,12 @@
 //   - Backup captures the CURRENT state via `defaults export <domain> -` so the
 //     backup engine can snapshot it to the immutable baseline + per-run journal
 //     BEFORE any mutation.
-//   - Apply mutates the domain (iTerm2: set PrefsCustomFolder +
-//     LoadPrefsFromCustomFolder via `defaults write`; Apple Terminal: import a
-//     prepared export via `defaults import`).
+//   - Apply mutates the domain by importing a prepared export blob via
+//     `defaults import <domain> -` (both iTerm2 and Apple Terminal). iTerm2
+//     additionally REFUSES while it is running (a running iTerm2 rewrites the
+//     domain on quit) and flushes cfprefsd after a successful import. Its
+//     git-tracked representation is an allowlist-filtered plist (FilterAllowlist),
+//     so volatile keys (NoSync*, window geometry) are never carried.
 //   - Restore re-applies a previously captured blob via
 //     `defaults import <domain> -`, returning the domain to that state — this is
 //     the engine's rollback path.
