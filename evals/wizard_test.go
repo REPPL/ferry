@@ -3,7 +3,7 @@ package evals
 // v0.3.0 wizard evals — eval-first, RED until the implementing wave lands.
 //
 // These tests drive `ferry init`'s wizard DATA-MODEL path via the documented
-// `ferry init --wizard-answers <file>` flag (PLAN "Answers file — the concrete
+// `ferry init --wizard=answers:<file>` mode (PLAN "Answers file — the concrete
 // data-model driver"): a TOML answers file bypasses ONLY the TUI; every invariant
 // (pure-until-confirm, gates, backup, scaffold, masking) runs identically and no
 // tty is required. The non-interactive fallback (no answers file, non-tty) is
@@ -24,17 +24,17 @@ package evals
 //	AC-combined-secret-repair       TestWizard_AC_secret_store_route_and_combined_secret_repair
 //	AC-repair-machine-local         TestWizard_AC_repair_machine_local
 //	AC-repair-dedupe                TestWizard_AC_repair_dedupe (BYTE-EXACT survivor bytes; emptied-not-deleted)
-//	AC-repair-noninteractive-refused TestWizard_AC_repair_noninteractive_refused (--yes, --no-wizard, AND plain non-tty arms)
+//	AC-repair-noninteractive-refused TestWizard_AC_repair_noninteractive_refused (--wizard=off conflict, --yes non-tty, AND plain non-tty arms)
 //	AC-wizard-pure-until-confirm    TestWizard_AC_wizard_pure_until_confirm
 //	AC-wizard-backup                TestWizard_AC_wizard_backup (original-bytes/0600/regular arm; symlink + `-2` collision arms UNIT-PHASE, see below)
 //	AC-preview-masking              TestWizard_AC_preview_masking (store arm: placeholder shown; drop arm: DROP-LINE MASKING pin —
 //	                                the removed line is shown masked by its placeholder, value on no stream, store empty)
-//	AC-noninteractive-fallback      TestInitFallback_AC_noninteractive_fallback (non-tty + --yes + --no-wizard triggers over the
+//	AC-noninteractive-fallback      TestInitFallback_AC_noninteractive_fallback (non-tty + --yes + --wizard=off triggers over the
 //	                                ENRICHED fixture: TWO secrets incl. a PEM span, machine line stays SHARED, /Users/testuser NOT
 //	                                auto-repaired; first-apply byte-identity; refs stderr-only; recursive HOME-delta confinement)
 //	AC-github-seedplan              TestWizard_AC_github_seedplan (fallback_auto_extract + wizard_routed arms; BYTE-EXACT SeedPlan
 //	                                identity asserted on the LOCAL seed AND on the PUSHED tree of a real local bare remote;
-//	                                FLAG PRECEDENCE pin: `--github --wizard-answers <f> --yes` runs the wizard-routed path
+//	                                FLAG PRECEDENCE pin: `--github --wizard=answers:<f> --yes` runs the wizard-routed path
 //	                                fully non-interactively) and
 //	                                TestGitHubSecretExtracted_AC_github_secret_extracted (evals/github_test.go — the
 //	                                v0.3.0 recut of the retired v0.2.x AC-github-secret-blocked abort contract)
@@ -73,9 +73,9 @@ package evals
 // high-entropy-token rule for these fixtures to exercise ferry's REAL gate.
 //
 // NEWLY PINNED PLAN CONTRACTS exercised here (plan "Pinned contracts"):
-// FLAG PRECEDENCE — --wizard-answers outranks the wizard-skip meaning of --yes;
-// --yes retains its create-confirm/apply-confirm assent meaning, so
-// `--github --wizard-answers f --yes` succeeds non-interactively while
+// FLAG PRECEDENCE — --wizard=answers:<f> drives the wizard data model; --yes is
+// confirmation-assent only (create-confirm/apply-confirm), so
+// `--github --wizard=answers:f --yes` succeeds non-interactively while
 // `--github` without --yes still refuses. NOTE: the closing apply confirmation
 // exists only WITH --apply (cmd/init.go:25) — plain `init --yes` is INIT-ONLY
 // and must not mutate user dotfiles. DROP-LINE MASKING — a dropped secret
@@ -234,7 +234,7 @@ func wizRequireGit(t *testing.T) {
 	}
 }
 
-// wizWriteAnswers writes a --wizard-answers TOML file OUTSIDE the sandbox HOME
+// wizWriteAnswers writes a wizard answers (--wizard=answers:<file>) TOML file OUTSIDE the sandbox HOME
 // (so HOME-content assertions stay clean) and returns its path.
 func wizWriteAnswers(t *testing.T, content string) string {
 	t.Helper()
@@ -491,8 +491,8 @@ confirm = true
 "1" = "local"
 "2" = "drop"
 `)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
-		t.Fatalf("AC-wizard-adopt-existing: init --wizard-answers exited %d\n%s", code, errOut)
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
+		t.Fatalf("AC-wizard-adopt-existing: init --wizard=answers exited %d\n%s", code, errOut)
 	}
 	repoDir := managedRepoPath(s)
 
@@ -587,7 +587,7 @@ confirm = true
 "1" = "local"
 "2" = "local"
 `)
-		out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 		if code != 0 {
 			t.Fatalf("AC-wizard-scaffold[local]: init exited %d\n%s", code, errOut)
 		}
@@ -643,7 +643,7 @@ confirm = true
 "1" = "drop"
 "2" = "drop"
 `)
-		out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 		if code != 0 {
 			t.Fatalf("AC-wizard-scaffold[drop]: init exited %d\n%s", code, errOut)
 		}
@@ -709,7 +709,7 @@ confirm = true
 [secret-routes]
 "2" = "store"
 `)
-		if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+		if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 			t.Fatalf("AC-wizard-keep-as-is-secrets: init exited %d\n%s", code, errOut)
 		}
 		repoDir := managedRepoPath(s)
@@ -744,7 +744,7 @@ confirm = true
 		answers := wizWriteAnswers(t, `mode = "keep-as-is"
 confirm = true
 `)
-		if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+		if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 			t.Fatalf("AC-wizard-keep-as-is-secrets[secret-free]: init exited %d\n%s", code, errOut)
 		}
 		seed := wizReadSharedSeed(t, managedRepoPath(s))
@@ -784,7 +784,7 @@ confirm = true
 [secret-routes]
 "2" = "drop"
 `)
-		if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+		if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 			t.Fatalf("AC-secret-store-route[drop]: init exited %d\n%s", code, errOut)
 		}
 		repoDir := managedRepoPath(s)
@@ -836,7 +836,7 @@ confirm = true
 "1" = "shared"
 "2" = "`+route+`"
 `)
-		out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 		combined := out + errOut
 		if code == 0 {
 			t.Errorf("AC-secret-store-route[%s-refused]: routing a SECRET block %q was ACCEPTED (exit 0) — SecretLine routes are only {store, drop}\n%s", route, route, combined)
@@ -863,7 +863,7 @@ confirm = true
 		answers := wizWriteAnswers(t, `mode = "keep-as-is"
 confirm = true
 `)
-		out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 		combined := out + errOut
 		if code == 0 {
 			t.Errorf("AC-secret-store-route[missing-routes]: a detected secret with NO [secret-routes] entry was accepted (exit 0) — the forced choice must be an error, never a silent default\n%s", combined)
@@ -956,7 +956,7 @@ func TestWizard_AC_wizard_symlink_decline(t *testing.T) {
 
 		args := []string{"init"}
 		if withAnswers {
-			args = append(args, "--wizard-answers", wizWriteAnswers(t, `mode = "keep-as-is"
+			args = append(args, "--wizard=answers:"+wizWriteAnswers(t, `mode = "keep-as-is"
 confirm = true
 `))
 		}
@@ -998,7 +998,7 @@ confirm = true
 [starter]
 prompt = "minimal"
 `)
-		_, _, _ = s.Ferry("init", "--wizard-answers", answers) // exit code unpinned
+		_, _, _ = s.Ferry("init", "--wizard=answers:"+answers) // exit code unpinned
 		if p := wizSharedSeedPath(managedRepoPath(s)); p != "" {
 			t.Errorf("AC-wizard-symlink-decline[%s/start-fresh]: a STARTER was seeded at %s over an unmanageable rc (r5-M1: from-scratch must not be offered)", shape, p)
 		}
@@ -1029,7 +1029,7 @@ confirm = true
 [starter]
 prompt = "minimal"
 `)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 		t.Fatalf("AC-wizard-from-scratch: init exited %d\n%s", code, errOut)
 	}
 	seed := wizReadSharedSeed(t, managedRepoPath(s))
@@ -1086,7 +1086,7 @@ confirm = true
 [starter]
 prompt = "minimal"
 `)
-	out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+	out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 	if code != 0 {
 		t.Fatalf("AC-wizard-fresh-over-existing: init exited %d\n%s", code, errOut)
 	}
@@ -1159,7 +1159,7 @@ prompt = "minimal"
 // line → $HOME offered; accept ⇒ replaced; decline ⇒ byte-identical."
 //
 // INTERPRETATION (Codex-validation point): `--repair` composes with
-// `--wizard-answers` (the answers file replaces only the TUI, so the r2-m4 tty
+// `--wizard=answers:<file>` (the answers file replaces only the TUI, so the r2-m4 tty
 // requirement is satisfied by the data-model path); [repairs] indexes the
 // REPAIRABLE findings presented at step 4, 0-based in Analyze order.
 func TestWizard_AC_repair_home_path(t *testing.T) {
@@ -1176,7 +1176,7 @@ confirm = true
 [repairs]
 "0" = "`+decision+`"
 `)
-		if _, errOut, code := s.Ferry("init", "--repair", "--wizard-answers", answers); code != 0 {
+		if _, errOut, code := s.Ferry("init", "--repair", "--wizard=answers:"+answers); code != 0 {
 			t.Fatalf("AC-repair-home-path[%s]: init --repair exited %d\n%s", decision, code, errOut)
 		}
 		return wizReadSharedSeed(t, managedRepoPath(s))
@@ -1227,7 +1227,7 @@ confirm = true
 [repairs]
 "0" = "accept"
 `)
-	if _, errOut, code := s.Ferry("init", "--repair", "--wizard-answers", answers); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--repair", "--wizard=answers:"+answers); code != 0 {
 		t.Fatalf("AC-combined-secret-repair: init --repair exited %d\n%s", code, errOut)
 	}
 	repoDir := managedRepoPath(s)
@@ -1293,7 +1293,7 @@ confirm = true
 "1" = "shared"
 "2" = "local"
 `)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 		t.Fatalf("AC-repair-machine-local: init exited %d\n%s", code, errOut)
 	}
 	repoDir := managedRepoPath(s)
@@ -1345,7 +1345,7 @@ confirm = true
 "0" = "accept"
 "1" = "accept"
 `)
-	if _, errOut, code := s.Ferry("init", "--repair", "--wizard-answers", answers); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--repair", "--wizard=answers:"+answers); code != 0 {
 		t.Fatalf("AC-repair-dedupe: init --repair exited %d\n%s", code, errOut)
 	}
 	seed := wizReadSharedSeed(t, managedRepoPath(s))
@@ -1368,15 +1368,19 @@ confirm = true
 // AC-repair-noninteractive-refused
 // -----------------------------------------------------------------------------
 
-// TestWizard_AC_repair_noninteractive_refused covers AC-repair-noninteractive-refused:
-// "`--repair` without a full tty pair, or combined with `--yes`/`--no-wizard`,
-// exits non-zero with a clear message naming the conflict; nothing seeded."
-// Three arms: --yes, --no-wizard, and PLAIN `init --repair` under the harness's
-// non-tty stdin/stdout (no answers file, so no data-model path either).
+// TestWizard_AC_repair_noninteractive_refused covers AC-repair-noninteractive-refused
+// under the v0.8.0 flag model: `--repair` needs the wizard to run, so it CONFLICTS
+// with `--wizard=off` (which skips the wizard) and, in the default/interactive mode
+// without an answers file, needs a full tty pair. It exits non-zero with a clear
+// message naming the conflict, and nothing is seeded. `--yes` no longer conflicts
+// (it is confirmation-assent only), so `--repair --yes` on the non-tty harness now
+// falls to the plain tty requirement, NOT a --yes conflict.
 func TestWizard_AC_repair_noninteractive_refused(t *testing.T) {
 	t.Parallel()
 
-	run := func(t *testing.T, conflictFlag string) {
+	// wantConflict = the wizard-off conflict (names --wizard=off); otherwise the
+	// refusal is the plain interactive/tty requirement.
+	run := func(t *testing.T, extraFlag string, wantConflict bool) {
 		t.Helper()
 		wizRequireGit(t)
 		s := NewSandbox(t)
@@ -1384,21 +1388,22 @@ func TestWizard_AC_repair_noninteractive_refused(t *testing.T) {
 		liveSnap := s.SnapshotFile(t, s.HomePath(".zshrc"))
 
 		args := []string{"init", "--repair"}
-		if conflictFlag != "" {
-			args = append(args, conflictFlag)
+		if extraFlag != "" {
+			args = append(args, extraFlag)
 		}
 		out, errOut, code := s.Ferry(args...)
 		combined := out + errOut
 		if code == 0 {
 			t.Errorf("AC-repair-noninteractive-refused: `ferry %s` exited 0 (must refuse)\n%s", strings.Join(args, " "), combined)
 		}
-		if conflictFlag != "" {
-			// The error names the conflicting flag.
-			if !strings.Contains(combined, conflictFlag) {
-				t.Errorf("AC-repair-noninteractive-refused: error does not name the conflicting flag %s\n%s", conflictFlag, combined)
+		if wantConflict {
+			// The error names the conflicting --wizard=off mode.
+			if !strings.Contains(combined, "--wizard=off") {
+				t.Errorf("AC-repair-noninteractive-refused: error does not name the conflicting --wizard=off\n%s", combined)
 			}
 		} else {
-			// Plain non-tty --repair: the refusal must explain the tty requirement.
+			// Plain non-tty --repair (or --repair --yes, which no longer conflicts):
+			// the refusal must explain the tty requirement.
 			if !containsAnyFold(combined, "tty", "terminal", "interactive") {
 				t.Errorf("AC-repair-noninteractive-refused: non-tty refusal does not explain the interactive/tty requirement\n%s", combined)
 			}
@@ -1411,9 +1416,9 @@ func TestWizard_AC_repair_noninteractive_refused(t *testing.T) {
 		liveSnap.AssertUnchanged(t)
 	}
 
-	t.Run("with_yes", func(t *testing.T) { t.Parallel(); run(t, "--yes") })
-	t.Run("with_no_wizard", func(t *testing.T) { t.Parallel(); run(t, "--no-wizard") })
-	t.Run("plain_non_tty", func(t *testing.T) { t.Parallel(); run(t, "") })
+	t.Run("with_wizard_off", func(t *testing.T) { t.Parallel(); run(t, "--wizard=off", true) })
+	t.Run("with_yes_non_tty", func(t *testing.T) { t.Parallel(); run(t, "--yes", false) })
+	t.Run("plain_non_tty", func(t *testing.T) { t.Parallel(); run(t, "", false) })
 }
 
 // -----------------------------------------------------------------------------
@@ -1438,7 +1443,7 @@ confirm = false
 [secret-routes]
 "2" = "store"
 `)
-	out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+	out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 	if code != 0 {
 		t.Errorf("AC-wizard-pure-until-confirm: declined wizard exited %d (want clean exit 0)\n%s", code, errOut)
 	}
@@ -1477,7 +1482,7 @@ func TestWizard_AC_wizard_backup(t *testing.T) {
 		answers := wizWriteAnswers(t, `mode = "keep-as-is"
 confirm = true
 `)
-		if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+		if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 			t.Fatalf("AC-wizard-backup: init exited %d\n%s", code, errOut)
 		}
 		baks := wizBaks(t, s)
@@ -1543,7 +1548,7 @@ confirm = true
 [secret-routes]
 "2" = "`+route+`"
 `)
-		out, errOut, code := s.Ferry("init", "--wizard-answers", answers)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:"+answers)
 		if code != 0 {
 			t.Fatalf("AC-preview-masking[%s]: init exited %d\n%s", route, code, errOut)
 		}
@@ -1601,14 +1606,14 @@ confirm = true
 // -----------------------------------------------------------------------------
 
 // TestInitFallback_AC_noninteractive_fallback covers AC-noninteractive-fallback:
-// "non-tty / --yes / --no-wizard: no TUI, no prompt, no block on stdin.
+// "non-tty / --yes / --wizard=off: no TUI, no prompt, no block on stdin.
 // Secret-bearing zshrc: keep-everything-shared seed with EVERY secret span
 // extracted to the store (placeholders in the seed, nothing dropped, refs listed
 // on stderr, stdout unchanged); first apply leaves the live file byte-identical
 // (rendered == adopted bytes). Secret-free zshrc: seed BYTE-IDENTICAL to v0.2.1
 // initFresh." The harness is inherently non-tty (piped stdin/stdout) and the
 // 30s harness timeout makes a hang a hard failure. All three fallback TRIGGERS
-// (plain non-tty, --yes, --no-wizard) must behave identically.
+// (plain non-tty, --yes, --wizard=off) must behave identically.
 func TestInitFallback_AC_noninteractive_fallback(t *testing.T) {
 	t.Parallel()
 
@@ -1728,7 +1733,7 @@ func TestInitFallback_AC_noninteractive_fallback(t *testing.T) {
 
 	t.Run("secret_bearing_non_tty", func(t *testing.T) { t.Parallel(); runSecretBearing(t) })
 	t.Run("secret_bearing_yes_flag", func(t *testing.T) { t.Parallel(); runSecretBearing(t, "--yes") })
-	t.Run("secret_bearing_no_wizard_flag", func(t *testing.T) { t.Parallel(); runSecretBearing(t, "--no-wizard") })
+	t.Run("secret_bearing_wizard_off_flag", func(t *testing.T) { t.Parallel(); runSecretBearing(t, "--wizard=off") })
 
 	t.Run("secret_free_byte_identical", func(t *testing.T) {
 		t.Parallel()
@@ -1839,15 +1844,15 @@ confirm = true
 [secret-routes]
 "2" = "store"
 `)
-		// FLAG PRECEDENCE (pinned): --wizard-answers outranks --yes's wizard-skip
-		// meaning — the answers file drives the WIZARD-ROUTED path — while --yes
+		// FLAG PRECEDENCE (pinned): --wizard=answers:<f> drives the WIZARD-ROUTED
+		// path (independent of --yes), while --yes
 		// keeps its create-confirm/apply-confirm assent, so the whole run is
 		// non-interactive (EMPTY stdin; a `--github` run without --yes still
 		// refuses non-interactively, pinned by the existing github evals).
 		out, errOut, code := s.FerryEnv(append(sc.env(), combinedPathEnv(gh, git)),
-			"init", "--github", "wizrepo", "--wizard-answers", answers, "--yes")
+			"init", "--github", "wizrepo", "--wizard=answers:"+answers, "--yes")
 		if code != 0 {
-			t.Fatalf("AC-github-seedplan[wizard-routed]: `init --github --wizard-answers --yes` exited %d\n%s", code, out+errOut)
+			t.Fatalf("AC-github-seedplan[wizard-routed]: `init --github --wizard=answers: --yes` exited %d\n%s", code, out+errOut)
 		}
 		assertPlaceholdersOnlyPush(t, s, git, bare, out+errOut)
 	})
@@ -1877,7 +1882,7 @@ confirm = true
 "1" = "shared"
 "2" = "local"
 `)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", answers); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+answers); code != 0 {
 		t.Fatalf("AC-init-rerun-guard: init exited %d\n%s", code, errOut)
 	}
 	// Adopting the pre-existing ~/.zshrc is risky; confirm the walkthrough.
@@ -1946,4 +1951,86 @@ func TestReadOnly_NoStateDirCreate(t *testing.T) {
 	if _, err := os.Stat(s.StateDir()); err == nil {
 		t.Errorf("read-only tripwire: `ferry diff` CREATED %s (read-only commands must not write state)", s.StateDir())
 	}
+}
+
+// -----------------------------------------------------------------------------
+// v0.8.0 --wizard flag surface (removed spellings + mode validation)
+// -----------------------------------------------------------------------------
+
+// TestInitWizardFlagSurface pins the v0.8.0 init flag reshape: the removed
+// spellings `--no-wizard` and `--wizard-answers` are now UNKNOWN flags, an
+// unrecognised `--wizard` mode errors clearly, and the valid modes
+// (off / interactive / answers:<file>) are accepted. The non-tty harness means
+// the default (and interactive) mode falls back to the non-interactive adopt.
+func TestInitWizardFlagSurface(t *testing.T) {
+	t.Parallel()
+
+	// Removed spellings are unknown flags now — no alias, no did-you-mean.
+	for _, removed := range [][]string{
+		{"init", "--no-wizard"},
+		{"init", "--wizard-answers", "x"},
+	} {
+		removed := removed
+		t.Run("removed_"+strings.Join(removed[1:], "_"), func(t *testing.T) {
+			t.Parallel()
+			s := NewSandbox(t)
+			_, errOut, code := s.Ferry(removed...)
+			if code == 0 {
+				t.Errorf("`ferry %s` exited 0 — the removed flag must be unknown\n%s", strings.Join(removed, " "), errOut)
+			}
+			if !containsAnyFold(errOut, "unknown flag") {
+				t.Errorf("`ferry %s` did not report an unknown flag\n%s", strings.Join(removed, " "), errOut)
+			}
+		})
+	}
+
+	// An unrecognised --wizard mode errors, naming the valid forms.
+	t.Run("bogus_mode", func(t *testing.T) {
+		t.Parallel()
+		wizRequireGit(t)
+		s := NewSandbox(t)
+		s.WriteHomeFile(t, ".zshrc", wizHomePathZshrc, 0o644)
+		out, errOut, code := s.Ferry("init", "--wizard=bogus")
+		combined := out + errOut
+		if code == 0 {
+			t.Errorf("`ferry init --wizard=bogus` exited 0 — an unknown mode must error\n%s", combined)
+		}
+		if !containsAnyFold(combined, "not a valid mode", "off, interactive, or answers") {
+			t.Errorf("`ferry init --wizard=bogus` did not explain the valid modes\n%s", combined)
+		}
+		// Bogus mode is rejected BEFORE any work: nothing seeded.
+		wizAssertNothingSeeded(t, s)
+	})
+
+	// --wizard=off is accepted (the non-interactive fallback), producing a
+	// managed repo on the non-tty harness.
+	t.Run("wizard_off_accepted", func(t *testing.T) {
+		t.Parallel()
+		wizRequireGit(t)
+		s := NewSandbox(t)
+		s.WriteHomeFile(t, ".zshrc", wizPlainZshrc, 0o644)
+		if _, errOut, code := s.Ferry("init", "--wizard=off"); code != 0 {
+			t.Fatalf("`ferry init --wizard=off` exited %d\n%s", code, errOut)
+		}
+		if _, err := os.Stat(managedRepoPath(s)); err != nil {
+			t.Errorf("`ferry init --wizard=off` did not create the managed repo: %v", err)
+		}
+	})
+
+	// --wizard=answers:<file> drives the data model (same as the former
+	// --wizard-answers <file>), with an empty path rejected.
+	t.Run("wizard_answers_empty_path", func(t *testing.T) {
+		t.Parallel()
+		wizRequireGit(t)
+		s := NewSandbox(t)
+		s.WriteHomeFile(t, ".zshrc", wizPlainZshrc, 0o644)
+		out, errOut, code := s.Ferry("init", "--wizard=answers:")
+		combined := out + errOut
+		if code == 0 {
+			t.Errorf("`ferry init --wizard=answers:` exited 0 — an empty answers path must error\n%s", combined)
+		}
+		if !containsAnyFold(combined, "needs a file path") {
+			t.Errorf("`ferry init --wizard=answers:` did not explain the missing path\n%s", combined)
+		}
+	})
 }

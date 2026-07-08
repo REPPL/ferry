@@ -2,7 +2,7 @@ package cmd
 
 // The v0.3.0 first-run wizard (PLAN-v0.3.0-plugin-wizard.md): consent-driven
 // SEED-PLANNING for `ferry init`'s fresh path. The wizard (interactive TUI,
-// --wizard-answers data model, or the non-interactive gate-and-extract
+// --wizard=answers:<file> data model, or the non-interactive gate-and-extract
 // fallback) produces ONE in-memory seedPlan BEFORE any filesystem or network
 // mutation; initFresh and `init --github`'s pre-commit gate consume the SAME
 // plan, so the preview cannot lie about what gets seeded or committed.
@@ -76,7 +76,7 @@ type seedPlan struct {
 }
 
 // wizardChoices is the plain data model every wizard surface populates: the
-// huh TUI, the --wizard-answers file, and the non-interactive fallback all
+// huh TUI, the wizard answers file, and the non-interactive fallback all
 // feed the SAME struct into buildPlanFromChoices.
 type wizardChoices struct {
 	mode         string         // "keep-as-is" | "per-block" | "start-fresh"
@@ -88,9 +88,9 @@ type wizardChoices struct {
 	repairsGiven bool           // a [repairs] table (or TUI repair step) ran
 }
 
-// --- answers file (--wizard-answers) ----------------------------------------
+// --- answers file (--wizard=answers:<file>) --------------------------------
 
-// answersFile is the documented TOML schema for `ferry init --wizard-answers`.
+// answersFile is the documented TOML schema for `ferry init --wizard=answers:<file>`.
 type answersFile struct {
 	Mode         string            `toml:"mode"`
 	Confirm      *bool             `toml:"confirm"`
@@ -100,31 +100,31 @@ type answersFile struct {
 	Starter      map[string]string `toml:"starter"`
 }
 
-// parseWizardAnswers loads and strictly validates a --wizard-answers file.
+// parseWizardAnswers loads and strictly validates a wizard answers file.
 // Unknown or malformed keys error out loudly — an eval (or user) must never
 // silently get a default route.
 func parseWizardAnswers(path string) (*wizardChoices, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read --wizard-answers file: %w", err)
+		return nil, fmt.Errorf("read wizard answers file: %w", err)
 	}
 	var af answersFile
 	md, err := toml.Decode(string(data), &af)
 	if err != nil {
-		return nil, fmt.Errorf("parse --wizard-answers file %s: %w", path, err)
+		return nil, fmt.Errorf("parse wizard answers file %s: %w", path, err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		return nil, fmt.Errorf("--wizard-answers file %s has unknown key(s) %v — the schema is: mode, confirm, [routes], [secret-routes], [repairs], [starter]", path, undecoded)
+		return nil, fmt.Errorf("wizard answers file %s has unknown key(s) %v — the schema is: mode, confirm, [routes], [secret-routes], [repairs], [starter]", path, undecoded)
 	}
 	switch af.Mode {
 	case "keep-as-is", "per-block", "start-fresh":
 	case "":
-		return nil, fmt.Errorf("--wizard-answers file %s is missing `mode` (one of keep-as-is, per-block, start-fresh)", path)
+		return nil, fmt.Errorf("wizard answers file %s is missing `mode` (one of keep-as-is, per-block, start-fresh)", path)
 	default:
-		return nil, fmt.Errorf("--wizard-answers file %s has unknown mode %q (want keep-as-is, per-block, or start-fresh)", path, af.Mode)
+		return nil, fmt.Errorf("wizard answers file %s has unknown mode %q (want keep-as-is, per-block, or start-fresh)", path, af.Mode)
 	}
 	if af.Confirm == nil {
-		return nil, fmt.Errorf("--wizard-answers file %s is missing `confirm` (true seeds, false declines at the preview gate)", path)
+		return nil, fmt.Errorf("wizard answers file %s is missing `confirm` (true seeds, false declines at the preview gate)", path)
 	}
 
 	ch := &wizardChoices{
@@ -177,7 +177,7 @@ func parseWizardAnswers(path string) (*wizardChoices, error) {
 // user) must never have a table silently ignored.
 func validateChoicesApplicability(ch *wizardChoices, repairFlag bool) error {
 	if ch.repairsGiven && !repairFlag {
-		return fmt.Errorf("a [repairs] table was given but --repair was not: repairs are opt-in — re-run with `ferry init --repair --wizard-answers <file>`")
+		return fmt.Errorf("a [repairs] table was given but --repair was not: repairs are opt-in — re-run with `ferry init --repair --wizard=answers:<file>`")
 	}
 	switch ch.mode {
 	case "start-fresh":
@@ -356,7 +356,7 @@ func buildPlanFromChoices(in *wizardInputs, ch *wizardChoices, repairFlag bool) 
 
 	// [repairs] validation: opt-in via --repair; indices within range.
 	if ch.repairsGiven && !repairFlag {
-		return nil, fmt.Errorf("a [repairs] table was given but --repair was not: repairs are opt-in — re-run with `ferry init --repair --wizard-answers <file>`")
+		return nil, fmt.Errorf("a [repairs] table was given but --repair was not: repairs are opt-in — re-run with `ferry init --repair --wizard=answers:<file>`")
 	}
 	for idx := range ch.repairs {
 		if idx < 0 || idx >= len(repairables) {
@@ -534,8 +534,8 @@ func stripOverlayForGuard(content []byte) []byte {
 	return dotfile.StripFerryOverlayDirective(content)
 }
 
-// buildFallbackSeedPlan is the NON-INTERACTIVE fallback (non-tty / --yes /
-// --no-wizard): keep-everything-Shared whole-file adopt PLUS always-on secret
+// buildFallbackSeedPlan is the NON-INTERACTIVE fallback (non-tty or
+// --wizard=off): keep-everything-Shared whole-file adopt PLUS always-on secret
 // extraction. Every SecretLine finding is auto-routed to the SecretStore
 // (Drop is NEVER auto-selected); machine-specific suggestions and repairs are
 // declined. A stderr NOTICE lists the extracted ref names (never values);

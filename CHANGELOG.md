@@ -20,6 +20,13 @@ called out in a **Breaking** section. See
 - **`apply --dry-run` is removed.** The read-only preview is now solely
   `ferry diff`, which shows what `apply` would change without writing anything.
   Replace any `ferry apply --dry-run` with `ferry diff`.
+- **`ferry init`'s wizard flags are reshaped (7 → 6).** `--no-wizard` and
+  `--wizard-answers <file>` are removed, folded into one
+  `--wizard=off|interactive|answers:<file>` mode flag. `--yes` narrows to
+  confirmation-assent only — it assents to the `--github` repo creation and the
+  closing `--apply`, and no longer skips the wizard (use `--wizard=off` for
+  that). `--repair` is unchanged but now conflicts with `--wizard=off` rather
+  than `--yes`, so `--repair --yes` on a terminal is valid.
 
 ### Added
 

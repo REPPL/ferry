@@ -127,8 +127,8 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 
 	// Create-confirm: print the FULL resolved <host>/<owner>/<name>. On a TTY
 	// require confirmation unless --yes; non-interactive REQUIRE --yes. (--yes
-	// keeps this confirmation-assent meaning even when --wizard-answers drives
-	// the wizard decisions — the pinned FLAG PRECEDENCE.)
+	// means confirmation-assent ONLY — it assents to this create-confirm and the
+	// closing apply confirm; it does not touch the wizard mode.)
 	fmt.Fprintf(out, "ferry will create a PRIVATE GitHub repo: %s\n", resolved)
 	if !yes {
 		if stdinIsTerminal() {
@@ -144,15 +144,13 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 	// Wizard / answers-file / gate-and-extract fallback: build the ONE seedPlan
 	// (PURE — no filesystem or network mutation; F2-4/F3-3). Declining at the
 	// wizard's preview gate exits here with nothing written, local or remote.
-	noWizard, _ := c.Flags().GetBool("no-wizard")
-	repair, _ := c.Flags().GetBool("repair")
-	answersPath, _ := c.Flags().GetString("wizard-answers")
-	plan, declined, err := buildInitSeedPlan(in, out, c.ErrOrStderr(), freshInitOpts{
-		yes:         yes,
-		noWizard:    noWizard,
-		repair:      repair,
-		answersPath: answersPath,
-	})
+	// --wizard (mode) and --repair steer this; --yes above is confirmation-assent
+	// only and does not feed the wizard decision.
+	opts, err := resolveFreshInitOpts(c)
+	if err != nil {
+		return err
+	}
+	plan, declined, err := buildInitSeedPlan(in, out, c.ErrOrStderr(), opts)
 	if err != nil {
 		return err
 	}

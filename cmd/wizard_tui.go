@@ -1,7 +1,7 @@
 package cmd
 
 // The huh-v2 TUI face of the first-run wizard. THIN BY DESIGN: it only
-// populates the same wizardChoices struct the --wizard-answers file feeds —
+// populates the same wizardChoices struct the --wizard=answers:<file> file feeds —
 // the seedPlan engine, routing rules, gates, preview, and confirm ordering all
 // live in wizard.go and run identically on every surface. The answers-file
 // path never calls into this file, so the data model works without a tty.

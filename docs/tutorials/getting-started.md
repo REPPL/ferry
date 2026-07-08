@@ -97,13 +97,13 @@ Opt-in repairs (`ferry init --repair`) additionally offer lint-style fixes — h
 `/Users/<name>` paths to `$HOME`, duplicate `PATH` exports, dead `source` lines — each
 accepted or declined individually.
 
-Non-interactively (piped stdin/stdout, `--yes`, or `--no-wizard`) there is no TUI and
+Non-interactively (piped stdin/stdout, or `--wizard=off`) there is no TUI and
 no prompt: ferry adopts the whole file shared, automatically extracts every detected
 secret to the local store (the extracted ref names are listed on stderr; nothing is
 ever dropped without you), and seeds placeholders in their place. A secret-free
 `~/.zshrc` is adopted byte-identically, so the first `ferry apply` matches what is
 already on disk and changes nothing. Your existing shell config is never zeroed.
-Scripting the wizard itself is possible with `ferry init --wizard-answers <file>`
+Scripting the wizard itself is possible with `ferry init --wizard=answers:<file>`
 (a TOML file carrying every decision).
 
 If you have no `~/.zshrc` (and skip the starter), ferry seeds no shell source at all —
