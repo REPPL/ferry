@@ -17,10 +17,7 @@ import (
 func testGit(t *testing.T, repo string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = append(os.Environ(),
-		"GIT_TERMINAL_PROMPT=0", "GIT_PAGER=cat",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t",
-	)
+	cmd.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -69,7 +66,7 @@ func newStashRepo(t *testing.T) (repo string, s *snapshot, realStashSHA string) 
 func stashCount(t *testing.T, repo string) int {
 	t.Helper()
 	cmd := exec.Command("git", "-C", repo, "stash", "list")
-	cmd.Env = append(os.Environ(), "GIT_PAGER=cat")
+	cmd.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	out, _ := cmd.CombinedOutput()
 	n := 0
 	for _, l := range strings.Split(strings.TrimSpace(string(out)), "\n") {

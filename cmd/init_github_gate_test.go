@@ -26,13 +26,12 @@ func TestWholeCommitGate_BlocksNonZshrcFile(t *testing.T) {
 	repo := t.TempDir()
 	run := func(args ...string) {
 		cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+		cmd.Env = gitIsolatedEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
 	run("init", "-q")
-	run("config", "user.email", "t@localhost")
-	run("config", "user.name", "t")
 
 	// A committed file that is NOT ~/.zshrc — e.g. a generated manifest — carrying a
 	// fake secret. The gate must catch it.
