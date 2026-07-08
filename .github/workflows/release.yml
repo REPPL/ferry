@@ -20,12 +20,35 @@ on:
   push:
     tags:
       - 'v*'
+  # Also callable as a reusable workflow: the auto-release workflow tags the
+  # newest CHANGELOG version with the GITHUB_TOKEN (which, by design, does NOT
+  # re-trigger the tag-push event above) and then invokes this workflow
+  # explicitly, passing the tag it just created. Both entry points converge on
+  # the same jobs below; only the tag NAME arrives differently (see TAG).
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
 
 # Never run two releases of the same tag concurrently, and never cancel a
 # release mid-flight — a half-published release is worse than a queued one.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
+# The tag name this run releases, derived ONCE for both entry points:
+#   - workflow_call: `inputs.tag` (the tag the auto-release workflow just made).
+#   - push-tag:      `inputs` is empty, so this falls through to github.ref_name
+#                    (the vX.Y.Z ref that triggered the run).
+# Exported to every step as $TAG. Note this is only the tag NAME — neither job
+# ever CHECKS OUT this name; both check out github.sha (see each checkout step),
+# which is the immutable released commit for BOTH entry points:
+#   - push-tag:      github.sha = the commit the pushed tag pointed at.
+#   - workflow_call: github.sha = the caller's HEAD = the commit auto-release
+#                    just tagged.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 # Floor for the workflow: read-only. The release job below elevates itself to
 # contents: write only to create the Release and upload its assets; verify stays
@@ -70,9 +93,10 @@ jobs:
         # .abcd/development/plans/*<tag>.md plan exists, its Status: line must read
         # "shipped in <tag>"; a missing plan is fine (not every patch has one).
         # VERSION comes via env (not inlined into the run script) to keep the
-        # tag ref out of the shell expansion (injection-safe, zizmor).
+        # tag ref out of the shell expansion (injection-safe, zizmor). $TAG is
+        # the workflow-level env derived once for both entry points.
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.TAG }}
         run: scripts/check-plan-shipped.sh "$VERSION"
 
       - name: Build
@@ -182,10 +206,10 @@ jobs:
           cache: false
 
       - name: Cross-compile the four binaries (version-stamped from the tag)
-        # VERSION=<tag> stamps `ferry --version` via -ldflags. The binaries built
+        # VERSION=$TAG stamps `ferry --version` via -ldflags. The binaries built
         # here are the ones checksummed, attested, and uploaded below, so the
         # manifest, the published assets, and the reported version are all in sync.
-        run: make build VERSION="${GITHUB_REF_NAME}"
+        run: make build VERSION="$TAG"
 
       - name: Generate checksums.txt over the four binaries
         # Hash the exact binaries built above into a sha256sum-format manifest.
@@ -218,7 +242,7 @@ jobs:
             bin/checksums.txt
 
       - name: Create the GitHub Release and upload the binaries + checksums.txt
-        run: gh release create "${GITHUB_REF_NAME}" bin/ferry-* bin/checksums.txt --verify-tag --title "${GITHUB_REF_NAME}" --notes ""
+        run: gh release create "$TAG" bin/ferry-* bin/checksums.txt --verify-tag --title "$TAG" --notes ""
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -237,7 +261,7 @@ jobs:
           set -euo pipefail
           DL="$RUNNER_TEMP/attest-verify"
           mkdir -p "$DL"
-          gh release download "${GITHUB_REF_NAME}" \
+          gh release download "$TAG" \
             --repo "${GITHUB_REPOSITORY}" \
             --pattern 'ferry-linux-amd64' \
             --dir "$DL"
@@ -259,7 +283,7 @@ jobs:
         # git tags, which are immutable once pushed). It never prunes the release just
         # created (--current), and refuses if a newer
         # patch than the current one somehow exists. See scripts/prune-releases.sh.
-        run: scripts/prune-releases.sh --current "${GITHUB_REF_NAME}"
+        run: scripts/prune-releases.sh --current "$TAG"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
