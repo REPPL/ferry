@@ -12,7 +12,7 @@ import (
 // documentedCommands is the exact set from the README "Commands" table
 // (AC-cmd-set-complete).
 var documentedCommands = []string{
-	"init", "apply", "capture", "status", "doctor", "diff", "restore",
+	"init", "apply", "capture", "status", "doctor", "diff", "restore", "bundle",
 }
 
 // TestTopLevelHelpListsAllCommands covers AC-cmd-set-complete: `ferry --help`
