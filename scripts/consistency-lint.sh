@@ -6,8 +6,8 @@
 #      optimistically on their branch, and a collision blocks the merge so the
 #      second branch to land renumbers.
 #   2. Every ADR is named sequentially as NNNN-title.md, never <date>--<slug>.
-#   3. No prose or config file points session handoff at .work/NEXT.md — the
-#      handoff lives in the private .work.local/ layer (ADR 0002). Scope is the
+#   3. No prose or config file points session handoff at .abcd/work/NEXT.md — the
+#      handoff lives in the private .abcd/.work.local/ layer (ADR 0002). Scope is the
 #      human/agent-facing surface (docs, scripts, hooks, templates); Go sources
 #      are exempt because their tests legitimately assert the OLD path is now
 #      absent. The developer-record .abcd/development/plans/ and research/ (which
@@ -44,11 +44,11 @@ if [ -d "$decisions" ]; then
   fi
 fi
 
-# 3. stale .work/NEXT.md handoff references (must be .work.local/NEXT.md)
+# 3. stale .abcd/work/NEXT.md handoff references (must be .abcd/.work.local/NEXT.md)
 hits=$(git ls-files -- ':!.abcd/development/plans/' ':!.abcd/development/research/' ':!CHANGELOG.md' ':!scripts/consistency-lint.sh' ':!*.go' \
-  | xargs -r grep -nF '.work/NEXT.md' 2>/dev/null || true)
+  | xargs -r grep -nF '.abcd/work/NEXT.md' 2>/dev/null || true)
 if [ -n "$hits" ]; then
-  echo "consistency-lint: session handoff is .work.local/NEXT.md, not .work/NEXT.md:" >&2
+  echo "consistency-lint: session handoff is .abcd/.work.local/NEXT.md, not .abcd/work/NEXT.md:" >&2
   echo "$hits" | sed 's/^/  /' >&2
   fail=1
 fi

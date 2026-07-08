@@ -44,7 +44,7 @@ git push origin vX.Y.Z
 ```
 
 `--dry-run` runs every gate and the rehearsal, prints exactly what the tag/push and the
-`.work.local/NEXT.md` reset would do, and changes nothing in git or in `.work.local/NEXT.md`.
+`.abcd/.work.local/NEXT.md` reset would do, and changes nothing in git or in `.abcd/.work.local/NEXT.md`.
 
 The [`release` workflow](../../.github/workflows/release.yml) then, for the pushed tag
 (its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan left

@@ -6,7 +6,7 @@
 #   scripts/release.sh vX.Y.Z --dry-run  run every gate and rehearsal, print what
 #                                        the tag/push and NEXT.md reset WOULD do,
 #                                        and change nothing (no tag, no push, and
-#                                        the real .work.local/NEXT.md is never touched)
+#                                        the real .abcd/.work.local/NEXT.md is never touched)
 #
 # A ferry release is triggered by pushing a vX.Y.Z tag: the release workflow
 # re-verifies the pushed commit, then builds, checksums, attests, and publishes.
@@ -25,7 +25,7 @@ usage: release.sh vX.Y.Z [--dry-run] [--yes]
 
   vX.Y.Z      the release version (semver, v-prefixed)
   --dry-run   run gates 1-5, print what tag/push and the NEXT.md reset would do;
-              create no tag or push and never touch .work.local/NEXT.md (the rehearsal
+              create no tag or push and never touch .abcd/.work.local/NEXT.md (the rehearsal
               still writes the gitignored bin/ artefacts, as a real run would)
   --yes       do not prompt before the (irreversible) tag + push
 EOF
@@ -37,7 +37,7 @@ EOF
 
 die() { echo "release: $*" >&2; exit 1; }
 
-# render_next_md <src> <version> — print a reset .work.local/NEXT.md to stdout.
+# render_next_md <src> <version> — print a reset .abcd/.work.local/NEXT.md to stdout.
 #
 # Everything above the carry markers is replaced with a fresh header naming
 # <version> as the latest release; the carry region and everything below it is
@@ -178,17 +178,17 @@ main() {
   fi
 
   # -------------------------------------------------------------------------
-  # Step 7 — post-tag artefact reset of .work.local/NEXT.md.
+  # Step 7 — post-tag artefact reset of .abcd/.work.local/NEXT.md.
   # -------------------------------------------------------------------------
-  local next="$ROOT/.work.local/NEXT.md"
+  local next="$ROOT/.abcd/.work.local/NEXT.md"
   if [ ! -f "$next" ]; then
-    echo "release: no .work.local/NEXT.md — skipping the NEXT.md reset."
+    echo "release: no .abcd/.work.local/NEXT.md — skipping the NEXT.md reset."
     return 0
   fi
 
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "release: [dry-run] WOULD archive .work.local/NEXT.md to .work.local/history/NEXT-$VERSION-<timestamp>.md"
-    echo "release: [dry-run] WOULD reset .work.local/NEXT.md; diff (current -> regenerated) below:"
+    echo "release: [dry-run] WOULD archive .abcd/.work.local/NEXT.md to .abcd/.work.local/history/NEXT-$VERSION-<timestamp>.md"
+    echo "release: [dry-run] WOULD reset .abcd/.work.local/NEXT.md; diff (current -> regenerated) below:"
     local tmp
     tmp="$(mktemp)"
     # render reads the real NEXT.md read-only and writes to a temp copy; the real
@@ -199,7 +199,7 @@ main() {
     return 0
   fi
 
-  local histdir="$ROOT/.work.local/history"
+  local histdir="$ROOT/.abcd/.work.local/history"
   mkdir -p "$histdir"
   local archive
   archive="$histdir/NEXT-$VERSION-$(date +%Y%m%d-%H%M%S).md"
@@ -210,7 +210,7 @@ main() {
   tmp="$(mktemp)"
   render_next_md "$next" "$VERSION" > "$tmp"
   mv "$tmp" "$next"
-  echo "release: reset .work.local/NEXT.md (carry region preserved)."
+  echo "release: reset .abcd/.work.local/NEXT.md (carry region preserved)."
 }
 
 # Run main only when executed directly; when sourced (tests), just define the
