@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ferry plan-shipped check — assert the release plan for a version is marked shipped.
 #
-# Each release may carry a design plan under docs/plans/, named
+# Each release may carry a design plan under .abcd/development/plans/, named
 # `YYYY-MM-DD-vX.Y.Z.md`, with a prose frontmatter line of the form
 # `Date: ... · Status: <status>`. Once the release is out, that Status must read
 # `shipped in vX.Y.Z`. This check enforces the convention:
@@ -47,7 +47,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # Collect plan docs whose name ends in the version (e.g. 2026-07-05-v0.5.0.md
 # for v0.5.0). nullglob so a no-match glob expands to nothing, not itself.
 shopt -s nullglob
-plans=( "$ROOT"/docs/plans/*"$VERSION".md )
+plans=( "$ROOT"/.abcd/development/plans/*"$VERSION".md )
 shopt -u nullglob
 
 if [ "${#plans[@]}" -eq 0 ]; then

@@ -1,7 +1,7 @@
 # Decisions — ferry
 
 Append-only log of session decisions. One dated line each. Promote a decision to
-a `docs/decisions/` ADR when it shapes architecture or is expensive to reverse.
+a `.abcd/development/decisions/` ADR when it shapes architecture or is expensive to reverse.
 
 - 2026-07-05: GitHub Actions must stay within the free tier — no reliance on paid minutes. Platform coverage moves to committed .githooks/pre-push preflight gates (run everywhere via the global core.hooksPath dispatcher); private-repo CI runs ubuntu-latest by default, switchable with the CI_RUNNER repo variable if development ever moves off macOS. Rejected: nektos/act (Docker dep, Linux-only emulation); making ragd public (not desired).
 - 2026-07-05: W4 state-file migration backs up via a write-once sibling copy (`statefile.BackupForMigration`, `.pre-v1.bak`), NOT the existing Backuper the plan text names — routing migrations through the Backuper would inject ferry's own bookkeeping into the restore baseline, which restore would then try to revert. Confirmed by independent review.

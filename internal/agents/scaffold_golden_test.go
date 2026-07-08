@@ -119,6 +119,11 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 	})
 
 	wantPaths := []string{
+		".abcd",
+		".abcd/development",
+		".abcd/development/decisions",
+		".abcd/development/plans",
+		".abcd/development/research",
 		".pre-commit-config.yaml",
 		".work",
 		".work.local",
@@ -132,9 +137,6 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 		"GEMINI.md",
 		"docs",
 		"docs/README.md",
-		"docs/decisions",
-		"docs/plans",
-		"docs/research",
 	}
 	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
 		"created:  <repo>/.work.local/NEXT.md\n" +
@@ -185,6 +187,11 @@ func TestScaffoldGolden_Attribution(t *testing.T) {
 	})
 
 	wantPaths := []string{
+		".abcd",
+		".abcd/development",
+		".abcd/development/decisions",
+		".abcd/development/plans",
+		".abcd/development/research",
 		".githooks",
 		".githooks/prepare-commit-msg",
 		".pre-commit-config.yaml",
@@ -200,9 +207,6 @@ func TestScaffoldGolden_Attribution(t *testing.T) {
 		"GEMINI.md",
 		"docs",
 		"docs/README.md",
-		"docs/decisions",
-		"docs/plans",
-		"docs/research",
 	}
 	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
 		"created:  <repo>/.work.local/NEXT.md\n" +

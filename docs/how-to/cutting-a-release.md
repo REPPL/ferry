@@ -33,7 +33,7 @@ scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without taggin
 creates anything: it checks the preconditions (on `main`, clean tree, `main` up to
 date with `origin/main`), asserts the `## [X.Y.Z]` CHANGELOG section is promoted out
 of `[Unreleased]`, runs `docs-currency-lint`, requires any matching plan under
-`docs/plans/` to be marked `shipped in vX.Y.Z` (via
+`.abcd/development/plans/` to be marked `shipped in vX.Y.Z` (via
 [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
 the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
 (unless `--yes`) and run the single irreversible act:

@@ -69,4 +69,4 @@ on the internal packages, and the full eval suite against a real Linux binary.
 Load `.work/CONTEXT.md` first — it is the curated, load-first summary of ferry's
 standing facts and invariants. Record session handoff in `.work.local/NEXT.md`
 (git-ignored, local-only), not in `.work/`. See
-[ADR 0002](docs/decisions/0002-work-memory-public-private-split.md) for the split.
+[ADR 0002](.abcd/development/decisions/0002-work-memory-public-private-split.md) for the split.

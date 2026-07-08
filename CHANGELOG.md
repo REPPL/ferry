@@ -11,6 +11,18 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-08
+
+### Changed
+
+- **Developer documentation moves out of the user-facing `docs/` tree into a new
+  `.abcd/development/` namespace.** ferry's plans, research notes, and
+  architecture decision records (ADRs) now live under
+  `.abcd/development/{plans,research,decisions}/`, leaving `docs/` for
+  user-facing Diátaxis documentation only. `ferry agents scaffold` stamps the
+  same layout: a scaffolded repo gets `docs/` reserved for Diátaxis content and
+  `.abcd/development/` for its developer records.
+
 ## [0.7.0] - 2026-07-08
 
 ### Added

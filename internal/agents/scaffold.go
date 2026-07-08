@@ -206,10 +206,12 @@ var scaffoldLayout = []scaffoldFile{
 	{template: "docs-README.md", mode: modeTracked, trackedDest: "docs/README.md"},
 }
 
-// scaffoldDocsDirs are the docs/ subdirectories tracked mode creates up front
-// (they hold dated records). The Diátaxis content dirs (tutorials/how-to/
-// reference/explanation) are created on first use, not here.
-var scaffoldDocsDirs = []string{"decisions", "research", "plans"}
+// scaffoldDevDocsDirs are the .abcd/development/ subdirectories tracked mode
+// creates up front (they hold the durable developer record: dated plans and
+// research, sequential ADRs). docs/ is reserved for user-facing Diátaxis
+// content, whose dirs (tutorials/how-to/reference/explanation) are created on
+// first use, not here.
+var scaffoldDevDocsDirs = []string{"plans", "research", "decisions"}
 
 // putLayout stamps every scaffoldLayout entry that applies to the requested
 // scaffold, in table order, creating each dest's parent dir first (put itself
@@ -246,19 +248,21 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 
 // scaffoldTracked creates the committed layout on top of the shared
 // .work.local/ runtime dirs: a .work/ holding the committed standing-facts
-// memory (DECISIONS.md, CONTEXT.md), the AGENTS.md router, the docs/
-// hierarchy with its map (docs/README.md), the in-repo CLAUDE.md/GEMINI.md
-// symlinks, and the pre-commit config when absent. The volatile handoff note
+// memory (DECISIONS.md, CONTEXT.md), the AGENTS.md router, the user-facing
+// docs/ map (docs/README.md), the .abcd/development/ developer-record dirs,
+// the in-repo CLAUDE.md/GEMINI.md symlinks, and the pre-commit config when
+// absent. The volatile handoff note
 // NEXT.md lands in .work.local/ (uncommitted) in both modes. It never touches
 // .gitignore — runtime artefacts are excluded via .work.local/ + info/exclude,
 // and .work/ is meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
-	// Docs hierarchy directories that hold dated records (the map
-	// docs/README.md is a scaffoldLayout entry). The Diátaxis content
-	// directories (tutorials/how-to/reference/explanation) are created on
-	// first use, not up front.
-	for _, d := range scaffoldDocsDirs {
-		if err := os.MkdirAll(filepath.Join(repo, "docs", d), 0o755); err != nil {
+	// Developer-record directories that hold dated plans/research and
+	// sequential ADRs, under the .abcd/development/ namespace (the user-facing
+	// map docs/README.md is a scaffoldLayout entry). docs/ stays Diátaxis-only;
+	// its content directories (tutorials/how-to/reference/explanation) are
+	// created on first use, not up front.
+	for _, d := range scaffoldDevDocsDirs {
+		if err := os.MkdirAll(filepath.Join(repo, ".abcd", "development", d), 0o755); err != nil {
 			return err
 		}
 	}

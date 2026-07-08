@@ -7,7 +7,8 @@
 
 ## Context and problem statement
 
-ferry records architecture decisions as MADR files under `docs/decisions/`. We
+ferry records architecture decisions as MADR files under
+`.abcd/development/decisions/`. We
 need one naming convention that sorts stably, reads unambiguously, and does not
 force coordination between branches before a decision can be written down. A
 superseded draft proposed a `<date>--<slug>` scheme (for example
