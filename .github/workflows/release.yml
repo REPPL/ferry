@@ -30,6 +30,19 @@ on:
       tag:
         required: true
         type: string
+      # Exact commit to build the release FROM. Defaults to github.sha (the
+      # triggering commit). auto-release passes the tagged commit's RESOLVED SHA
+      # when re-publishing a Release for an already-existing tag, so the Release
+      # is built from the tagged commit — never a newer main HEAD that has moved
+      # on. A resolved commit SHA (not a tag name) keeps the anti-tag-move
+      # property: an immutable SHA cannot be re-pointed between checkout steps.
+      # `tag` and `ref` are an unenforced caller CONTRACT — --verify-tag checks
+      # only that the tag exists, not that it points at `ref`. The sole caller
+      # (auto-release) binds them: ref = `git rev-parse "$tag^{commit}"`.
+      ref:
+        required: false
+        type: string
+        default: ''
 
 # Never run two releases of the same tag concurrently, and never cancel a
 # release mid-flight — a half-published release is worse than a queued one.
@@ -74,10 +87,12 @@ jobs:
       - name: Check out the pushed commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # github.sha, not the tag ref: checkout re-resolves a NAMED ref at each
-          # job's start, so a tag moved after the push could differ here. The sha
-          # is the commit the pushed tag pointed at, immutable for this run.
-          ref: ${{ github.sha }}
+          # inputs.ref when auto-release re-releases an existing tag (its resolved
+          # tagged-commit SHA), else github.sha — the commit the pushed tag / this
+          # run pointed at. Both are IMMUTABLE commit SHAs, never a tag NAME:
+          # checkout re-resolves a named ref at each job's start, so a moved tag
+          # could differ here, whereas a pinned SHA cannot.
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
 
       - name: Set up Go
@@ -173,11 +188,12 @@ jobs:
       - name: Check out the pushed commit
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # github.sha (the commit the pushed tag pointed at), not the tag NAME
-          # and not the default-branch tip, so the binaries below are built from
-          # the exact commit verify gated — a tag re-pointed mid-run changes
-          # nothing here.
-          ref: ${{ github.sha }}
+          # inputs.ref (the re-release path's resolved tagged-commit SHA) or
+          # github.sha (the commit the pushed tag pointed at) — an immutable SHA,
+          # not the tag NAME and not the default-branch tip, so the binaries below
+          # are built from the exact commit verify gated. Both jobs resolve the
+          # SAME value, so verify and publish build the identical commit.
+          ref: ${{ inputs.ref || github.sha }}
           # No job step pushes to any branch, so no git-stored credentials are
           # needed: gh uses GH_TOKEN, and the no-branch-commit tripwire reads the
           # default-branch ref through the API with GH_TOKEN, not git ls-remote.
