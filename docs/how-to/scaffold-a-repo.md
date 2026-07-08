@@ -31,8 +31,8 @@ Default (tracked) mode, for a repo you own:
 |---|---|
 | `AGENTS.md` | Router stamped from `agents/templates/AGENTS.md`, with `{{PROJECT}}` and `{{DATE}}` substituted |
 | `CLAUDE.md`, `GEMINI.md` | Relative symlinks to `AGENTS.md` **inside the project repo** (project-tracked content — ferry does not deploy these to `$HOME`) |
-| `docs/README.md` | The documentation map, stamped from `agents/templates/docs-README.md`: the four Diátaxis directories, decisions (MADR, `NNNN-title.md`), dated research and plans, and the root-markdown allowlist |
-| `docs/decisions/`, `docs/research/`, `docs/plans/` | Dated-record directories, created up front (the Diátaxis content directories are created on first use) |
+| `docs/README.md` | The user-facing documentation map, stamped from `agents/templates/docs-README.md`: the four Diátaxis directories and the root-markdown allowlist |
+| `.abcd/development/plans/`, `.abcd/development/research/`, `.abcd/development/decisions/` | Developer-record directories, created up front — dated plans and research (`YYYY-MM-DD-topic.md`) and ADRs (MADR, `NNNN-title.md`); `docs/` stays user-facing Diátaxis, whose content directories are created on first use |
 | `.work/DECISIONS.md`, `.work/CONTEXT.md` | Committed decision log and curated standing facts (the load-first summary) |
 | `.work.local/NEXT.md`, `.work.local/scratch/`, `.work.local/logs/` | Local-only session handoff and runtime artefacts, hidden via git `info/exclude` |
 | `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |

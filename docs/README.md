@@ -22,16 +22,18 @@ directory holds. Every page is exactly one Diátaxis type — tutorial
 
 ## Directories
 
+This tree is user-facing only. Developer records — plans, research, and
+architecture decisions — live under [`.abcd/development/`](../.abcd/development/),
+outside the documentation a ferry user reads.
+
 | Directory | Contents | Naming |
 |---|---|---|
 | `tutorials/`, `how-to/`, `reference/`, `explanation/` | The four Diátaxis types; each directory is created on first use | — |
-| `decisions/` | Architecture decision records, MADR format | `NNNN-title.md` |
-| `research/` | Dated research notes | `YYYY-MM-DD-topic.md` |
-| `plans/` | Dated implementation plans | `YYYY-MM-DD-topic.md` |
 | `assets/` | Images and other static assets | — |
 
 ## Root-markdown allowlist
 
 The repository root carries only `README.md`, `AGENTS.md` (with its
 `CLAUDE.md`/`GEMINI.md` symlink bridges), `CHANGELOG.md`, `CONTRIBUTING.md`,
-`SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`.
+`SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`
+(user-facing) or `.abcd/development/` (developer records).

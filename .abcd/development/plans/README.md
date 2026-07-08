@@ -1,6 +1,6 @@
 # Release plans
 
-Reference for the design plans under `docs/plans/`.
+Reference for the design plans under `.abcd/development/plans/`.
 
 Each plan captures the design for one release. A plan is named
 `YYYY-MM-DD-vX.Y.Z.md`, where the date is when the plan was written and the

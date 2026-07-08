@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # consistency-lint — deterministic repo-convention checks that gate CI.
 #
-#   1. No two ADRs in docs/decisions/ share an NNNN prefix. This is the
+#   1. No two ADRs in .abcd/development/decisions/ share an NNNN prefix. This is the
 #      ADR-race mitigation (ADR 0001): authors take the next free number
 #      optimistically on their branch, and a collision blocks the merge so the
 #      second branch to land renumbers.
@@ -10,7 +10,8 @@
 #      handoff lives in the private .work.local/ layer (ADR 0002). Scope is the
 #      human/agent-facing surface (docs, scripts, hooks, templates); Go sources
 #      are exempt because their tests legitimately assert the OLD path is now
-#      absent. The historical docs/plans/ record and the changelog are exempt
+#      absent. The developer-record .abcd/development/plans/ and research/ (which
+#      describe past and investigative state) and the changelog are exempt
 #      too (they describe past state), as is this script itself.
 #
 # Exit non-zero on the first failing invariant set; print every offending path.
@@ -18,7 +19,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 fail=0
-decisions=docs/decisions
+decisions=.abcd/development/decisions
 
 if [ -d "$decisions" ]; then
   # 1. duplicate NNNN prefixes
@@ -44,7 +45,7 @@ if [ -d "$decisions" ]; then
 fi
 
 # 3. stale .work/NEXT.md handoff references (must be .work.local/NEXT.md)
-hits=$(git ls-files -- ':!docs/plans/' ':!CHANGELOG.md' ':!scripts/consistency-lint.sh' ':!*.go' \
+hits=$(git ls-files -- ':!.abcd/development/plans/' ':!.abcd/development/research/' ':!CHANGELOG.md' ':!scripts/consistency-lint.sh' ':!*.go' \
   | xargs -r grep -nF '.work/NEXT.md' 2>/dev/null || true)
 if [ -n "$hits" ]; then
   echo "consistency-lint: session handoff is .work.local/NEXT.md, not .work/NEXT.md:" >&2

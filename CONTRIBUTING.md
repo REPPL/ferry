@@ -48,29 +48,32 @@ Every user-facing change keeps the docs and the CHANGELOG in sync.
   explanation — and no page mixes types. The
   [documentation map](docs/README.md) states where each page lives.
 - Docs are present tense: what *is*, never what was superseded or is planned.
-  History lives in git; intent lives in `docs/plans/`.
+  History lives in git; intent lives in `.abcd/development/plans/`.
 - The repository root carries only `README.md`, `AGENTS.md` (with its
   `CLAUDE.md`/`GEMINI.md` bridges), `CHANGELOG.md`, `CONTRIBUTING.md`,
-  `SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`.
+  `SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`
+  (user-facing) or `.abcd/development/` (developer records).
 
 ## Decisions and the ADR workflow
 
 Architecture decisions are recorded as [MADR](https://adr.github.io/madr/) files
-under `docs/decisions/`, named `NNNN-title.md` with a zero-padded sequential
-number (see [ADR 0001](docs/decisions/0001-adr-naming-sequential-madr.md)).
+under `.abcd/development/decisions/`, named `NNNN-title.md` with a zero-padded
+sequential number
+(see [ADR 0001](.abcd/development/decisions/0001-adr-naming-sequential-madr.md)).
 
 - To add an ADR, take the **next free number** on your branch — there is no
   reservation registry.
 - If two branches mint the same `NNNN`, a duplicate-`NNNN` lint fails CI and the
   second branch to merge renumbers its ADR. Do not resolve the clash by force.
 - One-line session decisions live in `.work/DECISIONS.md`; promote a decision to
-  a `docs/decisions/` ADR when it shapes architecture or is expensive to reverse.
+  a `.abcd/development/decisions/` ADR when it shapes architecture or is
+  expensive to reverse.
 
 ## Working memory
 
 Curated standing facts load first from `.work/CONTEXT.md` (committed). Session
 handoff, scratch output, and logs live under `.work.local/` (git-ignored via
 `.git/info/exclude`, never committed). See
-[ADR 0002](docs/decisions/0002-work-memory-public-private-split.md) for the
-rationale. Because `.work/` is committed, its contents follow the repository's
+[ADR 0002](.abcd/development/decisions/0002-work-memory-public-private-split.md)
+for the rationale. Because `.work/` is committed, its contents follow the repository's
 privacy rules: no local absolute paths, secrets, or live data.

@@ -76,14 +76,14 @@ func TestScaffoldTrackedMode(t *testing.T) {
 	}
 
 	// Committed memory in .work/, runtime artefacts in .work.local/ — both
-	// modes share the .work.local layout. The docs hierarchy carries the map
-	// plus the dated-record directories. The tracked put files come from the
-	// shared scaffoldLayout table (the single source of truth), so this loop
-	// tracks the layout automatically.
+	// modes share the .work.local layout. docs/ carries the user-facing map;
+	// the dated developer records live under .abcd/development/. The tracked put
+	// files come from the shared scaffoldLayout table (the single source of
+	// truth), so this loop tracks the layout automatically.
 	want := layoutDests(false) // tracked dests: .work.local/NEXT.md, .work/DECISIONS.md, .work/CONTEXT.md, AGENTS.md, docs/README.md
 	want = append(want, ".work.local/scratch", ".work.local/logs", ".pre-commit-config.yaml")
-	for _, d := range scaffoldDocsDirs {
-		want = append(want, "docs/"+d)
+	for _, d := range scaffoldDevDocsDirs {
+		want = append(want, ".abcd/development/"+d)
 	}
 	for _, rel := range want {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
@@ -290,7 +290,7 @@ func TestScaffoldNeverOverwritesDocsReadme(t *testing.T) {
 	if !strings.Contains(out, "exists:") {
 		t.Errorf("output missing the exists skip: %q", out)
 	}
-	for _, rel := range []string{"docs/decisions", "docs/research", "docs/plans"} {
+	for _, rel := range []string{".abcd/development/decisions", ".abcd/development/research", ".abcd/development/plans"} {
 		if _, err := os.Stat(filepath.Join(repo, rel)); err != nil {
 			t.Errorf("%s missing: %v", rel, err)
 		}
