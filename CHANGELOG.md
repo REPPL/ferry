@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-08
+
 ### Breaking
 
 - **`ferry export` and `ferry import` are now `ferry bundle export` and
