@@ -23,10 +23,15 @@
 // state (auto-save-list/, transient/, url/, network-security.data, recentf,
 // savehist, saveplace). See exclude.go for the exact predicate.
 //
-// Per-machine overlay. The termcfg per-file local-wins overlay applies: a file
-// at local/emacs/<relpath> in the repo overrides the shared emacs/<relpath> on
-// deploy (whole-file, no Emacs-Lisp parsing), the natural home for a
-// Customize-written inits/custom.el or a hand-authored init.local.el.
+// Per-machine overlay. The domain deploys the UNION of the shared emacs/ tree
+// and the per-machine local/emacs/ overlay tree. The termcfg per-file local-wins
+// overlay applies: a file at local/emacs/<relpath> in the repo overrides the
+// shared emacs/<relpath> on deploy (whole-file, no Emacs-Lisp parsing). A file
+// present ONLY under local/emacs/ (no shared counterpart) deploys as a
+// machine-only file, exactly like iTerm2's Dynamic Profiles overlay — the
+// natural home for a Customize-written inits/custom.el or a hand-authored
+// init.local.el that exists on this machine alone. The exclude filter and
+// symlink refusal apply to BOTH trees.
 //
 // Deploy home is ~/.emacs.d (matching the maintainer's model). Note ~/.emacs.d
 // shadows the XDG location ~/.config/emacs: with ~/.emacs.d present, Emacs reads

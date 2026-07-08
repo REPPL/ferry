@@ -79,6 +79,12 @@ func (e *Engine) RestoreSnapshot(snapID string) error {
 			}
 		}
 		if err := e.applyState(state, blob); err != nil {
+			// A resource declined its restore (e.g. iTerm2 running): SKIP this entry
+			// and continue undoing the rest rather than aborting the whole snapshot
+			// re-apply. A running iTerm2 would silently drop the re-import anyway.
+			if isResourceRestoreSkip(err) {
+				continue
+			}
 			return err
 		}
 	}

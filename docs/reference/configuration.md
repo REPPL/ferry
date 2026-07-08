@@ -149,12 +149,14 @@ flags are one-shot), but if you rely on a global setting the starter allowlist
 omits, add it to the allowlist so it is carried and preserved.
 
 **Quit iTerm2 first.** A running iTerm2 keeps its preferences in memory and
-rewrites the domain on quit, so importing while it runs is silently lost — `apply`
-therefore *refuses* the global-preferences import while iTerm2 is running and tells
-you to quit it and re-run. After a successful import ferry runs `killall cfprefsd`
-so the preferences daemon does not serve a stale cached copy; relaunch iTerm2 for
-the change to take effect. (The profiles artefact above has no such constraint — it
-is a plain file copy iTerm2 live-reloads.)
+rewrites the domain on quit, so mutating it while it runs is silently lost — both
+`apply` and `restore` therefore *refuse* to touch the global-preferences domain
+while iTerm2 is running and tell you to quit it and re-run. `restore` skips only
+that one domain (reverting every other managed path) and prints how to finish, so
+it never aborts the wider revert. After a successful import ferry runs
+`killall cfprefsd` so the preferences daemon does not serve a stale cached copy;
+relaunch iTerm2 for the change to take effect. (The profiles artefact above has no
+such constraint — it is a plain file copy iTerm2 live-reloads.)
 
 The `.local` layer applies whole-domain: a committed
 `local/iterm2/com.googlecode.iterm2.plist` is imported instead of the shared copy
@@ -181,13 +183,20 @@ it does not — the tmux analogue of the shell `[ -f … ] && source …` guard.
 so the committed `dotfiles/tmux.conf` never carries ferry's own boilerplate, and
 per-machine edits route to `local/tmux/tmux.conf.local`.
 
-**Tokens in options.** A secret set in a quoted tmux option — for example
-`set -g @token 'ghp_…'` — is caught on capture: only the quoted value is routed to
-the out-of-repo secret store and replaced with a `{{ferry.secret …}}` placeholder,
-leaving the `set -g @token '…'` syntax and the quotes byte-for-byte intact. `apply`
-renders the placeholder back to the real value (deployed `0600`). An environment
-reference such as `set -g @token '${TMUX_TOKEN}'` is **not** a literal secret (tmux
-expands it at read time), so it is carried to the shared repo verbatim.
+**Tokens in options.** A secret set in a tmux option — for example
+`set -g @token 'ghp_…'` — is caught on capture: only the value is routed to the
+out-of-repo secret store and replaced with a `{{ferry.secret …}}` placeholder,
+leaving the surrounding syntax byte-for-byte intact. The recogniser covers all
+four option-setting commands (`set`, `set-option`, `setw`, `set-window-option`),
+single- or double-quoted **and** bare unquoted values, and tolerates a trailing
+`# comment` after the value — for instance `set -g @token 'ghp_…' # CI token` keeps
+both the quotes and the comment untouched. `apply` renders the placeholder back to
+the real value (deployed `0600`). An environment reference such as
+`set -g @token '${TMUX_TOKEN}'` (or unquoted `$TMUX_TOKEN`) is **not** a literal
+secret (tmux expands it at read time), so it is carried to the shared repo
+verbatim. Any option shape the recogniser cannot cleanly isolate — an unbalanced
+quote, or a value trailed by something other than whitespace or a comment — is
+never partially rewritten: capture blocks the whole file instead.
 
 ## git
 
@@ -354,14 +363,16 @@ step between editing `inits/repp.org` in the repo and Emacs re-tangling it on
 next load. There is no capture pass: `ferry capture` does not ingest live
 `~/.emacs.d/` edits back into the repo.
 
-**Per-machine overlay.** The `.local` layer applies per file: an override at
-`local/emacs/<relpath>` wins over the shared `emacs/<relpath>` on the next
-`apply`, leaving every other file shared. This is the natural home for a
+**Per-machine overlay.** ferry deploys the union of the shared `emacs/` tree and
+the per-machine `local/emacs/` overlay tree. The `.local` layer applies per file:
+an override at `local/emacs/<relpath>` wins over the shared `emacs/<relpath>` on
+the next `apply`, leaving every other file shared. A file present **only** under
+`local/emacs/` — with no shared counterpart — deploys as a machine-only file,
+exactly like iTerm2's Dynamic Profiles overlay. This is the natural home for a
 Customize-written `inits/custom.el` (which `init.el` loads when present) or a
 hand-authored `init.local.el` for machine-specific bits (fonts, `exec-path`,
-GUI-versus-tty). Like every terminal overlay, the override wins per shared file;
-a purely machine-local file is committed under `local/emacs/` alongside a shared
-counterpart in `emacs/`.
+GUI-versus-tty) that lives on one machine alone. The exclude filter and symlink
+refusal apply to both trees.
 
 Emacs files participate in the secret store like dotfiles: a `{{ferry.secret …}}`
 placeholder is rendered on apply, a real secret is commit-gated on capture, and a

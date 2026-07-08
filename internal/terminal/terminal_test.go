@@ -149,6 +149,108 @@ func TestRestoreAbsentBaselineDeletesDomain(t *testing.T) {
 	}
 }
 
+// TestITerm2RestoreRefusesWhenRunning: Restore must honour the SAME running-guard
+// as Apply. With iTerm2 running, restoring the iTerm2 domain would `defaults
+// import`/`delete` into a live domain that rewrites itself on quit — silently
+// lost. Restore must REFUSE with ErrITerm2Running, shell out to `defaults` zero
+// times, and NOT flush cfprefsd. It also must NOT be a hard failure: the error
+// reports itself as a resource-restore skip.
+func TestITerm2RestoreRefusesWhenRunning(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Restore mutation is darwin-only")
+	}
+	for _, absent := range []bool{false, true} {
+		fr := &fakeRunner{}
+		proc := &fakeProc{running: true}
+		d := NewITerm2(nil, fr, proc)
+
+		err := d.Restore([]byte("<plist>x</plist>"), absent)
+		if !errors.Is(err, ErrITerm2Running) {
+			t.Fatalf("Restore(absent=%v) while running = %v, want ErrITerm2Running", absent, err)
+		}
+		var skip interface{ ResourceRestoreSkipped() bool }
+		if !errors.As(err, &skip) || !skip.ResourceRestoreSkipped() {
+			t.Fatalf("Restore(absent=%v) error is not a resource-restore skip: %v", absent, err)
+		}
+		if len(fr.calls) != 0 {
+			t.Fatalf("Restore(absent=%v) shelled `defaults` %d times into a running iTerm2, want 0", absent, len(fr.calls))
+		}
+		if proc.flushed {
+			t.Fatalf("Restore(absent=%v) flushed cfprefsd despite refusing", absent)
+		}
+	}
+}
+
+// TestITerm2RestoreProceedsAndFlushesWhenNotRunning: with iTerm2 NOT running,
+// Restore imports the captured blob AND flushes cfprefsd (mirroring Apply) so the
+// restored values are not masked by the daemon's cache.
+func TestITerm2RestoreProceedsAndFlushesWhenNotRunning(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Restore mutation is darwin-only")
+	}
+	fr := &fakeRunner{}
+	proc := &fakeProc{running: false}
+	d := NewITerm2(nil, fr, proc)
+	blob := []byte("<plist>captured</plist>")
+
+	if err := d.Restore(blob, false); err != nil {
+		t.Fatalf("Restore while not running: %v", err)
+	}
+	c := fr.last()
+	if !equalArgs(c.args, []string{"import", ITerm2Domain, "-"}) {
+		t.Fatalf("Restore args = %v, want import", c.args)
+	}
+	if string(c.stdin) != string(blob) {
+		t.Fatalf("Restore stdin = %q, want the captured blob", c.stdin)
+	}
+	if !proc.flushed {
+		t.Fatalf("cfprefsd was not flushed after a not-running iTerm2 restore")
+	}
+}
+
+// TestITerm2RestoreProbeErrorFailsClosed: an inconclusive running probe must fail
+// closed (surface the error, mutate nothing) rather than assume "not running" and
+// import into a possibly-live iTerm2.
+func TestITerm2RestoreProbeErrorFailsClosed(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Restore mutation is darwin-only")
+	}
+	fr := &fakeRunner{}
+	proc := &fakeProc{runErr: errors.New("pgrep exploded")}
+	d := NewITerm2([]byte("<plist>x</plist>"), fr, proc)
+
+	if err := d.Restore([]byte("<plist>x</plist>"), false); err == nil {
+		t.Fatal("Restore with a probe error returned nil, want a failure")
+	}
+	if len(fr.calls) != 0 {
+		t.Fatalf("Restore shelled `defaults` despite an inconclusive running probe (%d calls)", len(fr.calls))
+	}
+}
+
+// TestAppleTerminalRestoreUnaffectedByRunningGuard: Apple Terminal carries no
+// ProcessController (proc is nil) and no iTerm2 concern, so its Restore imports
+// unconditionally and never probes running or flushes cfprefsd — even though a
+// hypothetical iTerm2 would be "running" (there is nothing to consult here).
+func TestAppleTerminalRestoreUnaffectedByRunningGuard(t *testing.T) {
+	if !platform.IsDarwin() {
+		t.Skip("Restore mutation is darwin-only")
+	}
+	fr := &fakeRunner{}
+	d := NewAppleTerminal(nil, fr)
+	blob := []byte("<plist>terminal</plist>")
+
+	if err := d.Restore(blob, false); err != nil {
+		t.Fatalf("Apple Terminal Restore: %v", err)
+	}
+	c := fr.last()
+	if !equalArgs(c.args, []string{"import", AppleTerminalDomain, "-"}) {
+		t.Fatalf("Apple Terminal Restore args = %v, want import", c.args)
+	}
+	if string(c.stdin) != string(blob) {
+		t.Fatalf("Apple Terminal Restore stdin = %q, want the captured blob", c.stdin)
+	}
+}
+
 // TestRestoreAbsentAlreadyMissingIsNoError: deleting an already-absent domain
 // (delete reports "does not exist") is a no-op success.
 func TestRestoreAbsentAlreadyMissingIsNoError(t *testing.T) {

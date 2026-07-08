@@ -230,6 +230,13 @@ func (e *Engine) rollbackRun(runID string) error {
 			}
 		}
 		if err := e.applyState(ch.Prior, blob); err != nil {
+			// A resource declined its restore (e.g. iTerm2 running): SKIP this change
+			// and keep rolling back the rest. A running iTerm2 rewrites its domain on
+			// quit anyway, so we cannot re-import it now — and letting this abort would
+			// WEDGE the next apply, which runs RollbackIncomplete before it plans.
+			if isResourceRestoreSkip(err) {
+				continue
+			}
 			return err
 		}
 	}

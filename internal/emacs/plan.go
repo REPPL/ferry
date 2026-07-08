@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/REPPL/ferry/internal/dotfile"
 )
@@ -62,41 +63,115 @@ type PlanInput struct {
 }
 
 // Plan expands the Emacs domain into its 1:1 (content, target) items: one per
-// carried regular file under the repo's emacs/ tree, in lexical walk order, each
-// destined for the same relative path under ~/.emacs.d/ and carried like a
-// dotfile. Content is the per-machine overlay (local/emacs/<relpath>) when
-// present — local wins, mirroring the dotfile, agents-asset, and terminal
-// domains — else the shared repo source. Volatile, machine-generated paths (see
-// excluded) are pruned and never deployed. It reads only the config repo, never
-// $HOME.
+// carried regular file in the UNION of the shared emacs/ tree and the
+// per-machine local/emacs/ overlay tree, in lexical order, each destined for the
+// same relative path under ~/.emacs.d/ and carried like a dotfile. For a file
+// present in both trees the overlay wins (local content, mirroring the dotfile,
+// agents-asset, and terminal domains); a file present ONLY under local/emacs/
+// deploys as a machine-only file (mirroring iTerm2's Dynamic Profiles overlay).
+// Volatile, machine-generated paths (see excluded) are pruned from BOTH trees
+// and never deployed. It reads only the config repo, never $HOME.
 //
-// An absent emacs/ tree deploys nothing (the domain is enabled but nothing was
-// committed). A symlinked source (the tree root or any entry inside it) is
-// refused. Recoverable per-target problems (a refused/escaping path) become
-// warnings and the item is skipped; only an unexpected read failure aborts.
+// An absent emacs/ tree with an absent overlay deploys nothing (the domain is
+// enabled but nothing was committed). A symlinked source (either tree root or any
+// entry inside either tree) is refused. Recoverable per-target problems (a
+// refused/escaping path) become warnings and the item is skipped; only an
+// unexpected read failure aborts.
 func Plan(in PlanInput) (items []Item, warnings []string, err error) {
-	root := filepath.Join(in.RepoRoot, RepoSubdir)
-	safeRoot, gerr := guardPath(in.Guard, root)
+	sources, warns, err := resolveSources(in)
+	warnings = append(warnings, warns...)
+	if err != nil {
+		return nil, warnings, err
+	}
+
+	rels := make([]string, 0, len(sources))
+	for rel := range sources {
+		rels = append(rels, rel)
+	}
+	sort.Strings(rels) // deterministic plan order
+
+	for _, rel := range rels {
+		item, warn, berr := buildItem(in, sources[rel], rel)
+		if berr != nil {
+			return nil, warnings, berr
+		}
+		if warn != "" {
+			warnings = append(warnings, warn)
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, warnings, nil
+}
+
+// resolveSources returns the union of carried relpaths across the shared emacs/
+// tree and the per-machine local/emacs/ overlay tree, each mapped to its winning
+// source path: the shared emacs/<rel> unless a local/emacs/<rel> overlay exists
+// (local wins), plus any file present ONLY under the overlay (a machine-only
+// file). Volatile paths are pruned and symlinks are refused with a warning in
+// BOTH trees.
+func resolveSources(in PlanInput) (map[string]string, []string, error) {
+	var warnings []string
+	sources := map[string]string{}
+
+	sharedRoot := filepath.Join(in.RepoRoot, RepoSubdir)
+	localRoot := filepath.Join(in.RepoRoot, LocalSubdir, RepoSubdir)
+
+	// Shared tree: the authoritative carry set.
+	sw, err := walkTree(in.Guard, sharedRoot, RepoSubdir)
+	warnings = append(warnings, sw.warnings...)
+	if err != nil {
+		return nil, warnings, err
+	}
+	for rel := range sw.files {
+		sources[rel] = filepath.Join(sharedRoot, rel)
+	}
+
+	// Local overlay: overrides a shared rel, or adds a machine-only file.
+	lw, err := walkTree(in.Guard, localRoot, filepath.Join(LocalSubdir, RepoSubdir))
+	warnings = append(warnings, lw.warnings...)
+	if err != nil {
+		return nil, warnings, err
+	}
+	for rel := range lw.files {
+		sources[rel] = filepath.Join(localRoot, rel)
+	}
+	return sources, warnings, nil
+}
+
+type walkResult struct {
+	files    map[string]bool
+	warnings []string
+}
+
+// walkTree enumerates the carried regular files under root (relative paths),
+// pruning volatile paths (excluded) and refusing symlinks. An absent root is
+// normal (nothing to deploy). label is the repo-relative directory name used in
+// warnings.
+func walkTree(guard func(string) (string, error), root, label string) (walkResult, error) {
+	res := walkResult{files: map[string]bool{}}
+	safeRoot, gerr := guardPath(guard, root)
 	if gerr != nil {
-		return nil, []string{refusal("source", RepoSubdir, gerr)}, nil
+		res.warnings = append(res.warnings, refusal("source", label, gerr))
+		return res, nil
 	}
 	fi, serr := os.Lstat(safeRoot)
 	if serr != nil {
-		// An absent (or unreadable-as-absent) source deploys nothing.
 		if errors.Is(serr, fs.ErrNotExist) {
-			return nil, nil, nil
+			return res, nil // absent tree: nothing to deploy
 		}
-		return nil, nil, serr
+		return res, serr
 	}
 	if fi.Mode()&fs.ModeSymlink != 0 {
-		return nil, []string{fmt.Sprintf(
-			"emacs: refusing %s: symlink not allowed in the managed repo tree (copy the real dir in)", RepoSubdir)}, nil
+		res.warnings = append(res.warnings, fmt.Sprintf(
+			"emacs: refusing %s: symlink not allowed in the managed repo tree (copy the real dir in)", label))
+		return res, nil
 	}
 	if !fi.IsDir() {
-		return nil, []string{fmt.Sprintf(
-			"emacs: refusing %s: the Emacs source must be a directory tree", RepoSubdir)}, nil
+		res.warnings = append(res.warnings, fmt.Sprintf(
+			"emacs: refusing %s: the Emacs source must be a directory tree", label))
+		return res, nil
 	}
-
 	walkErr := filepath.WalkDir(safeRoot, func(path string, d fs.DirEntry, werr error) error {
 		if werr != nil {
 			return werr
@@ -118,9 +193,9 @@ func Plan(in PlanInput) (items []Item, warnings []string, err error) {
 			return nil
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
-			warnings = append(warnings, fmt.Sprintf(
+			res.warnings = append(res.warnings, fmt.Sprintf(
 				"emacs: refusing %s: symlink not allowed in the managed repo tree (copy the real file in)",
-				filepath.Join(RepoSubdir, rel)))
+				filepath.ToSlash(filepath.Join(label, rel))))
 			if d.IsDir() {
 				return fs.SkipDir
 			}
@@ -129,36 +204,33 @@ func Plan(in PlanInput) (items []Item, warnings []string, err error) {
 		if d.IsDir() || !d.Type().IsRegular() {
 			return nil
 		}
-		info, ierr := d.Info()
-		if ierr != nil {
-			return ierr
-		}
-		item, warn, berr := buildItem(in, path, rel, info)
-		if berr != nil {
-			return berr
-		}
-		if warn != "" {
-			warnings = append(warnings, warn)
-			return nil
-		}
-		items = append(items, item)
+		res.files[rel] = true
 		return nil
 	})
 	if walkErr != nil {
-		return nil, nil, walkErr
+		return res, walkErr
 	}
-	return items, warnings, nil
+	return res, nil
 }
 
-// buildItem resolves one file's deployable content (overlay-or-shared) and its
-// validated $HOME destination under ~/.emacs.d/, returning a ready Item. A
-// recoverable per-file problem (a refused target path) is returned as a
-// non-empty warning with a zero Item; only an unexpected read failure returns
-// err.
-func buildItem(in PlanInput, repoFile, rel string, info fs.FileInfo) (Item, string, error) {
-	content, _, _, cerr := emacsContent(in.RepoRoot, repoFile, in.Guard)
-	if cerr != nil {
-		return Item{}, "", cerr
+// buildItem reads one file's deployable content from its winning source path
+// (shared or overlay) and resolves its validated $HOME destination under
+// ~/.emacs.d/, returning a ready Item. A recoverable per-file problem (a refused
+// source or target path) is returned as a non-empty warning with a zero Item;
+// only an unexpected read failure returns err. The executable bit is taken from
+// the winning source so a local-only or overlay file's mode is honoured.
+func buildItem(in PlanInput, repoFile, rel string) (Item, string, error) {
+	safe, gerr := guardPath(in.Guard, repoFile)
+	if gerr != nil {
+		return Item{}, refusal("source", "emacs:"+filepath.ToSlash(rel), gerr), nil
+	}
+	info, serr := os.Lstat(safe)
+	if serr != nil {
+		return Item{}, "", serr
+	}
+	data, rerr := os.ReadFile(safe)
+	if rerr != nil {
+		return Item{}, "", rerr
 	}
 	key := filepath.ToSlash(rel)
 	t, terr := dotfile.NestedTarget(in.Home, filepath.Join(TargetHome, rel), KeyPrefix+key)
@@ -169,55 +241,9 @@ func buildItem(in PlanInput, repoFile, rel string, info fs.FileInfo) (Item, stri
 		Key:     KeyPrefix + key,
 		Label:   "emacs:" + key,
 		Target:  t,
-		Content: content,
+		Content: data,
 		Exec:    info.Mode()&0o111 != 0,
 	}, "", nil
-}
-
-// emacsContent resolves the bytes apply deploys for an Emacs file: the
-// gitignored per-machine overlay at local/emacs/<relpath> when it exists (local
-// wins), else the shared repo file. Both reads route through guard (the caller's
-// symlink-refusing repo guard), so a symlink inside the managed tree is refused,
-// never read through. It returns the resolved content, the overlay path (always
-// computed), and whether the overlay was used.
-func emacsContent(repoRoot, repoFile string, guard func(string) (string, error)) (content []byte, overlayPath string, usedOverlay bool, err error) {
-	overlayPath = overlayPathFor(repoRoot, repoFile)
-	if overlayPath != "" {
-		safe, gerr := guardPath(guard, overlayPath)
-		if gerr == nil {
-			if fi, serr := os.Lstat(safe); serr == nil && fi.Mode().IsRegular() {
-				data, rerr := os.ReadFile(safe)
-				if rerr != nil {
-					return nil, overlayPath, false, rerr
-				}
-				return data, overlayPath, true, nil
-			}
-		}
-	}
-	safe, gerr := guardPath(guard, repoFile)
-	if gerr != nil {
-		return nil, overlayPath, false, gerr
-	}
-	data, rerr := os.ReadFile(safe)
-	if rerr != nil {
-		return nil, overlayPath, false, rerr
-	}
-	return data, overlayPath, false, nil
-}
-
-// overlayPathFor maps an Emacs file's shared repo source
-// (<repoRoot>/emacs/<relpath>) to its per-machine overlay
-// (<repoRoot>/local/emacs/<relpath>) — the SAME relative shape under local/. It
-// returns "" when repoFile is not under <repoRoot>/emacs (defensive; every
-// planned file is), so callers treat that as "no overlay".
-func overlayPathFor(repoRoot, repoFile string) string {
-	emacsRoot := filepath.Join(repoRoot, RepoSubdir)
-	rel, err := filepath.Rel(emacsRoot, repoFile)
-	if err != nil || rel == ".." || filepath.IsAbs(rel) ||
-		len(rel) >= 3 && rel[:3] == ".."+string(filepath.Separator) {
-		return ""
-	}
-	return filepath.Join(repoRoot, LocalSubdir, RepoSubdir, rel)
 }
 
 // guardPath routes a repo-side candidate through the caller's guard (when
