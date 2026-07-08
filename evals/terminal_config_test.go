@@ -179,9 +179,9 @@ func TestTerminalConfigDriftGuidanceNoCapture(t *testing.T) {
 		t.Fatalf("local edit: %v", err)
 	}
 
-	stdout, errOut, code := s.Ferry("apply", "--dry-run")
+	stdout, errOut, code := s.Ferry("diff")
 	if code != 0 {
-		t.Fatalf("dry-run exited %d; stderr:\n%s", code, errOut)
+		t.Fatalf("diff exited %d; stderr:\n%s", code, errOut)
 	}
 	// The wezterm line must surface the drift but never send the user to capture.
 	line := ""
@@ -192,7 +192,7 @@ func TestTerminalConfigDriftGuidanceNoCapture(t *testing.T) {
 		}
 	}
 	if line == "" {
-		t.Fatalf("no wezterm line in dry-run output:\n%s", stdout)
+		t.Fatalf("no wezterm line in diff output:\n%s", stdout)
 	}
 	if strings.Contains(line, "ferry capture") {
 		t.Errorf("drifted terminal target points at `ferry capture` (no config-file terminal capture pass exists); line:\n%s", line)
