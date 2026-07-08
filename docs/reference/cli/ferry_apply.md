@@ -6,12 +6,15 @@ Reconcile this machine to the repo (deploy dotfiles, terminal settings)
 
 Reconcile this machine to the repo.
 
-apply deploys in-scope dotfiles and terminal settings, layering the per-machine
-.local overlay last. It is idempotent and safe to re-run after every git pull.
-A run with changes walks a guided, domain-grouped review that applies safe
-changes automatically and prompts on risky ones; non-interactively, risky
-changes fail closed. Dependency installs are a separate, gated step run with
---deps.
+apply moves config in one direction — repo -> this machine — deploying the
+repo's version onto the machine. It writes in-scope dotfiles and terminal
+settings, layering the per-machine .local overlay last. It is idempotent and
+safe to re-run after every git pull. A run with changes walks a guided,
+domain-grouped review that applies safe changes automatically and prompts on
+risky ones; non-interactively, risky changes fail closed. A file you have
+edited locally is left untouched for "ferry capture" to bring back — apply
+never overwrites uncaptured local work. Dependency installs are a separate,
+gated step run with --deps.
 
 ```
 ferry apply [flags]

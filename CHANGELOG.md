@@ -11,6 +11,22 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- **Explanation doc: reconciling drift and conflicts.** A new page under
+  `docs/explanation/` explains the three inputs ferry weighs per file (live,
+  repo, last-applied), the four target states and what `apply` does in each, and
+  where a conflict resolves in each direction — `apply` refuses and hands you the
+  choice (`capture` to keep local, `apply --force` to take the repo), while
+  `capture` opts you in per change with an automatic secret block.
+
+### Changed
+
+- **`apply` and `capture` help now states the direction.** `apply`'s help makes
+  explicit that it moves config repo → this machine and leaves a locally-edited
+  file for `capture`; `capture`'s help makes explicit that it moves this machine
+  → the repo, the reverse of `apply`.
+
 ## [0.7.3] - 2026-07-08
 
 ### Fixed

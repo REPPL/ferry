@@ -15,6 +15,7 @@ directory holds. Every page is exactly one Diátaxis type — tutorial
 | [Compatibility contract](reference/compatibility.md) | Reference | Which surfaces are stable, the pre-1.0 rule, and on-disk state versioning |
 | [The agents domain](explanation/agents.md) | Explanation | The repo-authoritative model: harnesses, asset mappings, apply/restore semantics |
 | [Why ferry stays out of `~/.ssh/`](explanation/ssh.md) | Explanation | The rationale and the untouchable-`~/.ssh` invariant |
+| [Reconciling drift and conflicts](explanation/reconciling-drift-and-conflicts.md) | Explanation | The four target states, and where a conflict resolves for `apply` vs `capture` |
 | [Scaffold a project repo](how-to/scaffold-a-repo.md) | How-to | `ferry agents scaffold`: stamp a repo with the multi-tool pipeline layout |
 | [Adopt an existing agent config](how-to/adopt-agent-config.md) | How-to | `ferry agents adopt`: migrate a symlink-based instruction directory into ferry |
 | [Move SSH keys to a new machine](how-to/move-ssh-keys.md) | How-to | Carry your SSH setup across machines yourself, out-of-band |
