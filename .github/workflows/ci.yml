@@ -75,7 +75,7 @@ jobs:
           fi
 
       # Deterministic repo-convention checks: ADR numbering (no duplicate NNNN,
-      # sequential MADR names) and the .work.local/ handoff invariant.
+      # sequential MADR names) and the .abcd/.work.local/ handoff invariant.
       - name: Consistency lint (ADR numbering, memory split)
         if: matrix.os == 'ubuntu-latest'
         run: scripts/consistency-lint.sh
