@@ -18,6 +18,15 @@ called out in a **Breaking** section. See
   Their flags and behaviour are unchanged — only the command path moves. There
   is no alias: the old top-level spellings now error.
 
+### Fixed
+
+- **Release automation self-heals a missing GitHub Release.** When a version's
+  git tag exists but its GitHub Release is absent — for example a transient CI
+  failure between tagging and publishing — the auto-release workflow now
+  re-publishes the Release instead of leaving the version permanently
+  un-released. The re-release is built from the tagged commit, never a newer
+  `main`, so the published binaries always match the tag.
+
 ## [0.7.3] - 2026-07-08
 
 ### Fixed
