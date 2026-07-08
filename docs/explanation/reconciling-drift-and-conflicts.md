@@ -53,7 +53,7 @@ Two details worth calling out:
   treated as repo-ahead, not conflict. The backup keeps it reversible.
 - **A conflict is reserved for the genuine case:** ferry *has* a last-applied
   record for the file, your live copy differs from it (you edited a file ferry
-  previously managed, without capturing), *and* the repo has also moved on. Only
+  manages, without capturing), *and* the repo has also moved on. Only
   then does `apply` refuse.
 
 ## Where conflicts resolve, per direction
