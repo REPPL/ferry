@@ -18,8 +18,7 @@ import (
 func rawGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_PAGER=cat",
-		"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@t", "GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@t")
+	cmd.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
@@ -82,7 +81,7 @@ func TestGitSync_InsteadOfExtNeutralized(t *testing.T) {
 	rawMarker := filepath.Join(markerDir, "raw.txt")
 	writeExtConfig(rawMarker)
 	rawFetch := exec.Command("git", "-C", repo, "-c", "fetch.recurseSubmodules=no", "fetch", "--no-recurse-submodules", "--no-tags", "origin")
-	rawFetch.Env = append(os.Environ(), "GIT_PAGER=cat", "GIT_TERMINAL_PROMPT=0")
+	rawFetch.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	_, _ = rawFetch.CombinedOutput()
 	if _, err := os.Stat(rawMarker); err != nil {
 		t.Skipf("ext:: did not fire under raw git on this platform (%v) — fixture inert here", err)
@@ -112,7 +111,7 @@ func TestGitSync_MaliciousFsmonitorNeutralized(t *testing.T) {
 
 	// Baseline: raw (unhardened) git status FIRES the fsmonitor — the fixture is real.
 	rawStatus := exec.Command("git", "-C", repo, "status", "--porcelain")
-	rawStatus.Env = append(os.Environ(), "GIT_PAGER=cat")
+	rawStatus.Env = gitIsolatedEnv("GIT_PAGER=cat")
 	_, _ = rawStatus.CombinedOutput()
 	if _, err := os.Stat(rawMarker); err != nil {
 		t.Skipf("fsmonitor did not fire under raw git on this platform (%v) — fixture inert here", err)
