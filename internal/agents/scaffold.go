@@ -39,9 +39,9 @@ type ScaffoldOptions struct {
 // Scaffold sets a project repo up for the multi-tool agent pipeline. It is
 // idempotent and NEVER overwrites an existing file.
 //
-// Runtime artefacts (scratch output, logs) live in `.work.local/` in BOTH
+// Runtime artefacts (scratch output, logs) live in `.abcd/.work.local/` in BOTH
 // modes and are never committed: every scaffold creates
-// .work.local/{scratch,logs} and hides the whole directory via the git
+// .abcd/.work.local/{scratch,logs} and hides the whole directory via the git
 // info/exclude mechanism (local to the checkout — no tracked file is ever
 // touched for it; there is no .gitignore editing).
 //
@@ -52,12 +52,12 @@ type ScaffoldOptions struct {
 //   - CLAUDE.md and GEMINI.md as RELATIVE symlinks to AGENTS.md INSIDE the
 //     project repo (these are the project's own tracked bridges — ferry never
 //     deploys them to $HOME, so the copy-not-symlink invariant is untouched);
-//   - a committed .work/ holding the standing-facts memory DECISIONS.md and
-//     CONTEXT.md (NEXT.md, the volatile handoff note, lives in .work.local/);
+//   - a committed .abcd/work/ holding the standing-facts memory DECISIONS.md and
+//     CONTEXT.md (NEXT.md, the volatile handoff note, lives in .abcd/.work.local/);
 //   - the pre-commit template, only when the repo has none.
 //
 // --private mode — a repo you don't own, zero tracked trace:
-//   - .work.local/ only (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md
+//   - .abcd/.work.local/ only (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md
 //     alongside the scratch/logs dirs). No AGENTS.md, no symlinks, no tracked
 //     file touched.
 func Scaffold(opts ScaffoldOptions, out io.Writer) error {
@@ -101,8 +101,8 @@ func Scaffold(opts ScaffoldOptions, out io.Writer) error {
 		return nil
 	}
 
-	// Runtime artefacts live in .work.local/ in BOTH modes: create the dirs
-	// and hide the directory from git before anything mode-specific happens.
+	// Runtime artefacts live in .abcd/.work.local/ in BOTH modes: create the
+	// dirs and hide the directory from git before anything mode-specific happens.
 	if err := ensureWorkLocalDirs(repo); err != nil {
 		return err
 	}
@@ -115,11 +115,11 @@ func Scaffold(opts ScaffoldOptions, out io.Writer) error {
 }
 
 // ensureWorkLocalDirs creates the runtime-artefact layout every scaffold
-// guarantees: .work.local/scratch and .work.local/logs.
+// guarantees: .abcd/.work.local/scratch and .abcd/.work.local/logs.
 func ensureWorkLocalDirs(repo string) error {
 	for _, d := range []string{
-		filepath.Join(repo, ".work.local", "scratch"),
-		filepath.Join(repo, ".work.local", "logs"),
+		filepath.Join(repo, ".abcd", ".work.local", "scratch"),
+		filepath.Join(repo, ".abcd", ".work.local", "logs"),
 	} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
@@ -128,23 +128,23 @@ func ensureWorkLocalDirs(repo string) error {
 	return nil
 }
 
-// excludeWorkLocal hides .work.local/ from git without touching any tracked
-// file: the entry goes into the repo's REAL git dir's info/exclude —
+// excludeWorkLocal hides .abcd/.work.local/ from git without touching any
+// tracked file: the entry goes into the repo's REAL git dir's info/exclude —
 // resolveGitDir follows a gitfile (linked worktree, submodule) and the
 // worktree commondir, since git reads info/exclude from the common dir. A
 // non-git directory only warns (there is nothing to exclude from).
 func excludeWorkLocal(repo string, out io.Writer) {
 	gitDir, ok := resolveGitDir(repo)
 	if !ok {
-		fmt.Fprintln(out, "WARN: not a git repo — .work.local/ cannot be excluded locally")
+		fmt.Fprintln(out, "WARN: not a git repo — .abcd/.work.local/ cannot be excluded locally")
 		return
 	}
 	exclude := filepath.Join(gitDir, "info", "exclude")
-	if err := appendLineOnce(exclude, ".work.local/"); err != nil {
-		fmt.Fprintf(out, "WARN: could not write %s (%v) — exclude .work.local/ yourself\n", exclude, err)
+	if err := appendLineOnce(exclude, ".abcd/.work.local/"); err != nil {
+		fmt.Fprintf(out, "WARN: could not write %s (%v) — exclude .abcd/.work.local/ yourself\n", exclude, err)
 		return
 	}
-	fmt.Fprintln(out, "excluded: .work.local/ via git info/exclude (local-only, not committed)")
+	fmt.Fprintln(out, "excluded: .abcd/.work.local/ via git info/exclude (local-only, not committed)")
 }
 
 // scaffoldMode records which scaffold(s) a layout entry belongs to.
@@ -158,8 +158,8 @@ const (
 
 // scaffoldFile is one templated put() target in the scaffold layout. dest
 // paths are repo-relative. mode says which scaffold(s) create the file; the
-// matching dest gives where. For modeBoth the two dests differ (`.work/` vs
-// `.work.local/`); for a single-mode file only that mode's dest is set.
+// matching dest gives where. For modeBoth the two dests differ (`.abcd/work/`
+// vs `.abcd/.work.local/`); for a single-mode file only that mode's dest is set.
 type scaffoldFile struct {
 	template    string
 	mode        scaffoldMode
@@ -191,17 +191,17 @@ func (f scaffoldFile) destFor(private bool) string {
 
 // scaffoldLayout is the single source of truth for the templated put() files,
 // in the EXACT order the scaffolds stamp them. Tracked mode walks the entries
-// with a trackedDest (DECISIONS + CONTEXT in the committed .work/, AGENTS,
-// docs/README, and NEXT in the private .work.local/); private mode walks the
-// entries with a privateDest (NEXT, DECISIONS, CONTEXT, ISSUES, all in
-// .work.local/). The mode-specific steps (the CLAUDE/GEMINI symlinks, the
+// with a trackedDest (DECISIONS + CONTEXT in the committed .abcd/work/, AGENTS,
+// docs/README, and NEXT in the private .abcd/.work.local/); private mode walks
+// the entries with a privateDest (NEXT, DECISIONS, CONTEXT, ISSUES, all in
+// .abcd/.work.local/). The mode-specific steps (the CLAUDE/GEMINI symlinks, the
 // pre-commit copy, the --attribution hook, and excludeWorkLocal) are
 // imperative and live outside this table.
 var scaffoldLayout = []scaffoldFile{
-	{template: "NEXT.md", mode: modeBoth, trackedDest: ".work.local/NEXT.md", privateDest: ".work.local/NEXT.md"},
-	{template: "DECISIONS.md", mode: modeBoth, trackedDest: ".work/DECISIONS.md", privateDest: ".work.local/DECISIONS.md"},
-	{template: "CONTEXT.md", mode: modeBoth, trackedDest: ".work/CONTEXT.md", privateDest: ".work.local/CONTEXT.md"},
-	{template: "ISSUES.md", mode: modePrivate, privateDest: ".work.local/ISSUES.md"},
+	{template: "NEXT.md", mode: modeBoth, trackedDest: ".abcd/.work.local/NEXT.md", privateDest: ".abcd/.work.local/NEXT.md"},
+	{template: "DECISIONS.md", mode: modeBoth, trackedDest: ".abcd/work/DECISIONS.md", privateDest: ".abcd/.work.local/DECISIONS.md"},
+	{template: "CONTEXT.md", mode: modeBoth, trackedDest: ".abcd/work/CONTEXT.md", privateDest: ".abcd/.work.local/CONTEXT.md"},
+	{template: "ISSUES.md", mode: modePrivate, privateDest: ".abcd/.work.local/ISSUES.md"},
 	{template: "AGENTS.md", mode: modeTracked, trackedDest: "AGENTS.md"},
 	{template: "docs-README.md", mode: modeTracked, trackedDest: "docs/README.md"},
 }
@@ -234,10 +234,10 @@ func putLayout(repo string, private bool, put func(templateName, dest string) er
 	return nil
 }
 
-// scaffoldPrivate creates the zero-tracked-trace layout: .work.local/ holds
-// the memory files (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md) alongside
-// the runtime-artefact dirs the caller already created; nothing tracked is
-// created or modified.
+// scaffoldPrivate creates the zero-tracked-trace layout: .abcd/.work.local/
+// holds the memory files (NEXT.md, DECISIONS.md, CONTEXT.md, ISSUES.md)
+// alongside the runtime-artefact dirs the caller already created; nothing
+// tracked is created or modified.
 func scaffoldPrivate(repo, name string, put func(templateName, dest string) error, out io.Writer) error {
 	if err := putLayout(repo, true, put); err != nil {
 		return err
@@ -247,14 +247,14 @@ func scaffoldPrivate(repo, name string, put func(templateName, dest string) erro
 }
 
 // scaffoldTracked creates the committed layout on top of the shared
-// .work.local/ runtime dirs: a .work/ holding the committed standing-facts
-// memory (DECISIONS.md, CONTEXT.md), the AGENTS.md router, the user-facing
-// docs/ map (docs/README.md), the .abcd/development/ developer-record dirs,
-// the in-repo CLAUDE.md/GEMINI.md symlinks, and the pre-commit config when
-// absent. The volatile handoff note
-// NEXT.md lands in .work.local/ (uncommitted) in both modes. It never touches
-// .gitignore — runtime artefacts are excluded via .work.local/ + info/exclude,
-// and .work/ is meant to be committed whole.
+// .abcd/.work.local/ runtime dirs: a .abcd/work/ holding the committed
+// standing-facts memory (DECISIONS.md, CONTEXT.md), the AGENTS.md router, the
+// user-facing docs/ map (docs/README.md), the .abcd/development/
+// developer-record dirs, the in-repo CLAUDE.md/GEMINI.md symlinks, and the
+// pre-commit config when absent. The volatile handoff note NEXT.md lands in
+// .abcd/.work.local/ (uncommitted) in both modes. It never touches .gitignore
+// — runtime artefacts are excluded via .abcd/.work.local/ + info/exclude, and
+// .abcd/work/ is meant to be committed whole.
 func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateName, dest string) error, out io.Writer) error {
 	// Developer-record directories that hold dated plans/research and
 	// sequential ADRs, under the .abcd/development/ namespace (the user-facing
@@ -267,9 +267,9 @@ func scaffoldTracked(opts ScaffoldOptions, repo, name string, put func(templateN
 		}
 	}
 
-	// The put files, in table order: the volatile .work.local/NEXT.md, the
-	// committed .work/ memory (DECISIONS.md, CONTEXT.md), the AGENTS.md
-	// router, and the docs map (docs/README.md, never overwriting an
+	// The put files, in table order: the volatile .abcd/.work.local/NEXT.md,
+	// the committed .abcd/work/ memory (DECISIONS.md, CONTEXT.md), the
+	// AGENTS.md router, and the docs map (docs/README.md, never overwriting an
 	// existing one).
 	if err := putLayout(repo, false, put); err != nil {
 		return err

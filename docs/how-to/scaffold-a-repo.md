@@ -3,8 +3,8 @@
 ## Goal
 
 Set a **project** repo up for the multi-tool agent pipeline — the AGENTS.md router, the
-`CLAUDE.md`/`GEMINI.md` bridges, the committed `.work/` memory, the `docs/` map, and the
-local-only runtime layout — in one idempotent command. For the model behind the agents
+`CLAUDE.md`/`GEMINI.md` bridges, the committed `.abcd/work/` memory, the `docs/` map, and
+the local-only runtime layout — in one idempotent command. For the model behind the agents
 domain, see [The agents domain](../explanation/agents.md).
 
 ## Command
@@ -19,11 +19,11 @@ directory's base name. Idempotent; never overwrites an existing file.
 ## What it creates
 
 The layout separates **committed project memory** from **local-only runtime
-artefacts**: everything under `.work/` is meant to be committed, while
-scratch output and logs always live in `.work.local/` and never reach git.
-Both modes create `.work.local/scratch/` and `.work.local/logs/` and hide the
-whole `.work.local/` directory via the checkout-local git `info/exclude` —
-`.gitignore` is never touched.
+artefacts**: everything under `.abcd/work/` is meant to be committed, while
+scratch output and logs always live in `.abcd/.work.local/` and never reach git.
+Both modes create `.abcd/.work.local/scratch/` and `.abcd/.work.local/logs/` and
+hide the whole `.abcd/.work.local/` directory via the checkout-local git
+`info/exclude` — `.gitignore` is never touched.
 
 Default (tracked) mode, for a repo you own:
 
@@ -33,8 +33,8 @@ Default (tracked) mode, for a repo you own:
 | `CLAUDE.md`, `GEMINI.md` | Relative symlinks to `AGENTS.md` **inside the project repo** (project-tracked content — ferry does not deploy these to `$HOME`) |
 | `docs/README.md` | The user-facing documentation map, stamped from `agents/templates/docs-README.md`: the four Diátaxis directories and the root-markdown allowlist |
 | `.abcd/development/plans/`, `.abcd/development/research/`, `.abcd/development/decisions/` | Developer-record directories, created up front — dated plans and research (`YYYY-MM-DD-topic.md`) and ADRs (MADR, `NNNN-title.md`); `docs/` stays user-facing Diátaxis, whose content directories are created on first use |
-| `.work/DECISIONS.md`, `.work/CONTEXT.md` | Committed decision log and curated standing facts (the load-first summary) |
-| `.work.local/NEXT.md`, `.work.local/scratch/`, `.work.local/logs/` | Local-only session handoff and runtime artefacts, hidden via git `info/exclude` |
+| `.abcd/work/DECISIONS.md`, `.abcd/work/CONTEXT.md` | Committed decision log and curated standing facts (the load-first summary) |
+| `.abcd/.work.local/NEXT.md`, `.abcd/.work.local/scratch/`, `.abcd/.work.local/logs/` | Local-only session handoff and runtime artefacts, hidden via git `info/exclude` |
 | `.pre-commit-config.yaml` | Copied from the template, only when the repo has none |
 
 `--attribution` (tracked mode only) marks a repo that **requires AI
@@ -54,8 +54,8 @@ refused: a repo you do not own is not yours to set attribution policy in.
 
 | Item | Role |
 |---|---|
-| `.work.local/NEXT.md`, `DECISIONS.md`, `ISSUES.md` | The same logs plus a private observation list, alongside the `scratch/` and `logs/` dirs |
-| git `info/exclude` entry | Hides `.work.local/` locally; never committed or pushed |
+| `.abcd/.work.local/NEXT.md`, `DECISIONS.md`, `CONTEXT.md`, `ISSUES.md` | The same logs plus a private observation list, alongside the `scratch/` and `logs/` dirs |
+| git `info/exclude` entry | Hides `.abcd/.work.local/` locally; never committed or pushed |
 
 Anything already sitting where a bridge symlink would go is left untouched: a
 real file is skipped with a message (merge it into `AGENTS.md` first), and a
@@ -70,7 +70,7 @@ directory's `info/exclude`, which is where git reads it.
 ## Result
 
 The repo carries the full agent-pipeline scaffold, committable in one go (bar the
-git-ignored `.work.local/`). Re-running the command is safe: it only fills in what is
+git-ignored `.abcd/.work.local/`). Re-running the command is safe: it only fills in what is
 missing and never overwrites an existing file.
 
 ## Related documentation

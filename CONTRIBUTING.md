@@ -65,15 +65,15 @@ sequential number
   reservation registry.
 - If two branches mint the same `NNNN`, a duplicate-`NNNN` lint fails CI and the
   second branch to merge renumbers its ADR. Do not resolve the clash by force.
-- One-line session decisions live in `.work/DECISIONS.md`; promote a decision to
-  a `.abcd/development/decisions/` ADR when it shapes architecture or is
-  expensive to reverse.
+- One-line session decisions live in `.abcd/work/DECISIONS.md`; promote a
+  decision to a `.abcd/development/decisions/` ADR when it shapes architecture or
+  is expensive to reverse.
 
 ## Working memory
 
-Curated standing facts load first from `.work/CONTEXT.md` (committed). Session
-handoff, scratch output, and logs live under `.work.local/` (git-ignored via
-`.git/info/exclude`, never committed). See
+Curated standing facts load first from `.abcd/work/CONTEXT.md` (committed).
+Session handoff, scratch output, and logs live under `.abcd/.work.local/`
+(git-ignored via `.git/info/exclude`, never committed). See
 [ADR 0002](.abcd/development/decisions/0002-work-memory-public-private-split.md)
-for the rationale. Because `.work/` is committed, its contents follow the repository's
-privacy rules: no local absolute paths, secrets, or live data.
+for the rationale. Because `.abcd/work/` is committed, its contents follow the
+repository's privacy rules: no local absolute paths, secrets, or live data.

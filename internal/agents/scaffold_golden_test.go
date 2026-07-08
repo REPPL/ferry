@@ -20,7 +20,8 @@ import (
 //     symlink under the repo, excluding .git/), and
 //  2. the EXACT stdout, including every created:/exists:/linked:/… line and
 //     their order, with the repo's absolute path normalised to <repo>, and
-//  3. the EXACT line excludeWorkLocal writes into .git/info/exclude.
+//  3. the EXACT line excludeWorkLocal writes into .git/info/exclude
+//     (.abcd/.work.local/).
 //
 // Every mode runs in a REAL git repo so the exclude write and (for
 // --attribution) the core.hooksPath config are exercised for real; the tests
@@ -79,9 +80,9 @@ func normaliseOut(out, repo string) string {
 	return strings.ReplaceAll(out, repo, "<repo>")
 }
 
-// excludeWorkLocalLines returns the count of exact ".work.local/" lines in the
-// repo's .git/info/exclude — the line excludeWorkLocal is contracted to write
-// exactly once.
+// excludeWorkLocalLines returns the count of exact ".abcd/.work.local/" lines
+// in the repo's .git/info/exclude — the line excludeWorkLocal is contracted to
+// write exactly once.
 func excludeWorkLocalLines(t *testing.T, repo string) int {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(repo, ".git", "info", "exclude"))
@@ -90,7 +91,7 @@ func excludeWorkLocalLines(t *testing.T, repo string) int {
 	}
 	n := 0
 	for _, line := range strings.Split(string(data), "\n") {
-		if line == ".work.local/" {
+		if line == ".abcd/.work.local/" {
 			n++
 		}
 	}
@@ -107,7 +108,7 @@ func assertGolden(t *testing.T, repo, gotOut string, wantPaths []string, wantOut
 		t.Errorf("stdout changed (behaviour NOT preserved):\n got:\n%s\nwant:\n%s", norm, wantOut)
 	}
 	if n := excludeWorkLocalLines(t, repo); n != 1 {
-		t.Errorf("info/exclude has %d %q lines, want exactly 1", n, ".work.local/")
+		t.Errorf("info/exclude has %d %q lines, want exactly 1", n, ".abcd/.work.local/")
 	}
 }
 
@@ -120,28 +121,28 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 
 	wantPaths := []string{
 		".abcd",
+		".abcd/.work.local",
+		".abcd/.work.local/NEXT.md",
+		".abcd/.work.local/logs",
+		".abcd/.work.local/scratch",
 		".abcd/development",
 		".abcd/development/decisions",
 		".abcd/development/plans",
 		".abcd/development/research",
+		".abcd/work",
+		".abcd/work/CONTEXT.md",
+		".abcd/work/DECISIONS.md",
 		".pre-commit-config.yaml",
-		".work",
-		".work.local",
-		".work.local/NEXT.md",
-		".work.local/logs",
-		".work.local/scratch",
-		".work/CONTEXT.md",
-		".work/DECISIONS.md",
 		"AGENTS.md",
 		"CLAUDE.md",
 		"GEMINI.md",
 		"docs",
 		"docs/README.md",
 	}
-	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
-		"created:  <repo>/.work.local/NEXT.md\n" +
-		"created:  <repo>/.work/DECISIONS.md\n" +
-		"created:  <repo>/.work/CONTEXT.md\n" +
+	wantOut := "excluded: .abcd/.work.local/ via git info/exclude (local-only, not committed)\n" +
+		"created:  <repo>/.abcd/.work.local/NEXT.md\n" +
+		"created:  <repo>/.abcd/work/DECISIONS.md\n" +
+		"created:  <repo>/.abcd/work/CONTEXT.md\n" +
 		"created:  <repo>/AGENTS.md\n" +
 		"created:  <repo>/docs/README.md\n" +
 		"linked:   CLAUDE.md -> AGENTS.md\n" +
@@ -152,7 +153,7 @@ func TestScaffoldGolden_Tracked(t *testing.T) {
 	assertGolden(t, repo, out, wantPaths, wantOut)
 }
 
-// TestScaffoldGolden_Private pins --private (the .work.local/ layer only).
+// TestScaffoldGolden_Private pins --private (the .abcd/.work.local/ layer only).
 func TestScaffoldGolden_Private(t *testing.T) {
 	templates, repo := goldenRepo(t)
 	out := runScaffold(t, ScaffoldOptions{
@@ -160,19 +161,20 @@ func TestScaffoldGolden_Private(t *testing.T) {
 	})
 
 	wantPaths := []string{
-		".work.local",
-		".work.local/CONTEXT.md",
-		".work.local/DECISIONS.md",
-		".work.local/ISSUES.md",
-		".work.local/NEXT.md",
-		".work.local/logs",
-		".work.local/scratch",
+		".abcd",
+		".abcd/.work.local",
+		".abcd/.work.local/CONTEXT.md",
+		".abcd/.work.local/DECISIONS.md",
+		".abcd/.work.local/ISSUES.md",
+		".abcd/.work.local/NEXT.md",
+		".abcd/.work.local/logs",
+		".abcd/.work.local/scratch",
 	}
-	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
-		"created:  <repo>/.work.local/NEXT.md\n" +
-		"created:  <repo>/.work.local/DECISIONS.md\n" +
-		"created:  <repo>/.work.local/CONTEXT.md\n" +
-		"created:  <repo>/.work.local/ISSUES.md\n" +
+	wantOut := "excluded: .abcd/.work.local/ via git info/exclude (local-only, not committed)\n" +
+		"created:  <repo>/.abcd/.work.local/NEXT.md\n" +
+		"created:  <repo>/.abcd/.work.local/DECISIONS.md\n" +
+		"created:  <repo>/.abcd/.work.local/CONTEXT.md\n" +
+		"created:  <repo>/.abcd/.work.local/ISSUES.md\n" +
 		"done: goldenproj (private mode — no tracked files were created or modified)\n"
 
 	assertGolden(t, repo, out, wantPaths, wantOut)
@@ -188,30 +190,30 @@ func TestScaffoldGolden_Attribution(t *testing.T) {
 
 	wantPaths := []string{
 		".abcd",
+		".abcd/.work.local",
+		".abcd/.work.local/NEXT.md",
+		".abcd/.work.local/logs",
+		".abcd/.work.local/scratch",
 		".abcd/development",
 		".abcd/development/decisions",
 		".abcd/development/plans",
 		".abcd/development/research",
+		".abcd/work",
+		".abcd/work/CONTEXT.md",
+		".abcd/work/DECISIONS.md",
 		".githooks",
 		".githooks/prepare-commit-msg",
 		".pre-commit-config.yaml",
-		".work",
-		".work.local",
-		".work.local/NEXT.md",
-		".work.local/logs",
-		".work.local/scratch",
-		".work/CONTEXT.md",
-		".work/DECISIONS.md",
 		"AGENTS.md",
 		"CLAUDE.md",
 		"GEMINI.md",
 		"docs",
 		"docs/README.md",
 	}
-	wantOut := "excluded: .work.local/ via git info/exclude (local-only, not committed)\n" +
-		"created:  <repo>/.work.local/NEXT.md\n" +
-		"created:  <repo>/.work/DECISIONS.md\n" +
-		"created:  <repo>/.work/CONTEXT.md\n" +
+	wantOut := "excluded: .abcd/.work.local/ via git info/exclude (local-only, not committed)\n" +
+		"created:  <repo>/.abcd/.work.local/NEXT.md\n" +
+		"created:  <repo>/.abcd/work/DECISIONS.md\n" +
+		"created:  <repo>/.abcd/work/CONTEXT.md\n" +
 		"created:  <repo>/AGENTS.md\n" +
 		"created:  <repo>/docs/README.md\n" +
 		"linked:   CLAUDE.md -> AGENTS.md\n" +
