@@ -10,9 +10,13 @@ name: auto-release
 #
 # Only the NEWEST dated version is ever tagged: older CHANGELOG versions are left
 # alone, because tagging them at the current HEAD would mis-point an immutable
-# tag at the wrong code. Idempotent: when the newest version is already tagged,
-# `detect` reports should_release=false and neither `tag` nor `release` runs, so
-# an ordinary (non-release) push to main does nothing.
+# tag at the wrong code. Idempotent: when the newest version is already tagged AND
+# its GitHub Release exists, `detect` reports need_tag=need_release=false and
+# nothing runs, so an ordinary (non-release) push to main does nothing. If the tag
+# exists but its Release is MISSING (e.g. a transient publish failure), `detect`
+# sets need_release=true and re-invokes `release` ALONE — built from the tagged
+# commit (release_ref), never the moved-on HEAD — so a flaky publish never
+# permanently wedges the version.
 on:
   push:
     branches: [main]
@@ -39,7 +43,9 @@ jobs:
       contents: read
     outputs:
       version: ${{ steps.detect.outputs.version }}
-      should_release: ${{ steps.detect.outputs.should_release }}
+      need_tag: ${{ steps.detect.outputs.need_tag }}
+      need_release: ${{ steps.detect.outputs.need_release }}
+      release_ref: ${{ steps.detect.outputs.release_ref }}
     steps:
       - name: Check out the pushed commit (full history + tags)
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -49,10 +55,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Detect the newest untagged CHANGELOG version
+      - name: Detect the newest CHANGELOG version needing a tag or a re-release
         id: detect
-        # No ${{ }} interpolation in this script (injection-safe, zizmor): it
-        # reads CHANGELOG.md from the checkout and writes only to $GITHUB_OUTPUT.
+        # No ${{ }} interpolation in this run script (injection-safe, zizmor): it
+        # reads CHANGELOG.md from the checkout, queries git + gh, and writes only
+        # to $GITHUB_OUTPUT. GH_TOKEN arrives via env (not inline), so `gh release
+        # view` can read the repo's releases under the floor `contents: read`.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # The first heading of the form "## [X.Y.Z] - <date>" is the newest
@@ -62,17 +72,40 @@ jobs:
             | sed -E 's/^## \[([0-9]+\.[0-9]+\.[0-9]+)\] - .*/\1/' || true)"
           if [ -z "$version" ]; then
             echo "No dated CHANGELOG version found; nothing to release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "need_tag=false" >> "$GITHUB_OUTPUT"
+            echo "need_release=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           tag="v$version"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
-            echo "$tag already exists; nothing to release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            # The tag already exists, so it is NEVER moved (immutable). Re-release
+            # ONLY when its GitHub Release is missing: a transient publish failure
+            # must not permanently wedge the version. Build the re-release FROM the
+            # tagged commit, not the current (moved-on) main HEAD — resolve the tag
+            # to its immutable commit SHA and hand it to release.yml as `ref`.
+            echo "need_tag=false" >> "$GITHUB_OUTPUT"
+            # Deliberate fail-open: ANY non-zero from `gh release view` (a true 404
+            # or a transient rate-limit/auth blip) counts as "Release missing" and
+            # re-releases. Safe — `gh release create` (release.yml) has no --clobber,
+            # so a false positive just errors on the existing release and the
+            # success-gated prune never runs: one red run, no data loss. Parsing the
+            # error to isolate a real 404 was rejected — it would hinge on gh's
+            # wording and could misclassify a genuine missing-Release, re-wedging the
+            # very failure this heals.
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "$tag is tagged and released; nothing to do."
+              echo "need_release=false" >> "$GITHUB_OUTPUT"
+            else
+              commit="$(git rev-parse --verify "$tag^{commit}")"
+              echo "$tag is tagged but has NO GitHub Release; re-releasing from $commit."
+              echo "need_release=true" >> "$GITHUB_OUTPUT"
+              echo "release_ref=$commit" >> "$GITHUB_OUTPUT"
+            fi
           else
-            echo "$tag has no git tag; will tag and release."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "$tag has no git tag; will tag and release at github.sha."
+            echo "need_tag=true" >> "$GITHUB_OUTPUT"
+            echo "need_release=true" >> "$GITHUB_OUTPUT"
           fi
 
   # Create and push the annotated tag with the GITHUB_TOKEN. This is the ONLY
@@ -81,7 +114,7 @@ jobs:
   # release below invokes release.yml explicitly rather than relying on the tag.
   tag:
     needs: detect
-    if: needs.detect.outputs.should_release == 'true'
+    if: needs.detect.outputs.need_tag == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -121,7 +154,18 @@ jobs:
   # attestations: write).
   release:
     needs: [detect, tag]
-    if: needs.detect.outputs.should_release == 'true'
+    # Run when a release is needed AND the tag is in place — either the tag job
+    # just created it (success) or it already existed and was skipped. !cancelled()
+    # is required because `tag` is skipped on the re-release path; a bare success()
+    # would skip this job too. !cancelled() — not always(), matching the tripwire
+    # convention in release.yml — still fires on a SKIPPED `tag` but NOT on a
+    # cancelled run, so a manual cancel can never publish a half-finished state. A
+    # FAILED tag job (result neither success nor skipped) blocks the release, so a
+    # half-made tag never publishes.
+    if: >-
+      !cancelled()
+      && needs.detect.outputs.need_release == 'true'
+      && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
     permissions:
       contents: write        # release.yml: create the Release + verify the tag
       id-token: write        # release.yml: OIDC for build-provenance attestation
@@ -129,3 +173,7 @@ jobs:
     uses: ./.github/workflows/release.yml
     with:
       tag: v${{ needs.detect.outputs.version }}
+      # Empty on the fresh-tag path → release.yml falls back to github.sha (the
+      # commit just tagged). The resolved tagged-commit SHA on the re-release
+      # path, so the Release is built from the tag, not a newer main HEAD.
+      ref: ${{ needs.detect.outputs.release_ref }}
