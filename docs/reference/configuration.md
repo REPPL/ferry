@@ -480,7 +480,7 @@ missing refs, and reports any gate block read-only (populate the store, then re-
 
 ## What a bundle contains
 
-`ferry export` produces a portable `.zip` for an [offline move](../tutorials/getting-started.md#move-to-another-account-or-machine-offline).
+`ferry bundle export` produces a portable `.zip` for an [offline move](../tutorials/getting-started.md#move-to-another-account-or-machine-offline).
 It carries the **shared layer only**: the repo's git-tracked shared files (never
 untracked, ignored, or editor-backup files). It never carries secrets, anything under
 `~/.ssh/`, or the per-machine `.local` layer.
@@ -488,14 +488,14 @@ untracked, ignored, or editor-backup files). It never carries secrets, anything 
 The per-machine local layer (`local/**`, `ferry.local.toml`) is **gitignored by
 design**, so it is not tracked and does not enter the bundle. `--include-local` adds
 back the local-layer files that are actually **tracked** in the repo (the same
-`git ls-files` set export collects from) — so it bundles a local-layer file only if you
+`git ls-files` set `bundle export` collects from) — so it bundles a local-layer file only if you
 have force-tracked it. The local layer lands on the other side only when you pass
-`--include-local` on **both** export and import (a double opt-in).
+`--include-local` on **both** `bundle export` and `bundle import` (a double opt-in).
 
 Every included text file's content is secret-scanned, and every entry path is scanned
 for secret-shaped components; a binary is scanned for embedded private-key markers.
 Anything that trips these is withheld and reported, not bundled — symmetrically on
-import, which re-runs the same checks.
+`bundle import`, which re-runs the same checks.
 
 ## Related
 
