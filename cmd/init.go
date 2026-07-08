@@ -21,25 +21,26 @@ import (
 
 func init() {
 	// init-only flags, registered here (not commands.go, which the skeleton wave owns).
-	//   --fresh           force the fresh path (new repo) even if a source arg looks
-	//                     present; optionally takes a positional dir (see below)
-	//   --yes             don't ask anything: skip the first-run wizard (plain adopt
-	//                     with automatic secret extraction) and assume yes for the
-	//                     confirmations init would otherwise ask (the --github
-	//                     create-confirm; the closing apply confirm with --apply)
-	//   --apply           actually run apply at the end (default: show the plan and stop)
-	//   --no-wizard       skip the interactive first-run wizard (same fallback as --yes)
-	//   --repair          opt into the wizard's repair review (hardcoded-home,
-	//                     duplicate-PATH, dead-source fixes); needs the interactive
-	//                     wizard or --wizard-answers
-	//   --wizard-answers  drive the wizard from a TOML answers file (no TUI, no tty)
+	//   --fresh    force the fresh path (new repo) even if a source arg looks
+	//              present; optionally takes a positional dir (see below)
+	//   --yes      assume yes for the confirmations init would otherwise ASK
+	//              (the --github create-confirm; the closing apply confirm with
+	//              --apply). It does NOT skip the wizard — use --wizard=off for that.
+	//   --apply    actually run apply at the end (default: show the plan and stop)
+	//   --wizard   first-run wizard mode: off | interactive | answers:<file>.
+	//              off = skip the wizard (plain adopt with automatic secret
+	//              extraction); interactive = force the TUI; answers:<file> = drive
+	//              the wizard from a TOML answers file (no TUI, no tty). Empty (the
+	//              default) is interactive on a real tty pair, else off.
+	//   --repair   opt into the wizard's repair review (hardcoded-home,
+	//              duplicate-PATH, dead-source fixes); needs the interactive wizard
+	//              or --wizard=answers:<file> (conflicts with --wizard=off)
 	initCmd.Flags().Bool("fresh", false, "set up a NEW config repo (capture this machine) instead of cloning")
-	initCmd.Flags().Bool("yes", false, "don't ask anything: skip the first-run wizard (adopt with automatic secret extraction) and assume yes for init's confirmations")
+	initCmd.Flags().Bool("yes", false, "assume yes for init's confirmations (the --github create-confirm and the closing --apply confirm); does NOT skip the wizard — use --wizard=off")
 	initCmd.Flags().Bool("apply", false, "run apply at the end of init (default: show the plan and stop)")
 	initCmd.Flags().Bool("github", false, "create a NEW private GitHub repo via the gh CLI and manage it as ferry's remote")
-	initCmd.Flags().Bool("no-wizard", false, "skip the interactive first-run wizard (plain adopt with automatic secret extraction)")
+	initCmd.Flags().String("wizard", "", "first-run wizard mode: off | interactive | answers:<file> (default: interactive on a real tty, else off)")
 	initCmd.Flags().Bool("repair", false, "review opt-in repairs (hardcoded home paths, duplicate PATH exports, dead source lines) in the wizard")
-	initCmd.Flags().String("wizard-answers", "", "drive the first-run wizard from a TOML answers file instead of the interactive TUI")
 }
 
 // defaultRepoDir returns ferry's neutral, ferry-owned default location for a
@@ -82,8 +83,15 @@ func runInit(c *cobra.Command, args []string) error {
 	fresh, _ := c.Flags().GetBool("fresh")
 	github, _ := c.Flags().GetBool("github")
 
+	// Validate --wizard up front (external CLI input) regardless of which route
+	// init takes, so a bogus mode errors clearly even on the clone/existing path
+	// where the wizard never runs.
+	if _, _, err := parseWizardMode(mustGetString(c, "wizard")); err != nil {
+		return err
+	}
+
 	// --repair is consent-per-finding by design: it REQUIRES the interactive
-	// wizard (or a --wizard-answers file, which replaces only the TUI). Reject
+	// wizard (or a --wizard=answers:<file>, which replaces only the TUI). Reject
 	// conflicting invocations BEFORE any work, naming the conflict (r2-m4).
 	if err := validateRepairFlags(c); err != nil {
 		return err
@@ -283,24 +291,19 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 
 // initFresh sets up a NEW config repo on the fresh path. It builds ONE
 // in-memory seedPlan — via the interactive wizard (both stdin AND stdout
-// ttys), the --wizard-answers data model, or the non-interactive
+// ttys), the --wizard=answers:<file> data model, or the non-interactive
 // gate-and-extract fallback — PURELY, then executes it (re-gate -> visible
 // .bak -> secret puts -> git init + seed). declined=true means the user
 // backed out at the preview gate: nothing was written, and runInit must not
 // write config.toml either.
 func initFresh(c *cobra.Command, in *bufio.Reader, out io.Writer, freshDir string) (repoPath string, declined bool, err error) {
 	errOut := c.ErrOrStderr()
-	yes, _ := c.Flags().GetBool("yes")
-	noWizard, _ := c.Flags().GetBool("no-wizard")
-	repair, _ := c.Flags().GetBool("repair")
-	answersPath, _ := c.Flags().GetString("wizard-answers")
+	opts, err := resolveFreshInitOpts(c)
+	if err != nil {
+		return "", false, err
+	}
 
-	plan, declined, err := buildInitSeedPlan(in, out, errOut, freshInitOpts{
-		yes:         yes,
-		noWizard:    noWizard,
-		repair:      repair,
-		answersPath: answersPath,
-	})
+	plan, declined, err := buildInitSeedPlan(in, out, errOut, opts)
 	if err != nil || declined {
 		return "", declined, err
 	}
@@ -308,22 +311,69 @@ func initFresh(c *cobra.Command, in *bufio.Reader, out io.Writer, freshDir strin
 	return repoPath, false, err
 }
 
-// freshInitOpts carries the wizard-relevant init flags.
+// freshInitOpts carries the resolved wizard-relevant init flags. mode is the
+// parsed --wizard mode ("interactive" | "off" | "answers"); answersPath is set
+// only for the answers mode. --yes is NOT carried here — it no longer steers
+// the wizard, only the confirmation-assent gates read it directly.
 type freshInitOpts struct {
-	yes         bool
-	noWizard    bool
-	repair      bool
+	mode        string
 	answersPath string
+	repair      bool
+}
+
+// parseWizardMode parses the --wizard flag value into a wizard mode plus an
+// optional answers-file path. Valid forms:
+//   - "" or "interactive" -> interactive (paint the TUI on a real tty pair,
+//     else fall back to the non-interactive adopt-and-extract);
+//   - "off"               -> skip the wizard (non-interactive fallback even on a tty);
+//   - "answers:<path>"    -> drive the wizard data model from the TOML <path>.
+//
+// Any other value errors, naming the valid forms. An empty answers path errors.
+// This VALIDATES an external CLI argument.
+func parseWizardMode(value string) (mode string, answersPath string, err error) {
+	switch value {
+	case "", "interactive":
+		return "interactive", "", nil
+	case "off":
+		return "off", "", nil
+	}
+	if rest, ok := strings.CutPrefix(value, "answers:"); ok {
+		if strings.TrimSpace(rest) == "" {
+			return "", "", fmt.Errorf("--wizard=answers: needs a file path (e.g. --wizard=answers:./init-answers.toml)")
+		}
+		return "answers", rest, nil
+	}
+	return "", "", fmt.Errorf("--wizard=%q is not a valid mode: use off, interactive, or answers:<file>", value)
+}
+
+// resolveFreshInitOpts reads --wizard and --repair off the command and builds
+// the wizard opts consumed by buildInitSeedPlan. Shared by the fresh and
+// --github routes so both parse --wizard identically.
+func resolveFreshInitOpts(c *cobra.Command) (freshInitOpts, error) {
+	mode, answersPath, err := parseWizardMode(mustGetString(c, "wizard"))
+	if err != nil {
+		return freshInitOpts{}, err
+	}
+	repair, _ := c.Flags().GetBool("repair")
+	return freshInitOpts{mode: mode, answersPath: answersPath, repair: repair}, nil
+}
+
+// mustGetString reads a string flag, ignoring the (never-nil for a registered
+// flag) lookup error — the flags below are all registered in init().
+func mustGetString(c *cobra.Command, name string) string {
+	v, _ := c.Flags().GetString(name)
+	return v
 }
 
 // buildInitSeedPlan builds the fresh-init seedPlan PURELY (no filesystem or
-// network mutation). Surface selection (pinned FLAG PRECEDENCE):
-//   - --wizard-answers drives the full data model (outranks the wizard-skip
-//     meaning of --yes / non-tty);
-//   - otherwise the interactive TUI wizard runs when BOTH stdin and stdout are
-//     ttys and neither --yes nor --no-wizard was given;
-//   - otherwise the non-interactive gate-and-extract fallback runs (no TUI,
-//     no prompts, never blocks on stdin).
+// network mutation). Surface selection keys off the resolved --wizard mode:
+//   - answers mode drives the full data model from the TOML file (outranks the
+//     tty check);
+//   - interactive mode paints the TUI wizard when BOTH stdin and stdout are
+//     ttys, else falls back;
+//   - off mode (or interactive without a full tty pair) runs the
+//     non-interactive gate-and-extract fallback (no TUI, no prompts, never
+//     blocks on stdin).
 func buildInitSeedPlan(in *bufio.Reader, out, errOut io.Writer, opts freshInitOpts) (*seedPlan, bool, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -349,17 +399,18 @@ func buildInitSeedPlan(in *bufio.Reader, out, errOut io.Writer, opts freshInitOp
 	}
 
 	switch {
-	case opts.answersPath != "":
+	case opts.mode == "answers":
 		return buildAnswersSeedPlan(out, opts, p, det)
-	case !opts.yes && !opts.noWizard && stdinIsTerminal() && stdoutIsTerminal():
+	case opts.mode == "interactive" && stdinIsTerminal() && stdoutIsTerminal():
 		return runWizardTUI(in, out, opts, p, det)
 	default:
+		// off mode, or interactive without a full tty pair.
 		plan, err := buildFallbackSeedPlan(p, det, errOut)
 		return plan, false, err
 	}
 }
 
-// buildAnswersSeedPlan drives the wizard data model from a --wizard-answers
+// buildAnswersSeedPlan drives the wizard data model from a --wizard=answers:<file>
 // file: every invariant (pure-until-confirm, forced secret routing, gates,
 // scaffold, masking) runs identically to the TUI; only the TUI is bypassed.
 // The rendered preview goes to stdout before seeding.
@@ -521,25 +572,29 @@ func seedRepoFromPlan(dest string, plan *seedPlan) error {
 
 // validateRepairFlags enforces --repair's interactivity requirement: repairs
 // are consent-per-finding, so --repair needs the interactive wizard OR a
-// --wizard-answers file (which replaces only the TUI). Combined with --yes or
-// --no-wizard — or without a full tty pair and no answers file — it errors,
-// naming the conflict.
+// --wizard=answers:<file> (which replaces only the TUI). It CONFLICTS with
+// --wizard=off (which skips the wizard entirely), and, in interactive mode
+// without an answers file, requires a full tty pair. It no longer references
+// --yes: the narrowed --yes only assents to confirmations and does not skip the
+// wizard, so --repair --yes on a tty is valid.
 func validateRepairFlags(c *cobra.Command) error {
 	repair, _ := c.Flags().GetBool("repair")
 	if !repair {
 		return nil
 	}
-	if answers, _ := c.Flags().GetString("wizard-answers"); answers != "" {
+	mode, _, err := parseWizardMode(mustGetString(c, "wizard"))
+	if err != nil {
+		return err
+	}
+	switch mode {
+	case "answers":
 		return nil // the answers file satisfies the interactivity requirement
+	case "off":
+		return fmt.Errorf("--repair conflicts with --wizard=off: repairs are reviewed one by one in the wizard, which --wizard=off skips. Drop --wizard=off, or drive the wizard with --wizard=answers:<file>")
 	}
-	if yes, _ := c.Flags().GetBool("yes"); yes {
-		return fmt.Errorf("--repair conflicts with --yes: repairs are reviewed one by one in the interactive wizard, which --yes skips. Drop --yes, or drive the wizard with --wizard-answers")
-	}
-	if noWizard, _ := c.Flags().GetBool("no-wizard"); noWizard {
-		return fmt.Errorf("--repair conflicts with --no-wizard: repairs are reviewed one by one in the interactive wizard. Drop --no-wizard, or drive the wizard with --wizard-answers")
-	}
+	// interactive mode: needs a full tty pair (unless an answers file drives it).
 	if !stdinIsTerminal() || !stdoutIsTerminal() {
-		return fmt.Errorf("--repair needs an interactive terminal (repairs are reviewed one by one in the wizard, and stdin/stdout is not a tty here) — run it interactively, or drive the wizard with --wizard-answers")
+		return fmt.Errorf("--repair needs an interactive terminal (repairs are reviewed one by one in the wizard, and stdin/stdout is not a tty here) — run it interactively, or drive the wizard with --wizard=answers:<file>")
 	}
 	return nil
 }

@@ -21,14 +21,13 @@ ferry init [flags]
 ### Options
 
 ```
-      --apply                   run apply at the end of init (default: show the plan and stop)
-      --fresh                   set up a NEW config repo (capture this machine) instead of cloning
-      --github                  create a NEW private GitHub repo via the gh CLI and manage it as ferry's remote
-  -h, --help                    help for init
-      --no-wizard               skip the interactive first-run wizard (plain adopt with automatic secret extraction)
-      --repair                  review opt-in repairs (hardcoded home paths, duplicate PATH exports, dead source lines) in the wizard
-      --wizard-answers string   drive the first-run wizard from a TOML answers file instead of the interactive TUI
-      --yes                     don't ask anything: skip the first-run wizard (adopt with automatic secret extraction) and assume yes for init's confirmations
+      --apply           run apply at the end of init (default: show the plan and stop)
+      --fresh           set up a NEW config repo (capture this machine) instead of cloning
+      --github          create a NEW private GitHub repo via the gh CLI and manage it as ferry's remote
+  -h, --help            help for init
+      --repair          review opt-in repairs (hardcoded home paths, duplicate PATH exports, dead source lines) in the wizard
+      --wizard string   first-run wizard mode: off | interactive | answers:<file> (default: interactive on a real tty, else off)
+      --yes             assume yes for init's confirmations (the --github create-confirm and the closing --apply confirm); does NOT skip the wizard — use --wizard=off
 ```
 
 ### SEE ALSO

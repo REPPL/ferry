@@ -151,7 +151,7 @@ func wcSetup(t *testing.T, zshrc, answers string) *Sandbox {
 	s := NewSandbox(t)
 	s.WriteHomeFile(t, ".zshrc", zshrc, 0o644)
 	af := wizWriteAnswers(t, answers)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", af); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+af); code != 0 {
 		t.Fatalf("wcSetup: wizard init exited %d\n%s", code, errOut)
 	}
 	s.Repo = managedRepoPath(s)
@@ -334,7 +334,7 @@ func TestWizardCapture_AC_capture_roundtrip_sidecar(t *testing.T) {
 	s := NewSandbox(t)
 	s.WriteHomeFile(t, ".zshrc", wcSidecarZshrc, 0o644)
 	af := wizWriteAnswers(t, wcSidecarAnswers)
-	if _, errOut, code := s.Ferry("init", "--wizard-answers", af); code != 0 {
+	if _, errOut, code := s.Ferry("init", "--wizard=answers:"+af); code != 0 {
 		t.Fatalf("sidecar setup: init exited %d\n%s", code, errOut)
 	}
 	s.Repo = managedRepoPath(s)
