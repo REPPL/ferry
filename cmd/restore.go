@@ -26,6 +26,7 @@ func init() {
 	// when stdin is not a terminal, so evals never hang on empty stdin).
 	restoreCmd.Flags().Bool("packages", false, "also uninstall packages ferry recorded as self-installed")
 	restoreCmd.Flags().Bool("yes", false, "skip the confirmation prompt")
+	restoreCmd.Flags().String("undo", "", "re-apply a pre-restore snapshot by ID (printed after a restore), undoing that restore")
 	restoreCmd.Flags().Bool("purge-without-recovery", false, "remove ferry's own config AND the backup store after restore — DESTROYS the ability to undo this restore or re-restore later (irreversible; the default keeps the backup store)")
 }
 
@@ -61,6 +62,17 @@ func runRestore(c *cobra.Command, args []string) (retErr error) {
 	}
 
 	out := c.OutOrStdout()
+
+	// --undo <id> re-applies a pre-restore snapshot, reversing an earlier restore.
+	// It is its own self-contained, mutating path (takes the apply lock, registers
+	// terminal domains, replays the snapshot) and ignores the baseline/scoped/purge
+	// flow, so guard against combining it with those.
+	if undoID, _ := c.Flags().GetString("undo"); undoID != "" {
+		if len(args) > 0 || purge || doPackages {
+			return errors.New("restore --undo cannot be combined with domain arguments, --packages, or --purge-without-recovery")
+		}
+		return runUndoRestore(ctx, undoID, out)
+	}
 
 	// A full restore reverts the machine, so confirm — but stay non-interactive
 	// safe: proceed without prompting when --yes is set or stdin is not a TTY.
@@ -191,6 +203,46 @@ func confirmPurge(c *cobra.Command, yes bool, out io.Writer) bool {
 	return strings.TrimSpace(line) == "yes"
 }
 
+// runUndoRestore re-applies a previously taken pre-restore snapshot, reversing an
+// earlier `ferry restore`. It mutates managed paths, so it takes the SAME apply
+// lock as apply/restore and registers the terminal preference domains first (so a
+// snapshotted resource entry restores through its Resource hook), then replays the
+// snapshot via the engine. This is the user-facing entry point the post-restore
+// "undo with ..." message names — without it the snapshot was written but never
+// reachable.
+func runUndoRestore(ctx *cmdContext, snapID string, out io.Writer) (retErr error) {
+	eng, err := ctx.Engine()
+	if err != nil {
+		return err
+	}
+	lock, lockErr := eng.Lock()
+	if lockErr != nil {
+		var held *backup.ErrLockHeld
+		if errors.As(lockErr, &held) {
+			return fmt.Errorf("another ferry apply is in progress (pid %d); try again later", held.OwnerPID)
+		}
+		return fmt.Errorf("acquire apply lock: %w", lockErr)
+	}
+	defer func() {
+		if uErr := lock.Unlock(); uErr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("release apply lock: %w (the lock may be stale; remove it before the next apply)", uErr)
+			} else {
+				fmt.Fprintf(out, "warning: failed to release apply lock: %v; the lock may be stale and block the next apply\n", uErr)
+			}
+		}
+	}()
+
+	if err := registerTerminalDomains(ctx); err != nil {
+		return err
+	}
+	if err := eng.RestoreSnapshot(snapID); err != nil {
+		return fmt.Errorf("undo restore from snapshot %q: %w (run `ferry restore` first to produce a snapshot, and pass the ID it printed)", snapID, err)
+	}
+	fmt.Fprintf(out, "restore: undid the previous restore from snapshot %s\n", snapID)
+	return nil
+}
+
 // fullRestore reverts every managed path to its baseline. The engine snapshots
 // current state first (built into Restore), so the revert is itself reversible.
 func fullRestore(ctx *cmdContext, out io.Writer) error {
@@ -204,7 +256,7 @@ func fullRestore(ctx *cmdContext, out io.Writer) error {
 	}
 	fmt.Fprintln(out, "restore: reverted all managed paths to their pre-ferry baseline")
 	if snapID != "" {
-		fmt.Fprintf(out, "restore: pre-restore state snapshotted (%s); undo is possible if needed\n", snapID)
+		fmt.Fprintf(out, "restore: pre-restore state snapshotted (%s); undo with `ferry restore --undo %s`\n", snapID, snapID)
 	}
 	return nil
 }
@@ -276,7 +328,7 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 	}
 	fmt.Fprintf(out, "restore: reverted %s to baseline\n", strings.Join(restored, ", "))
 	if snapID != "" {
-		fmt.Fprintf(out, "restore: pre-restore state snapshotted (%s)\n", snapID)
+		fmt.Fprintf(out, "restore: pre-restore state snapshotted (%s); undo with `ferry restore --undo %s`\n", snapID, snapID)
 	}
 	return nil
 }

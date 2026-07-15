@@ -291,12 +291,13 @@ func stageStoreBlob(dir string, content []byte, origMode os.FileMode) (string, e
 }
 
 // writeStoreBlob writes a content payload into the secret-bearing store at the
-// effective (>=0600, stricter preserved) mode.
+// effective (>=0600, stricter preserved) mode. It routes through AtomicWrite so
+// the blob's DATA is fsync'd before the manifest that references it is flushed:
+// journal.record and snapshotCurrent write the blob then AtomicWrite the manifest,
+// and if only the manifest were durable after a crash, RollbackIncomplete would
+// later read a truncated/empty blob and write it over the user's intact file. A
+// plain os.WriteFile makes the blob's directory entry durable (via the manifest's
+// syncDir) but not its data pages; AtomicWrite closes that gap.
 func writeStoreBlob(blobPath string, content []byte, origMode os.FileMode) error {
-	mode := effectiveMode(origMode)
-	if err := os.WriteFile(blobPath, content, mode); err != nil {
-		return err
-	}
-	// Force the mode regardless of umask so the store never ends up looser.
-	return os.Chmod(blobPath, mode)
+	return AtomicWrite(blobPath, content, effectiveMode(origMode))
 }

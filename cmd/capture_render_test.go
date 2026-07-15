@@ -511,3 +511,34 @@ func TestCaptureOne_PromptLabelsVisible(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyHunks_PreservesTrailingNewlineShape is the F02 regression gate: an
+// all-accepted composition must equal the live file byte-for-byte, including its
+// trailing-newline shape. Otherwise a live file with no final newline composes to
+// live+"\n", which the shared route writes and then wedges the target in a
+// permanent, unclearable StateConflict.
+func TestApplyHunks_PreservesTrailingNewlineShape(t *testing.T) {
+	repo := "a\nb\nc\n"
+
+	// Live WITHOUT a trailing newline: composition must not append one.
+	live := "a\nX\nc"
+	hunks := diffHunks(repo, live)
+	accepted := make([]bool, len(hunks))
+	for i := range accepted {
+		accepted[i] = true
+	}
+	if got := applyHunks(repo, hunks, accepted, endsWithNewline([]byte(live))); got != live {
+		t.Errorf("no-trailing-newline: composition = %q, want live %q", got, live)
+	}
+
+	// Live WITH a trailing newline: composition must keep it.
+	live2 := "a\nX\nc\n"
+	hunks2 := diffHunks(repo, live2)
+	accepted2 := make([]bool, len(hunks2))
+	for i := range accepted2 {
+		accepted2[i] = true
+	}
+	if got := applyHunks(repo, hunks2, accepted2, endsWithNewline([]byte(live2))); got != live2 {
+		t.Errorf("trailing-newline: composition = %q, want live %q", got, live2)
+	}
+}

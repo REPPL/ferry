@@ -171,7 +171,7 @@ func captureAgentsOne(cc agentsCaptureCtx, ct agents.CaptureTarget) (bool, error
 		}
 	}
 
-	composed := applyHunks(string(ct.Content), hunks, accepted)
+	composed := applyHunks(string(ct.Content), hunks, accepted, endsWithNewline(liveBytes))
 	// Re-scan the composed content: never write secret material to the repo.
 	if secret.IsBlockedFromRepo(composed) {
 		reportAgentsSecretBlock(cc.out, ct.Label)

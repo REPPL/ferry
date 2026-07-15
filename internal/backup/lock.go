@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 )
@@ -72,27 +73,9 @@ func (e *Engine) Lock() (*Lock, error) {
 // unbounded spin that could livelock under sustained contention.
 func (e *Engine) lockWithAlive(aliveFn func(int) bool) (*Lock, error) {
 	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(e.lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, filePerm)
+		lock, err := e.publishLock()
 		if err == nil {
-			info := lockInfo{PID: os.Getpid(), AcquiredAt: time.Now().UTC()}
-			data, _ := json.MarshalIndent(info, "", "  ")
-			if _, werr := f.Write(data); werr != nil {
-				f.Close()
-				_ = os.Remove(e.lockPath)
-				return nil, werr
-			}
-			if serr := syncFile(f); serr != nil {
-				// We created the lockfile but cannot return a usable *Lock, so the caller
-				// has nothing to Unlock. Remove the just-created file (and close the fd)
-				// before returning, or it is orphaned: it records THIS live PID, so a
-				// later apply would wedge behind a lock "owned" by a running process that
-				// no longer holds it. Clean up on every post-creation error path.
-				f.Close()
-				_ = os.Remove(e.lockPath)
-				return nil, serr
-			}
-			f.Close()
-			return &Lock{path: e.lockPath, pid: info.PID}, nil
+			return lock, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
 			return nil, err
@@ -120,6 +103,52 @@ func (e *Engine) lockWithAlive(aliveFn func(int) bool) (*Lock, error) {
 	// Both attempts lost a race to another fresh acquirer.
 	info, _ := readLockInfo(e.lockPath)
 	return nil, &ErrLockHeld{OwnerPID: info.PID, AcquiredAt: info.AcquiredAt}
+}
+
+// publishLock atomically creates the lockfile with COMPLETE contents, or returns
+// fs.ErrExist if a lock is already present. It writes the PID/timestamp payload
+// to a same-directory temp file, fsyncs it, then os.Link()s it into place: link
+// fails with EEXIST when the destination exists, so the lock only ever becomes
+// visible AFTER its contents are fully written and durable.
+//
+// This closes the create-then-write race the plain O_CREATE|O_EXCL path had: a
+// concurrent acquirer that failed the create used to be able to read the
+// half-written (empty) lockfile of a LIVE owner, conclude it was corrupt/stale,
+// and reclaim it — letting two applies run at once. With atomic publish there is
+// no window in which a live owner's lock is observable but not yet readable, so
+// readLockInfo only ever sees a complete payload (or a genuinely corrupt one from
+// out-of-band tampering / a crash, which reclaim still handles).
+func (e *Engine) publishLock() (*Lock, error) {
+	info := lockInfo{PID: os.Getpid(), AcquiredAt: time.Now().UTC()}
+	data, _ := json.MarshalIndent(info, "", "  ")
+
+	tmp, err := os.CreateTemp(filepath.Dir(e.lockPath), "lock-*.tmp")
+	if err != nil {
+		return nil, err
+	}
+	tmpName := tmp.Name()
+	if _, werr := tmp.Write(data); werr != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return nil, werr
+	}
+	if serr := syncFile(tmp); serr != nil {
+		tmp.Close()
+		_ = os.Remove(tmpName)
+		return nil, serr
+	}
+	if cerr := tmp.Close(); cerr != nil {
+		_ = os.Remove(tmpName)
+		return nil, cerr
+	}
+	// Atomic publish. EEXIST (fs.ErrExist) is the "lock already held" signal the
+	// caller decides held-vs-stale on; the temp is always cleaned up.
+	if lerr := os.Link(tmpName, e.lockPath); lerr != nil {
+		_ = os.Remove(tmpName)
+		return nil, lerr
+	}
+	_ = os.Remove(tmpName)
+	return &Lock{path: e.lockPath, pid: info.PID}, nil
 }
 
 // Unlock releases the lock. Releasing a lock not owned by this process is a

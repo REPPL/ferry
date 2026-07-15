@@ -363,7 +363,7 @@ func captureOne(cc captureCtx) (bool, error) {
 	}
 
 	// Compose the captured content = repo content with accepted hunks applied.
-	captured := applyHunks(string(cc.repoBytes), hunks, accepted)
+	captured := applyHunks(string(cc.repoBytes), hunks, accepted, endsWithNewline(cc.liveBytes))
 	spanPatched := false
 	var storedRefs []string // refs Put by the span consent (for honest refusal notices)
 
@@ -893,7 +893,7 @@ func captureZshSidecar(cc captureCtx, home string) (wrote bool, offered bool, er
 		}
 	}
 
-	composed := applyHunks(string(repoBytes), hunks, accepted)
+	composed := applyHunks(string(repoBytes), hunks, accepted, endsWithNewline(reviewLive))
 	var sidecarStoredRefs []string // refs Put by the span consent (for honest refusal notices)
 	// Re-scan the composed result: never write secret material to the overlay.
 	if secret.IsBlockedFromRepo(composed) {
@@ -1291,7 +1291,16 @@ func diffHunks(oldText, newText string) []hunk {
 // applyHunks reconstructs the captured text from repo's lines, replacing each
 // ACCEPTED hunk's old region with its new lines and leaving rejected hunks as
 // repo's original lines.
-func applyHunks(oldText string, hunks []hunk, accepted []bool) string {
+//
+// trailingNewline carries the NEW (live) side's final-newline shape. The line
+// model here terminates every emitted line with '\n', so without this the
+// composed result ALWAYS ends in '\n'; when the live file has no trailing newline
+// the all-accepted composition would then be live+"\n" != live, and the shared
+// route would write that, leaving the target wedged in a permanent StateConflict
+// that capture can never clear (the only difference is the trailing byte, which
+// yields zero reviewable hunks). Stamping the live side's shape keeps composed ==
+// live when every hunk is accepted.
+func applyHunks(oldText string, hunks []hunk, accepted []bool, trailingNewline bool) string {
 	o := splitLines(oldText)
 	var b strings.Builder
 	pos := 0
@@ -1317,7 +1326,17 @@ func applyHunks(oldText string, hunks []hunk, accepted []bool) string {
 		b.WriteString(o[pos])
 		b.WriteByte('\n')
 	}
-	return b.String()
+	out := b.String()
+	if !trailingNewline && strings.HasSuffix(out, "\n") {
+		out = out[:len(out)-1]
+	}
+	return out
+}
+
+// endsWithNewline reports whether content's final byte is a newline — the shape
+// applyHunks must preserve so a captured composition matches the live file.
+func endsWithNewline(content []byte) bool {
+	return len(content) > 0 && content[len(content)-1] == '\n'
 }
 
 // localHunkDelta builds the zsh `.local` sidecar body: ONLY the added/changed

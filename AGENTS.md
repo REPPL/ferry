@@ -59,10 +59,12 @@ on the internal packages, and the full eval suite against a real Linux binary.
   `docs/`) stays host-agnostic. The one sanctioned place to name the AI
   assistant is attribution: the "Built with Claude Code" badge in `README.md`.
   Private, unpublished tool names never appear in any committed file.
-- **Commits stay clean.** No `Co-Authored-By:` or `Assisted-by:` trailers for
-  AI, no "Generated with" lines, no session links. The human is the author of
-  record, responsible for all AI-assisted output — its correctness, licensing,
-  and fit for the project.
+- **AI-assisted commits carry an `Assisted-by:` trailer**, kernel format
+  (`Assisted-by: Claude:claude-fable-5`) — disclosure, not authorship. Never
+  `Co-Authored-By:` for AI (it asserts an authorship the tool does not hold and
+  inflates the contributor graph). No "Generated with" lines or session links.
+  The human is the author of record, responsible for all AI-assisted output —
+  its correctness, licensing, and fit for the project.
 
 ## Working memory
 

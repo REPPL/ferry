@@ -154,6 +154,13 @@ func BackupForMigration(path string, found int) (string, error) {
 		tmp.Close()
 		return "", err
 	}
+	// fsync the temp before the os.Link publish so the backup's DATA is durable: a
+	// crash otherwise leaves a zero-length migration backup, defeating the "original
+	// copy wins" recovery guarantee.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return "", err
+	}
 	if err := tmp.Close(); err != nil {
 		return "", err
 	}
