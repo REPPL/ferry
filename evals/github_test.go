@@ -307,10 +307,16 @@ func newPushFailingGitStub(t *testing.T) gitStub {
 	logPath := filepath.Join(dir, "git_invocations.log")
 	// Log argv WITH the inherited GIT_TERMINAL_PROMPT so a push line records whether it
 	// was noninteractive (PLAN step 1: every git subprocess runs GIT_TERMINAL_PROMPT=0).
+	// Skip -C/-c and their VALUES when scanning for the subcommand so the forced
+	// push-failure still triggers when ferry prepends hardening `-c key=val` global
+	// options to the push (GitPush mirrors sync's runHardenedGit).
 	script := "#!/bin/sh\n" +
 		"printf '%s [GTP=%s]\\n' \"$*\" \"${GIT_TERMINAL_PROMPT:-<unset>}\" >> " + shellQuote(logPath) + "\n" +
+		"skipnext=0\n" +
 		"for a in \"$@\"; do\n" +
+		"  if [ \"$skipnext\" = 1 ]; then skipnext=0; continue; fi\n" +
 		"  case \"$a\" in\n" +
+		"    -C|-c) skipnext=1 ;;\n" +
 		"    push) echo 'mock: push failed (network)' 1>&2; exit 1 ;;\n" +
 		"    -*) : ;;\n" +
 		"    *) break ;;\n" +
@@ -345,10 +351,18 @@ func newPushRecordingGitStub(t *testing.T) gitStub {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "git_invocations.log")
 	// Log argv WITH the inherited GIT_TERMINAL_PROMPT (noninteractive invariant).
+	// Skip -C/-c and their VALUES when scanning for the subcommand, so the recorder
+	// stays correct when ferry prepends hardening `-c key=val` global options to the
+	// push (as GitPush now does, mirroring sync's runHardenedGit). Without the skip,
+	// a `-c` value like `core.hooksPath=/dev/null` reads as a positional and the loop
+	// breaks before reaching `push`, falling through to a real (auth-failing) push.
 	script := "#!/bin/sh\n" +
 		"printf '%s [GTP=%s]\\n' \"$*\" \"${GIT_TERMINAL_PROMPT:-<unset>}\" >> " + shellQuote(logPath) + "\n" +
+		"skipnext=0\n" +
 		"for a in \"$@\"; do\n" +
+		"  if [ \"$skipnext\" = 1 ]; then skipnext=0; continue; fi\n" +
 		"  case \"$a\" in\n" +
+		"    -C|-c) skipnext=1 ;;\n" +
 		"    push) echo 'mock: push recorded (offline success)'; exit 0 ;;\n" +
 		"    -*) : ;;\n" +
 		"    *) break ;;\n" +

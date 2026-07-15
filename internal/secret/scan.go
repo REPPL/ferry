@@ -14,8 +14,10 @@ import (
 // plus the STRUCTURAL field names (F5) that carry secrets under non-obvious keys:
 // private_key_id (GCP service-account), pat (personal access token), bearer.
 // refresh_token is already covered by the `token` word via the key-prefix chain.
-const credKeyword = `(password|passwd|secret|secret[_-]?key|api[_-]?key|apikey|` +
+const credKeyword = `(password|passwd|passphrase|pass|pwd|` +
+	`secret|secret[_-]?key|api[_-]?key|apikey|` +
 	`access[_-]?key|client[_-]?secret|token|auth[_-]?token|` +
+	`credentials?|(?:encryption|signing|master)[_-]?key|` +
 	`private[_-]?key[_-]?id|bearer|pat)`
 
 // Confidence ranks how sure a finding is. Only High findings block repo routing
@@ -107,6 +109,16 @@ var (
 	// prefix), so prose like `# password rotation notes` never matches. An
 	// optional quote on both sides of the key admits the QUOTED-JSON key form
 	// (`"api_key": "value"`) so structural JSON secrets are scanned (F5).
+	//
+	// The value is captured by an alternation, NOT a single `["']?([^"'\s]+)["']?`
+	// group: that earlier form stopped the capture at the first whitespace, so a
+	// QUOTED multi-word secret (`password = "my dog is rex1"`) yielded only its
+	// first word — and if that fragment was under the 6-char floor, or the quote
+	// was space-padded, the assignment produced NO finding at all and a plaintext
+	// passphrase reached the shared repo. The alternation captures a double-quoted
+	// (group 2) or single-quoted (group 3) value WHOLE (interior whitespace and
+	// all), falling back to an unquoted run (group 4). scanLine takes the first
+	// non-empty of the three and runs the SAME isLikelySecretValue gate on it.
 	secretAssignment = regexp.MustCompile(`(?i)(?:^\s*|export\s+)` +
 		`["']?` +
 		`(?:[A-Za-z0-9]+[._-])*` +
@@ -114,7 +126,7 @@ var (
 		`(?:[._-][A-Za-z0-9]+)*` +
 		`["']?` +
 		`\s*[:=]\s*` +
-		`["']?([^"'\s]+)["']?`)
+		`(?:"([^"]*)"|'([^']*)'|([^"'\s]+))`)
 
 	// credentialKey matches ONLY the KEY portion of a credential assignment
 	// (line-start/after-export, optional quotes, credKeyword as a
@@ -200,6 +212,16 @@ var (
 	// password (redis://:pw@host) blocks. A URL with a user but no password
 	// (rsync://mirror@host) captures an empty group and is likewise not flagged.
 	urlCredential = regexp.MustCompile(`(?i)[a-z][a-z0-9+.-]*://[^/@\s:]*(?::([^/@\s]*))?@`)
+
+	// authHeaderToken matches an HTTP Authorization credential in VALUE position:
+	// `Authorization: Bearer <tok>` / `Basic <tok>`. credKeyword's `bearer` only
+	// fires when it is the assignment KEY (line-start/after-export), so a token
+	// carried as a header VALUE inside a generic dotfile (~/.curlrc, ~/.wgetrc, a
+	// custom tool config) slipped every gate — the entropy backstop needs 24+
+	// chars, and these tokens are often shorter. The captured token is gated by
+	// isNonPlaceholderSecret + isSecretShaped + a small length floor so prose like
+	// `Bearer authentication` (no digits → not secret-shaped) is not flagged.
+	authHeaderToken = regexp.MustCompile(`(?i)\b(?:bearer|basic)\s+([^\s"']+)`)
 )
 
 // entropyThreshold is the Shannon-entropy floor (bits per character) for the
@@ -265,6 +287,25 @@ func HasKeyMarker(data []byte) bool {
 // keyMarkerRE matches any PEM private-key BEGIN header regardless of the key-type
 // label between "begin" and "private key" (matched on lowercased bytes).
 var keyMarkerRE = regexp.MustCompile(`begin[ \-]*[a-z0-9 ]*private key`)
+
+// HasBinarySecret reports whether raw bytes carry either a private-key header
+// (PEM/OpenSSH/PGP, via HasKeyMarker) OR a constant-prefix provider token
+// (AWS/GitHub/GCP/Slack/OpenAI/Stripe, via the namedToken regex applied to bytes).
+// It is the binary-safe secret check for opaque payloads the line-based text
+// scanners cannot handle. Bundle EXPORT and IMPORT/validate both use it, so a
+// binary carrying key material OR a recognizable token is refused symmetrically on
+// both sides — closing the gap where a `ghp_…`/`AKIA…` token embedded in a tracked
+// binary (a compiled config, a binary plist) was bundled because only PEM headers
+// were checked.
+func HasBinarySecret(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	if HasKeyMarker(data) {
+		return true
+	}
+	return namedToken.Match(data)
+}
 
 // ScanText scans content line-by-line and returns every secret finding, with
 // 1-based line numbers. Use this for text domains (dotfiles, wg .conf, shell
@@ -358,12 +399,27 @@ func leadingIndent(s string) int {
 	return n
 }
 
-// ScanValue scans a single opaque value as a whole (no line splitting) and
-// returns findings with Line == 0. Use this for binary/opaque domains where
-// line-by-line review is meaningless (e.g. a plist string value).
+// ScanValue scans a single opaque value and returns findings with Line == 0.
+// Use this for binary/opaque domains where line-by-line review is meaningless
+// to the caller (e.g. a plist string value gated whole at capture time).
+//
+// It splits the value on newlines and runs the per-line detectors over EACH
+// line, still stamping Line 0. The per-line pass is required for correctness:
+// secretAssignment, credentialKey and npmAuthLine are `^`-anchored WITHOUT the
+// `(?m)` flag, so scanning the whole multi-line value at once could only ever
+// match its FIRST line — a credential assignment on any later line of a
+// multi-line plist/preference blob slipped the gate entirely. Scanning each
+// line closes that gap while keeping the Line-0 (no line context) contract the
+// opaque-domain callers expect.
 func ScanValue(value string) Findings {
-	// Reuse the per-line detectors over the whole value, but report Line 0.
-	return scanLine(value, 0)
+	if !strings.ContainsAny(value, "\n\r") {
+		return scanLine(value, 0)
+	}
+	var out Findings
+	for _, raw := range strings.Split(value, "\n") {
+		out = append(out, scanLine(strings.TrimRight(raw, "\r"), 0)...)
+	}
+	return out
 }
 
 // scanLine runs every detector against a single piece of text and returns the
@@ -407,7 +463,18 @@ func scanLine(text string, lineNo int) Findings {
 	}
 
 	if m := secretAssignment.FindStringSubmatch(text); m != nil {
-		key, val := m[1], m[2]
+		key := m[1]
+		// The value is whichever of the double-quoted (m[2]), single-quoted (m[3]),
+		// or unquoted (m[4]) alternatives matched; only one is ever non-empty for a
+		// real value. An empty quoted value ("") leaves all three empty and falls
+		// through isLikelySecretValue's floor as before.
+		val := m[2]
+		if val == "" {
+			val = m[3]
+		}
+		if val == "" {
+			val = m[4]
+		}
 		if isLikelySecretValue(val) {
 			out = append(out, Finding{
 				Rule:       "secret-assignment",
@@ -450,6 +517,22 @@ func scanLine(text string, lineNo int) Findings {
 				Confidence: High,
 				Line:       lineNo,
 				Detail:     "npm registry auth token",
+			})
+			return out
+		}
+	}
+
+	// Authorization header token in value position (Bearer/Basic <tok>). Gated so a
+	// prose "Bearer" mention or a placeholder token does not fire: the token must be
+	// non-placeholder, secret-shaped (letters+digits, base64/hex alphabet), and at
+	// least 8 chars.
+	if m := authHeaderToken.FindStringSubmatch(text); m != nil {
+		if tok := m[1]; len(tok) >= 8 && isSecretShaped(tok) && isNonPlaceholderSecret(tok) {
+			out = append(out, Finding{
+				Rule:       "auth-header-token",
+				Confidence: High,
+				Line:       lineNo,
+				Detail:     "Authorization header token",
 			})
 			return out
 		}
@@ -505,6 +588,16 @@ func isLikelySecretValue(val string) bool {
 	if len(val) < 6 {
 		return false
 	}
+	// A filesystem PATH is not a secret, even under a credential-shaped key: keys
+	// like `pwd`, `credentials_file`, `signing_key`, or `ssl_key` routinely point at
+	// a file rather than carrying key material. Excluding path-shaped values here is
+	// what lets credKeyword cover those abbreviated/adjacent names (pwd, pass,
+	// credentials, *_key) without turning every `*_file = /some/path` into a false
+	// positive. Real opaque secrets are not path-shaped (base64/hex segments carry
+	// uppercase+digits, not lowercase path words), so this does not mask them.
+	if looksLikePath(val) {
+		return false
+	}
 	return isNonPlaceholderSecret(val)
 }
 
@@ -521,15 +614,32 @@ func isNonPlaceholderSecret(val string) bool {
 		return false
 	}
 	// Reject shell/env interpolation and ferry's own placeholder: these carry no
-	// literal secret.
-	if strings.Contains(val, "${") || strings.HasPrefix(val, "$") {
+	// literal secret. The `$` test is NARROW — only `${VAR}` / `$(cmd)` expansions
+	// or a value that is ENTIRELY a bare `$VAR` reference. A blanket "starts with $"
+	// exemption also swallowed real leetspeak passwords (`$tr0ngPassw0rd!`,
+	// `$uper$ecretPass99`), which are literal secrets, not interpolation.
+	if strings.Contains(val, "${") || strings.Contains(val, "$(") {
+		return false
+	}
+	if shellVarRef.MatchString(val) {
 		return false
 	}
 	if strings.Contains(val, "{{") {
 		return false
 	}
+	// A `<...>` angle-bracket span is a template placeholder (`<your-password>`),
+	// but a bare `<` anywhere used to exempt the whole value — so `abc<def123` (a
+	// literal secret with an interior `<`) slipped through. Require the structural
+	// pair. `...` is likewise only a placeholder when it stands alone, not as a
+	// substring of a longer literal value.
+	if anglePlaceholder.MatchString(val) {
+		return false
+	}
+	if strings.TrimSpace(val) == "..." {
+		return false
+	}
 	lower := strings.ToLower(val)
-	for _, ph := range []string{"changeme", "xxxx", "placeholder", "your_", "example", "redacted", "<", "..."} {
+	for _, ph := range []string{"changeme", "xxxx", "placeholder", "your_", "example", "redacted"} {
 		if strings.Contains(lower, ph) {
 			return false
 		}
@@ -537,13 +647,24 @@ func isNonPlaceholderSecret(val string) bool {
 	return true
 }
 
+// shellVarRef matches a value that is ENTIRELY one shell/env variable reference
+// (`$FOO`, `${FOO}`, `$foo_bar`) — genuine interpolation carrying no literal
+// secret. A value that merely STARTS with `$` but continues with other characters
+// (`$tr0ngPassw0rd!`) is a literal, not a reference, and is NOT exempted.
+var shellVarRef = regexp.MustCompile(`^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$`)
+
+// anglePlaceholder matches an angle-bracket template span like `<your-password>`
+// or `<PASSWORD>`. Used to exempt structural placeholders without exempting every
+// value that merely contains a stray `<`.
+var anglePlaceholder = regexp.MustCompile(`<[^<>]*>`)
+
 // candidateTokens splits a line into opaque tokens suitable for the entropy
 // heuristic. It splits on whitespace and a few separators that commonly bound a
 // token (= : , ; ( ) " ' ), so an embedded "KEY=<token>" yields the token alone.
 func candidateTokens(text string) []string {
 	fields := strings.FieldsFunc(text, func(r rune) bool {
 		switch r {
-		case ' ', '\t', '=', ':', ',', ';', '(', ')', '"', '\'':
+		case ' ', '\t', '\n', '\r', '=', ':', ',', ';', '(', ')', '"', '\'':
 			return true
 		default:
 			return false

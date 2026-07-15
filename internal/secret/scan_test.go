@@ -340,3 +340,137 @@ func TestHasKeyMarker(t *testing.T) {
 		t.Errorf("HasKeyMarker fired on ordinary config text")
 	}
 }
+
+// TestScanText_QuotedMultiWordCredential is the regression gate for the quoted
+// multi-word value bypass: a credential assignment whose QUOTED value contains
+// interior whitespace (or a short leading word) must still be flagged. The
+// earlier value capture stopped at the first whitespace, so these slipped the
+// gate entirely and reached the shared repo in plaintext.
+func TestScanText_QuotedMultiWordCredential(t *testing.T) {
+	cases := []string{
+		`password = "my dog is rex1"`,        // multi-word, short first word
+		`password = "my dog is x9"`,          // multi-word, sub-6-char first word
+		`password = " paddedSecret123"`,      // leading space inside the quote
+		`secret: 'correct horse battery st'`, // single-quoted multi-word
+	}
+	for _, c := range cases {
+		if fs := ScanText(c); !fs.HasHigh() {
+			t.Errorf("expected high finding for quoted multi-word credential %q, got %+v", c, fs)
+		}
+	}
+	// Preserve the no-false-positive discipline: empty and placeholder quoted
+	// values must still NOT be flagged.
+	for _, c := range []string{
+		`password = ""`,
+		`api_key = "${API_KEY}"`,
+		`secret = "{{ferry.secret \"x.y\"}}"`,
+		`token = "changeme now please"`, // placeholder word inside a multi-word value
+	} {
+		if fs := ScanText(c); fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: placeholder/empty quoted value %q flagged: %+v", c, fs)
+		}
+	}
+}
+
+// TestScanValue_MultiLineAssignment is the regression gate for the multi-line
+// ScanValue bypass: a credential assignment on a NON-FIRST line of an opaque
+// value (e.g. a defaults-export plist blob) must be caught. The ^-anchored
+// detectors previously only ever matched line 1 of the whole value.
+func TestScanValue_MultiLineAssignment(t *testing.T) {
+	value := "line one\nline two\ndb_password = realSecretValue99\nline four"
+	if fs := ScanValue(value); !fs.HasHigh() {
+		t.Fatalf("expected high finding for credential on a non-first line, got %+v", fs)
+	}
+	// A single-line value keeps the original whole-value behaviour.
+	if fs := ScanValue(`password = realSecretValue99`); !fs.HasHigh() {
+		t.Errorf("single-line ScanValue regressed: %+v", fs)
+	}
+	// An ordinary multi-line value with no secret must not over-block.
+	if fs := ScanValue("first line\nsecond line\nthird line"); fs.HasHigh() {
+		t.Errorf("FALSE POSITIVE: benign multi-line value flagged: %+v", fs)
+	}
+}
+
+// TestScanText_ExpandedCredentialKeywords is the F09 regression gate: common
+// abbreviated/adjacent credential key names must now block, while their
+// path-valued cousins (`*_file`, `*_path`) must NOT (the value is a filesystem
+// path, not key material).
+func TestScanText_ExpandedCredentialKeywords(t *testing.T) {
+	block := []string{
+		`DB_PASS=SuperSecret99x`,
+		`PASSPHRASE=hunter2hunter2z`,
+		`ENCRYPTION_KEY=q7GmL2vTn9wRx4z`,
+		`credentials=abcdef123456ghij`,
+		`signing_key: myS1gningKeyValue`,
+	}
+	for _, c := range block {
+		if fs := ScanText(c); !fs.HasHigh() {
+			t.Errorf("expected high finding for %q, got %+v", c, fs)
+		}
+	}
+	// Path-valued credential-shaped keys must NOT be flagged (F09 guard).
+	pass := []string{
+		`pwd = /home/alex/project`,
+		`credentials_file = ~/.aws/credentials`,
+		`signing_key_path = /etc/keys/id_rsa`,
+		`ssl_key = ./certs/server.key`,
+	}
+	for _, c := range pass {
+		if fs := ScanText(c); fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: path-valued credential key %q flagged: %+v", c, fs)
+		}
+	}
+}
+
+// TestScanText_LiteralDollarAndAngleSecrets is the F08 regression gate: a literal
+// secret that merely starts with `$` or contains an interior `<`/`...` must be
+// caught, while genuine interpolation and angle-bracket templates stay exempt.
+func TestScanText_LiteralDollarAndAngleSecrets(t *testing.T) {
+	block := []string{
+		`password=$tr0ngPassw0rd!`,    // leetspeak literal, not a var ref
+		`password=$uper$ecretPass99`,  // interior $, not interpolation
+		`password=abc<def123ghi`,      // interior < but no template pair
+		`password=abc...def123456ghi`, // ellipsis inside a longer literal
+	}
+	for _, c := range block {
+		if fs := ScanText(c); !fs.HasHigh() {
+			t.Errorf("expected high finding for literal secret %q, got %+v", c, fs)
+		}
+	}
+	pass := []string{
+		`password=${DB_PASSWORD}`,   // ${...} interpolation
+		`password=$DB_PASSWORD`,     // whole-value bare var ref
+		`api_key=$(op read secret)`, // $(...) command substitution
+		`password=<your-password>`,  // angle-bracket template
+	}
+	for _, c := range pass {
+		if fs := ScanText(c); fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: interpolation/template %q flagged: %+v", c, fs)
+		}
+	}
+}
+
+// TestScanText_AuthHeaderBearerToken is the F21 regression gate: an Authorization
+// header token in value position must block even when short, while a prose
+// mention of "Bearer" (no secret-shaped token) must not.
+func TestScanText_AuthHeaderBearerToken(t *testing.T) {
+	block := []string{
+		`header = "Authorization: Bearer zVbT3q9LmX2"`,
+		`Authorization: Basic aGVsbG86d29ybGQ99`,
+	}
+	for _, c := range block {
+		if fs := ScanText(c); !fs.HasHigh() {
+			t.Errorf("expected high finding for auth header token %q, got %+v", c, fs)
+		}
+	}
+	pass := []string{
+		`# send a Bearer authentication token here`, // prose, no secret-shaped token
+		`Authorization: Bearer <YOUR_TOKEN_HERE>`,   // placeholder
+		`Authorization: Bearer null`,                // too short / not shaped
+	}
+	for _, c := range pass {
+		if fs := ScanText(c); fs.HasHigh() {
+			t.Errorf("FALSE POSITIVE: non-secret Bearer line %q flagged: %+v", c, fs)
+		}
+	}
+}

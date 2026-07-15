@@ -155,6 +155,13 @@ func openStoreAt(stateDir string, readOnly bool) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A zero-length file cannot be a valid store (the smallest valid form is a JSON
+	// object). Treat it as an empty store rather than hard-failing: a torn write from
+	// a crash then degrades to first-touch reclassification instead of wedging every
+	// ferry command behind a manual file deletion.
+	if len(data) == 0 {
+		return s, nil
+	}
 	// Resolve the on-disk schema version. A file a newer ferry wrote is refused
 	// here (FutureVersionError) BEFORE any decode or write, so a downgraded ferry
 	// leaves it untouched rather than corrupting it.
@@ -334,10 +341,38 @@ func (s *Store) save() error {
 		tmp.Close()
 		return err
 	}
+	// fsync the temp before rename so the DATA is durable, and fsync the directory
+	// after rename so the rename itself survives a crash. Without this a power loss
+	// can leave the store zero-length/truncated, and openStoreAt would then hard-fail
+	// every apply/capture/status until the file is deleted by hand. Mirrors
+	// backup.AtomicWrite, the codebase's canonical crash-safe write.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, s.path)
+	if err := os.Rename(tmpName, s.path); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(s.path))
+}
+
+// fsyncDir flushes a directory entry (e.g. the rename that published a state file)
+// so it survives a crash. A missing/unopenable dir is not fatal here — the write
+// already succeeded; durability of the rename is best-effort on platforms that
+// reject directory fsync.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil {
+		return nil
+	}
+	return nil
 }
 
 // pruneDeployed drops every last-deployed snapshot whose hash is no longer

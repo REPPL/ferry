@@ -74,15 +74,19 @@ func runImport(c *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	// Guard the target against ~/.ssh and harden its config-dir chain (the default
-	// lives under ~/.config/ferry): bundle content is only ever written here.
+	// Guard the target against ~/.ssh and harden its parent chain against symlink
+	// redirection: bundle content is only ever written here. HardenStoreDir walks
+	// from $HOME down to the target refusing any symlink component, and is a no-op
+	// for a target that is not under $HOME — so this applies to BOTH the default
+	// (~/.config/ferry) and an explicit --out under $HOME, closing the gap where a
+	// custom target's symlinked parent could redirect the extracted tree while the
+	// default target was hardened. An --out deliberately placed outside $HOME stays
+	// unrestricted (HardenStoreDir returns nil there), preserving --out's freedom.
 	if _, err := guardRepoPath("import target", target); err != nil {
 		return err
 	}
-	if isDefaultImportTarget(outDir) {
-		if err := hardenConfigDirForRepo(target); err != nil {
-			return err
-		}
+	if err := hardenConfigDirForRepo(target); err != nil {
+		return err
 	}
 
 	// No-clobber (N3): refuse a target that exists and is non-empty. Checked before
@@ -240,12 +244,6 @@ func resolveImportTarget(outDir string) (string, error) {
 		return filepath.Clean(abs), nil
 	}
 	return defaultRepoDir()
-}
-
-// isDefaultImportTarget reports whether the import target is ferry's default under
-// ~/.config/ferry (so its config-dir chain is hardened, mirroring init).
-func isDefaultImportTarget(outDir string) bool {
-	return strings.TrimSpace(outDir) == ""
 }
 
 func init() {

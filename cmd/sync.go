@@ -119,7 +119,10 @@ func runSync(c *cobra.Command, _ []string) error {
 			return rollback(snap, repo, err)
 		}
 
-		ahead, behind := aheadBehind(repo, "HEAD", upstream)
+		ahead, behind, aberr := aheadBehind(repo, "HEAD", upstream)
+		if aberr != nil {
+			return rollback(snap, repo, aberr)
+		}
 		switch {
 		case behind > 0 && ahead == 0:
 			// Pure fast-forward: reset the worktree to the remote tip. --hard is safe
@@ -839,19 +842,24 @@ func untrackedClobberErr(rel string) error {
 }
 
 // aheadBehind returns how many commits `ref` is ahead of and behind `base`
-// (git rev-list --count --left-right base...ref). Zero/zero on error.
-func aheadBehind(repo, ref, base string) (ahead, behind int) {
+// (git rev-list --count --left-right base...ref). It returns an error rather than
+// masking a git failure as 0/0: the only caller runs it against an upstream it has
+// already verified exists, so a rev-list failure (or unparseable output) is a real
+// fault. Reporting 0/0 there would silently skip remote integration and let a
+// divergent branch push without ever pulling — data-loss-shaped. The caller rolls
+// back on the error instead.
+func aheadBehind(repo, ref, base string) (ahead, behind int, err error) {
 	o, ok := gitSyncOK(repo, "rev-list", "--left-right", "--count", base+"..."+ref)
 	if !ok {
-		return 0, 0
+		return 0, 0, fmt.Errorf("sync: could not compute ahead/behind for %s...%s (git rev-list failed)", base, ref)
 	}
 	f := strings.Fields(o)
 	if len(f) != 2 {
-		return 0, 0
+		return 0, 0, fmt.Errorf("sync: unexpected rev-list output %q computing ahead/behind", strings.TrimSpace(o))
 	}
 	behind = atoiSafe(f[0]) // commits in base not in ref
 	ahead = atoiSafe(f[1])  // commits in ref not in base
-	return ahead, behind
+	return ahead, behind, nil
 }
 
 // pushRangeCommits computes the EXACT list of commit oids that a push would make

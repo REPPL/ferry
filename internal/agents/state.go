@@ -101,10 +101,32 @@ func RecordTargets(stateDir string, targets map[string]string) error {
 		tmp.Close()
 		return err
 	}
+	// fsync the temp before rename and the directory after, so a crash cannot leave
+	// agents-targets.json zero-length/truncated (which would hard-fail the next read).
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	return fsyncDir(filepath.Dir(path))
+}
+
+// fsyncDir flushes a directory entry (the rename that published a state file) so it
+// survives a crash. Best-effort: a platform that rejects directory fsync is not
+// treated as a write failure, since the file write already succeeded.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer d.Close()
+	_ = d.Sync()
+	return nil
 }
 
 // RecordedTargetPaths returns the absolute $HOME destinations the agents
@@ -147,6 +169,11 @@ func loadTargetRecord(stateDir string) (record map[string]string, version int, m
 	}
 	if err != nil {
 		return nil, 0, false, err
+	}
+	// A zero-length file is a torn write, not a valid record: treat it as absent so a
+	// crash degrades to an empty record instead of hard-failing every agents command.
+	if len(data) == 0 {
+		return map[string]string{}, targetsVersion, false, nil
 	}
 	version, migrate, err = statefile.Resolve(path, data, targetsVersion)
 	if err != nil {

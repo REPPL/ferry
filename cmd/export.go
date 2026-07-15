@@ -214,16 +214,17 @@ func classifyExportEntry(repoRoot, rel string, includeLocal bool) ([]byte, strin
 		return nil, "unreadable", false
 	}
 	// Binary (non-text) content: the line-based text secret gate can't scan it, but a
-	// binary can still carry embedded private-key material. Run the BINARY-SAFE key
-	// marker scan (secret.HasKeyMarker) over the raw bytes; if it hits, WITHHOLD it
-	// (never bundle key material). This scan is symmetric with import/validate, which
-	// applies the SAME HasKeyMarker check to binary payloads, so an export always
-	// re-imports and a binary carrying key bytes is refused on both sides. A clean
-	// binary is included (already tracked/user-vetted, past every path/symlink/~.ssh
-	// gate).
+	// binary can still carry embedded private-key material OR a constant-prefix
+	// provider token (a GitHub PAT, AWS key, …) as an ASCII substring. Run the
+	// BINARY-SAFE scan (secret.HasBinarySecret) over the raw bytes; if it hits,
+	// WITHHOLD it (never bundle secret material). This scan is symmetric with
+	// import/validate, which applies the SAME check to binary payloads, so an export
+	// always re-imports and a binary carrying key/token bytes is refused on both
+	// sides. A clean binary is included (already tracked/user-vetted, past every
+	// path/symlink/~.ssh gate).
 	if !isProbablyText(data) {
-		if secret.HasKeyMarker(data) {
-			return nil, "contains key material", false
+		if secret.HasBinarySecret(data) {
+			return nil, "contains key material or a provider token", false
 		}
 		return data, "", true
 	}

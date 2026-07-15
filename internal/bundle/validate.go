@@ -223,16 +223,17 @@ func Validate(path, expectedSHA256 string, includeLocalWanted bool) (*Validated,
 		// Symmetric secret re-gate with export (defense in depth): classify text vs
 		// binary the SAME way export does (a NUL byte marks binary), then apply the SAME
 		// check export applied. A TEXT payload runs the line-based text gate; a BINARY
-		// payload runs the binary-safe key-marker scan (secret.HasKeyMarker). Using the
-		// text gate on binary bytes would both mis-scan it and DIVERGE from export — a
-		// binary that export bundled could then fail its own import. This way an export
-		// always imports, and a binary carrying key material is refused on both sides.
+		// payload runs the binary-safe scan (secret.HasBinarySecret — key markers AND
+		// provider tokens). Using the text gate on binary bytes would both mis-scan it
+		// and DIVERGE from export — a binary that export bundled could then fail its own
+		// import. This way an export always imports, and a binary carrying key material
+		// or a provider token is refused on both sides.
 		if isProbablyText(content) {
 			if secret.IsBlockedFromRepo(string(content)) {
 				return nil, fmt.Errorf("bundle: entry %q contains a secret — refusing to import", clean)
 			}
-		} else if secret.HasKeyMarker(content) {
-			return nil, fmt.Errorf("bundle: entry %q contains key material — refusing to import", clean)
+		} else if secret.HasBinarySecret(content) {
+			return nil, fmt.Errorf("bundle: entry %q contains key material or a provider token — refusing to import", clean)
 		}
 
 		validated = append(validated, ValidatedEntry{Path: clean, Size: e.Size, file: f, local: isLocal})

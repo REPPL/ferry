@@ -11,6 +11,60 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- **`ferry restore --undo <snapshot-id>`** re-applies the pre-restore snapshot
+  ferry takes before every restore, making the "undo is possible" the restore
+  output has always advertised actually reachable. The post-restore message now
+  prints the exact command to run. It takes the apply lock and registers the
+  terminal preference domains, exactly as a restore does.
+
+### Security
+
+- **The secret scanner closes several credential-in-repo bypasses.** The scanner
+  is ferry's automated gate keeping plaintext credentials out of the shared,
+  pushed repo; these gaps let real secrets through it:
+  - Quoted multi-word values (`password = "correct horse battery"`) were only
+    checked up to the first space — the rest slipped through. The whole quoted
+    value is now scanned.
+  - Literal secrets beginning with `$` (a leetspeak password, not a variable
+    reference) or containing an interior `<` / `...` were exempted as
+    placeholders. Only genuine `${VAR}` / `$(cmd)` / whole-value `$VAR`
+    references and `<...>` templates are now exempt.
+  - `Authorization: Bearer <token>` / `Basic <token>` header values are now
+    detected in generic dotfiles (`~/.curlrc`, custom tool configs).
+  - Credential assignments beyond the first line of an opaque, multi-line value
+    (e.g. a `defaults export` plist blob) are now scanned.
+  - More credential key names are recognised (`pass`, `passphrase`, `pwd`,
+    `credentials`, `*_key`), while path-valued keys (`*_file = /path`) are
+    excluded to preserve the no-false-positive discipline.
+  - Bundle members that are binary are now scanned for provider tokens
+    (GitHub/AWS/GCP/Slack/OpenAI/Stripe) in addition to private-key headers,
+    symmetric on export and import.
+- **The apply lock is published atomically** (temp file + fsync + hardlink), so a
+  concurrent acquirer can no longer reclaim a live owner's half-written lockfile
+  and run a second `apply` in parallel.
+- **The init-time GitHub push runs under the same untrusted-transport hardening**
+  as every other ferry git invocation (`protocol.ext.allow=never`, hooks /
+  fsmonitor / ssh neutralised), so an ambient `pushInsteadOf` rewrite can no
+  longer redirect it.
+
+### Fixed
+
+- **Capturing a file with no trailing newline no longer wedges it** in a
+  permanent, unresolvable conflict — the captured composition now preserves the
+  live file's final-newline shape.
+- **Crash-safety of ferry's own state.** Journal/snapshot backup blobs and the
+  dotfile and agents state files are now fsync'd before the metadata that
+  references them, so a power loss can no longer roll a truncated backup over an
+  intact file or wedge every command behind a zero-length state file; a
+  zero-length state file now degrades to first-touch instead of hard-failing.
+- **`ferry sync` no longer silently skips remote integration** when the
+  ahead/behind computation fails — it rolls back with a clear error instead of
+  reporting "up to date".
+- **Custom `ferry bundle import --out` targets are symlink-hardened** against a
+  redirected parent chain, matching the default target.
+
 ## [0.8.0] - 2026-07-08
 
 ### Breaking

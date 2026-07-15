@@ -21,6 +21,7 @@ ferry restore [flags]
   -h, --help                     help for restore
       --packages                 also uninstall packages ferry recorded as self-installed
       --purge-without-recovery   remove ferry's own config AND the backup store after restore — DESTROYS the ability to undo this restore or re-restore later (irreversible; the default keeps the backup store)
+      --undo string              re-apply a pre-restore snapshot by ID (printed after a restore), undoing that restore
       --yes                      skip the confirmation prompt
 ```
 

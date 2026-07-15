@@ -218,12 +218,33 @@ func (c *Client) ViewJSON(owner, name string) (RepoView, error) {
 	return v, nil
 }
 
-// GitPush runs `git -C <repo> push -u origin HEAD` NONINTERACTIVELY
-// (GIT_TERMINAL_PROMPT=0). The credential is provided by gh's git credential
-// helper; ferry never passes a token on the argv. A non-zero exit is surfaced so
-// the caller reports the partial failure (repo created, push failed).
+// gitPushHardening is the untrusted-transport hardening prepended (in the git
+// global-options slot, before `push`) to the init-time push, mirroring sync's
+// runHardenedGit. Without it this one push ran under the user's ambient git
+// config, so a global `url."ext::sh -c evil".pushInsteadOf=https://github.com/`
+// rewrite would be honored and execute — every OTHER ferry git call already
+// blocks that. protocol.ext.allow=never is the decisive control (a rewritten
+// ext:: URL is refused by git itself); the rest neutralise hooks, fsmonitor, the
+// file transport, and any stray ssh. Set via `-c` (not env) so it targets only
+// this call and stays a global option the eval shim skips over to find `push`.
+func gitPushHardening() []string {
+	return []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "core.fsmonitor=false",
+		"-c", "protocol.ext.allow=never",
+		"-c", "protocol.file.allow=user",
+		"-c", "core.sshCommand=/bin/false",
+	}
+}
+
+// GitPush runs `git push -u origin HEAD` (rooted at repo via cmd.Dir)
+// NONINTERACTIVELY (GIT_TERMINAL_PROMPT=0) with the untrusted-transport hardening
+// applied. The credential is provided by gh's git credential helper; ferry never
+// passes a token on the argv. A non-zero exit is surfaced so the caller reports
+// the partial failure (repo created, push failed).
 func (c *Client) GitPush(repo string) error {
-	_, stderr, err := c.Run.Run("git", repo, "push", "-u", "origin", "HEAD")
+	args := append(gitPushHardening(), "push", "-u", "origin", "HEAD")
+	_, stderr, err := c.Run.Run("git", repo, args...)
 	if err != nil {
 		return fmt.Errorf("git push failed: %s", redact(strings.TrimSpace(stderr)))
 	}
