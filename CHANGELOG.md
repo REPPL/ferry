@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-15
+
 ### Added
 
 - **`ferry restore --undo <snapshot-id>`** re-applies the pre-restore snapshot
