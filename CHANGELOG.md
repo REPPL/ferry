@@ -11,6 +11,24 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Added
+
+- **`ferry work` carries in-flight project work between accounts** as an
+  explicit baton pass: `work pack` bundles a project's work state — the
+  session handover note, run journal, per-project agent memory, and redacted
+  transcript store — into a shared cargo store; `work receive` lands the
+  latest cargo on another account, backup-first, snapshotted, and behind
+  divergence guards (never a silent merge); `work status` shows cargo,
+  claims, and drift; `work prune` applies retention; `work restore` reverts
+  exactly the last receive, and `ferry restore work` reverts all work-verb
+  writes. Every packed byte passes the secret gate fail-closed, with
+  `--exclude` and content-pinned `--acknowledge` as the auditable escape
+  hatches. The store is configured per machine in the new `[work]` table of
+  `~/.config/ferry/config.toml`; a store inside a git worktree is refused,
+  and one under a cloud-sync directory needs an explicit opt-in. See the new
+  how-to "Hand work over to another account" and explanation "The work
+  domain".
+
 ## [0.9.0] - 2026-07-15
 
 ### Added
