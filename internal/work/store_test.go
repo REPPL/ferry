@@ -68,11 +68,14 @@ func TestStore_WriteBundleAllocatesSequences(t *testing.T) {
 	st := openTestStore(t)
 	key := testKey()
 
-	r1, err := st.WriteBundle(key, []byte("cargo-one"))
+	fixed := func(data string) func(uint64) ([]byte, error) {
+		return func(uint64) ([]byte, error) { return []byte(data), nil }
+	}
+	r1, err := st.WriteBundle(key, fixed("cargo-one"))
 	if err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
-	r2, err := st.WriteBundle(key, []byte("cargo-two"))
+	r2, err := st.WriteBundle(key, fixed("cargo-two"))
 	if err != nil {
 		t.Fatalf("WriteBundle: %v", err)
 	}
@@ -98,7 +101,7 @@ func TestStore_WriteBundleAllocatesSequences(t *testing.T) {
 func TestStore_BundlesSurfacesEqualSeqForks(t *testing.T) {
 	st := openTestStore(t)
 	key := testKey()
-	if _, err := st.WriteBundle(key, []byte("alice")); err != nil {
+	if _, err := st.WriteBundle(key, func(uint64) ([]byte, error) { return []byte("alice"), nil }); err != nil {
 		t.Fatal(err)
 	}
 	// Simulate Bob's concurrent pack that allocated the SAME seq on other
@@ -118,13 +121,18 @@ func TestStore_BundlesSurfacesEqualSeqForks(t *testing.T) {
 		t.Errorf("fork seqs = %d, %d, want 1, 1", refs[0].Seq, refs[1].Seq)
 	}
 
-	// The next pack must skip past the fork, not collide with it.
-	r, err := st.WriteBundle(key, []byte("carol"))
+	// The next pack must skip past the fork, not collide with it, and the
+	// build callback must be told the seq it actually got.
+	var builtSeq uint64
+	r, err := st.WriteBundle(key, func(seq uint64) ([]byte, error) {
+		builtSeq = seq
+		return []byte("carol"), nil
+	})
 	if err != nil {
 		t.Fatalf("WriteBundle after fork: %v", err)
 	}
-	if r.Seq != 2 {
-		t.Errorf("post-fork seq = %d, want 2", r.Seq)
+	if r.Seq != 2 || builtSeq != 2 {
+		t.Errorf("post-fork seq = %d (built with %d), want 2", r.Seq, builtSeq)
 	}
 }
 

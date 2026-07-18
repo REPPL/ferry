@@ -151,15 +151,23 @@ func (m *Manifest) validate() error {
 }
 
 // validateCargoRel refuses any member path that is not a clean, relative,
-// forward-slash path: no traversal, no absolute paths, no backslashes, no
-// "."/".." segments, no empty segments. Receive joins these against the
-// destination item root, so this is the first containment layer.
+// forward-slash path: no traversal, no absolute paths (including Windows
+// drive prefixes), no backslashes, no "."/".." segments, no empty segments,
+// and no .ssh or VCS-control component anywhere. Receive joins these against
+// the destination item root, so this is the first containment layer. (Kin of
+// internal/bundle's private canonicalRel, but strict — cargo paths are built
+// by pack, so a path that NEEDS cleaning is already suspect.)
 func validateCargoRel(p string) error {
 	if p == "" {
 		return fmt.Errorf("empty file path")
 	}
 	if strings.HasPrefix(p, "/") {
 		return fmt.Errorf("absolute file path %q", p)
+	}
+	if len(p) >= 2 && p[1] == ':' {
+		if c := p[0]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return fmt.Errorf("absolute file path %q", p)
+		}
 	}
 	if strings.ContainsRune(p, '\\') {
 		return fmt.Errorf("backslash in file path %q", p)
@@ -173,6 +181,10 @@ func validateCargoRel(p string) error {
 			return fmt.Errorf("empty segment in file path %q", p)
 		case ".", "..":
 			return fmt.Errorf("dot segment in file path %q", p)
+		}
+		switch strings.ToLower(seg) {
+		case ".ssh", ".git", ".hg", ".svn":
+			return fmt.Errorf("control component %q in file path %q", seg, p)
 		}
 	}
 	return nil

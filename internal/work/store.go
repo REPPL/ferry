@@ -191,21 +191,21 @@ func (st *Store) Bundles(key string) ([]BundleRef, error) {
 	return refs, nil
 }
 
-// WriteBundle stores cargo bytes as the project's next bundle. The sequence
-// is allocated by creating the file O_CREAT|O_EXCL and retrying at seq+1 on
-// collision — safe on APFS, SMB, and exFAT. The bundle hash in the name is
-// the content hash of data. The write is fsynced before the ref is returned:
-// a handover the packer believes in must be durable on the shared medium.
-func (st *Store) WriteBundle(key string, data []byte) (BundleRef, error) {
+// WriteBundle stores the project's next cargo bundle. The sequence is
+// allocated by creating the file O_CREAT|O_EXCL and retrying at seq+1 on
+// collision — safe on APFS, SMB, and exFAT. Because the bundle's manifest
+// records its own sequence number, the caller passes a build callback: it is
+// invoked with each candidate sequence and returns the exact bytes to store,
+// so the recorded seq always matches the allocated one. The write is fsynced
+// before the ref is returned: a handover the packer believes in must be
+// durable on the shared medium.
+func (st *Store) WriteBundle(key string, build func(seq uint64) ([]byte, error)) (BundleRef, error) {
 	if !rootSHA.MatchString(key) {
 		return BundleRef{}, fmt.Errorf("work: store key %q is not a full commit SHA", key)
 	}
 	if err := st.ensureProjectDir(key); err != nil {
 		return BundleRef{}, err
 	}
-	sum := sha256.Sum256(data)
-	hash := hex.EncodeToString(sum[:])
-
 	existing, err := st.Bundles(key)
 	if err != nil {
 		return BundleRef{}, err
@@ -216,6 +216,12 @@ func (st *Store) WriteBundle(key string, data []byte) (BundleRef, error) {
 	}
 	const maxAttempts = 10000
 	for attempt := 0; attempt < maxAttempts; attempt++ {
+		data, err := build(next)
+		if err != nil {
+			return BundleRef{}, err
+		}
+		sum := sha256.Sum256(data)
+		hash := hex.EncodeToString(sum[:])
 		name := fmt.Sprintf("%06d-%s.ferrywork", next, hash)
 		path := filepath.Join(st.ProjectDir(key), name)
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
