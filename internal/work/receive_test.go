@@ -418,3 +418,48 @@ func TestReceive_FailedPlanReleasesTranscriptLock(t *testing.T) {
 		t.Error("failed receive left the transcript advisory lock behind")
 	}
 }
+
+func TestReceive_MidWriteFailureLeavesRevertibleState(t *testing.T) {
+	h := newHandoffFixture(t)
+	// Make the memory target directory unwritable: the guarded file items
+	// (written first, in manifest order) land, then the memory write fails —
+	// a genuine partial receive.
+	memDir := filepath.Join(h.home, ".claude", "projects", ClaudeProjectsKey(h.repo), "memory")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(memDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(memDir, 0o755) })
+
+	_, err := h.receive(t, bobOpts())
+	if err == nil {
+		t.Fatal("receive into an unwritable memory target succeeded, want failure")
+	}
+	notePath := filepath.Join(h.repo, ".abcd", ".work.local", "NEXT.md")
+	if _, statErr := os.Stat(notePath); statErr != nil {
+		t.Fatal("test setup: the partial receive did not land the note before failing")
+	}
+
+	// The persisted state must already carry THIS receive's snapshot, so the
+	// advertised recovery (`ferry work restore`) genuinely reverts the
+	// partial landing.
+	reloaded, err := LoadStateAt(filepath.Join(h.home, ".local", "state", "ferry"), h.lc.StoreKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LastReceive == nil || reloaded.LastReceive.SnapshotID == "" {
+		t.Fatalf("LastReceive after mid-write failure = %+v, want the pre-write snapshot recorded", reloaded.LastReceive)
+	}
+
+	if err := os.Chmod(memDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WorkRestore(h.eng, reloaded); err != nil {
+		t.Fatalf("WorkRestore after partial receive: %v", err)
+	}
+	if _, statErr := os.Stat(notePath); statErr == nil {
+		t.Error("NEXT.md survived the revert of the partial receive")
+	}
+}

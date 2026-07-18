@@ -191,6 +191,15 @@ func Receive(st *Store, eng *backup.Engine, lc Locator, id Identity, state *Stat
 	if err != nil {
 		return nil, err
 	}
+	// Persist the receive record BEFORE writing anything: a mid-write failure
+	// must leave `ferry work restore` pointing at THIS receive's snapshot —
+	// not nil, and never at the previous receive's — so the advertised
+	// recovery genuinely reverts the partial landing.
+	state.LastReceive = &ReceiveRecord{SnapshotID: snapID, Seq: chosen.Seq, Bundle: chosen.SHA256, At: opts.Now, Paths: affected}
+	state.RecordWritten(affected...)
+	if err := state.Save(); err != nil {
+		return nil, err
+	}
 	run, err := eng.Begin()
 	if err != nil {
 		return nil, err
@@ -210,8 +219,6 @@ func Receive(st *Store, eng *backup.Engine, lc Locator, id Identity, state *Stat
 	}
 
 	state.Baseline = &Baseline{Op: OpReceive, Seq: chosen.Seq, Bundle: chosen.SHA256, At: opts.Now, Files: manifestHashes(m)}
-	state.LastReceive = &ReceiveRecord{SnapshotID: snapID, Seq: chosen.Seq, Bundle: chosen.SHA256, At: opts.Now, Paths: affected}
-	state.RecordWritten(affected...)
 	if err := state.Save(); err != nil {
 		return nil, fmt.Errorf("work: cargo landed but saving local state failed: %w", err)
 	}
