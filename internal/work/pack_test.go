@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -307,5 +308,30 @@ func TestPack_MarkerRecordsContentHashes(t *testing.T) {
 	}
 	if len(mk.Bundle) != 64 || !isLowerHex(mk.Bundle) {
 		t.Errorf("marker bundle hash malformed: %q", mk.Bundle)
+	}
+}
+
+func TestPack_SecretShapedFileNameRefusedWithoutEcho(t *testing.T) {
+	fx := newPackFixture(t)
+	memDir := filepath.Join(fx.home, ".claude", "projects", ClaudeProjectsKey(fx.repo), "memory")
+	secretName := "sk-ferrytest-FAKE1234567890abcdefghijklmnopqrstuv.md"
+	writeFileT(t, filepath.Join(memDir, secretName), "innocent content\n")
+
+	_, err := Pack(fx.st, fx.lc, fx.id, fx.state, defaultOpts())
+	var sge *SecretGateError
+	if !errors.As(err, &sge) {
+		t.Fatalf("err = %v, want *SecretGateError for a secret-shaped file NAME", err)
+	}
+	// The refusal must not echo the secret-shaped name back (mirrors bundle
+	// export's withheld-path handling).
+	if msg := err.Error(); len(msg) > 0 && strings.Contains(msg, "sk-ferrytest") {
+		t.Errorf("refusal echoes the secret-shaped name:\n%s", msg)
+	}
+
+	// --exclude releases the pack.
+	opts := defaultOpts()
+	opts.Excludes = []string{ItemAgentMemory}
+	if _, err := Pack(fx.st, fx.lc, fx.id, fx.state, opts); err != nil {
+		t.Fatalf("pack with the item excluded: %v", err)
 	}
 }

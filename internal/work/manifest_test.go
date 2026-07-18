@@ -118,3 +118,16 @@ func TestDecodeManifest_UnknownFieldRefused(t *testing.T) {
 		t.Fatal("manifest with unknown top-level field accepted, want refusal")
 	}
 }
+
+func TestDecodeManifest_CaseFoldDuplicatePathsRefused(t *testing.T) {
+	m := validManifest()
+	m.Items[0].Files = append(m.Items[0].Files,
+		ManifestFile{Path: "next.MD", Size: 1, SHA256: strings.Repeat("c", 64)},
+		ManifestFile{Path: "NEXT.md", Size: 1, SHA256: strings.Repeat("d", 64)},
+	)
+	if data, err := m.Encode(); err == nil {
+		if _, err := DecodeManifest(data); err == nil {
+			t.Error("case-fold duplicate file paths accepted, want refusal")
+		}
+	}
+}

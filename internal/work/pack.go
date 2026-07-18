@@ -43,13 +43,16 @@ type HandoverMarker struct {
 
 // SecretFinding is one unacknowledged secret-gate hit, named precisely enough
 // to act on. SHA256 is the flagged content's hash — the pin an
-// acknowledgement must carry.
+// acknowledgement must carry. PathSecret marks a finding on the file's NAME,
+// which the error rendering therefore withholds (echoing it would re-leak
+// the secret-shaped token, mirroring bundle export's withheld-path handling).
 type SecretFinding struct {
-	Item   string
-	Path   string
-	Rule   string
-	Detail string
-	SHA256 string
+	Item       string
+	Path       string
+	Rule       string
+	Detail     string
+	SHA256     string
+	PathSecret bool
 }
 
 // SecretGateError aborts a pack: nothing was written. This is deliberately
@@ -64,6 +67,10 @@ func (e *SecretGateError) Error() string {
 	var b strings.Builder
 	b.WriteString("work: the secret gate stopped the pack; nothing was written:\n")
 	for _, f := range e.Findings {
+		if f.PathSecret {
+			fmt.Fprintf(&b, "  %s/(name withheld): %s (%s)\n", f.Item, f.Detail, f.Rule)
+			continue
+		}
 		fmt.Fprintf(&b, "  %s/%s: %s (%s)\n", f.Item, f.Path, f.Detail, f.Rule)
 	}
 	b.WriteString("fix the content at its source, exclude the item (--exclude), or acknowledge the finding to pack it as-is")
@@ -156,6 +163,19 @@ func Pack(st *Store, lc Locator, id Identity, state *State, opts PackOptions) (*
 					acked = true
 				} else {
 					findings = append(findings, finding)
+				}
+			}
+			// The file's NAME travels in the manifest and the store, so it is
+			// gated too — parity with bundle export's path gate.
+			if pathFs := secret.ScanValue(f.rel); pathFs.HasHigh() {
+				if state.Acknowledged(f.item, f.rel, f.sha) {
+					acked = true
+				} else {
+					findings = append(findings, SecretFinding{
+						Item: f.item, Path: f.rel, Rule: "secret-shaped-path",
+						Detail: "a path component looks secret-shaped", SHA256: f.sha,
+						PathSecret: true,
+					})
 				}
 			}
 			mi.Files = append(mi.Files, ManifestFile{Path: f.rel, Size: int64(len(f.data)), SHA256: f.sha})

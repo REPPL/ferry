@@ -135,10 +135,17 @@ func (m *Manifest) validate() error {
 		if !it.Included && len(it.Files) > 0 {
 			return fmt.Errorf("item %q is excluded but lists files", it.Name)
 		}
+		fold := map[string]string{}
 		for _, f := range it.Files {
 			if err := validateCargoRel(f.Path); err != nil {
 				return fmt.Errorf("item %q: %w", it.Name, err)
 			}
+			// Case-insensitive APFS would land case-fold colliding entries
+			// last-writer-wins; refuse them like the config bundle writer does.
+			if prev, dup := fold[strings.ToLower(f.Path)]; dup {
+				return fmt.Errorf("item %q: file %q collides with %q (case-fold)", it.Name, f.Path, prev)
+			}
+			fold[strings.ToLower(f.Path)] = f.Path
 			if len(f.SHA256) != 64 || !isLowerHex(f.SHA256) {
 				return fmt.Errorf("item %q: file %q has malformed sha256", it.Name, f.Path)
 			}
