@@ -6,6 +6,15 @@ Each plan captures the design for one release. A plan is named
 `YYYY-MM-DD-vX.Y.Z.md`, where the date is when the plan was written and the
 version is the release it describes.
 
+## Feature plans not yet tied to a release
+
+A design agreed before it is scheduled into a release is named
+`YYYY-MM-DD-topic.md` and carries a design-state `Status:` (for example
+`approved, awaiting implementation`). When the work is scheduled, the design
+folds into (or is superseded by) that release's `YYYY-MM-DD-vX.Y.Z.md` plan.
+Topic-named plans never match `scripts/check-plan-shipped.sh`, so they cannot
+block a release tag.
+
 ## Frontmatter
 
 Every plan opens with a prose frontmatter line (not YAML) that records the date
