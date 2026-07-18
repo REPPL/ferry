@@ -34,6 +34,12 @@ Without `FERRY_BIN` the eval suite skips every behavioural test and passes.
 CI (`.github/workflows/ci.yml`) runs build, vet, `go test ./...`, race tests
 on the internal packages, and the full eval suite against a real Linux binary.
 
+Never run git-mutating operations (`git worktree add`, merges, rebases)
+against this repository while a `go test` or other tooling run is in flight
+against it — concurrent heavy git activity has corrupted the working repo's
+state (issue #17). One at a time; this also means no parallel subagents that
+touch git.
+
 ## Boundaries
 
 - Nothing under `$HOME` is ever symlinked: deployed files are regular-file
