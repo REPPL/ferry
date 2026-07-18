@@ -27,6 +27,24 @@ type MachineConfig struct {
 	// `omitempty` so an unmanaged config writes no `managed` key, and an OLD
 	// config (hostname+repo only, no `managed` key) still loads with managed=false.
 	Managed bool `toml:"managed,omitempty"`
+	// Work is the optional [work] table: this machine's cargo-store location
+	// and retention for the work verbs. It is machine-specific (a shared or
+	// removable path that differs per machine), so it lives here and never in
+	// the repo-side manifests. A nil Work means the table is absent and the
+	// work verbs refuse with setup guidance.
+	Work *WorkConfig `toml:"work,omitempty"`
+}
+
+// WorkConfig is the [work] table's content.
+type WorkConfig struct {
+	// Store is the cargo-store directory (shared or portable media).
+	Store string `toml:"store,omitempty"`
+	// Keep is the keep-last-N retention pack applies per project (0 means the
+	// default).
+	Keep int `toml:"keep,omitempty"`
+	// AllowSyncRoot accepts a store under a known cloud-sync directory —
+	// an explicit, persisted opt-in to the loud warning.
+	AllowSyncRoot bool `toml:"allow_sync_root,omitempty"`
 }
 
 // LoadMachineConfig reads and parses ~/.config/ferry/config.toml (resolved via
