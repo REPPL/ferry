@@ -27,6 +27,12 @@ Without `FERRY_BIN` the eval suite skips every behavioural test and passes. A
 change is done only when `make build`, `gofmt -l .` (empty), `go vet ./...`, and
 `go test ./...` are all clean and the eval suite is green with `FERRY_BIN` set.
 
+Never run git-mutating operations (`git worktree add`, merges, rebases) against
+this repository while a `go test` or other tooling run is in flight against it.
+Concurrent heavy git activity has corrupted the working repository's state —
+`core.bare` flipped and an isolated test fixture's git identity leaked into the
+local config (issue #17). Let one finish before starting the other.
+
 ## Branches, commits, and PRs
 
 - Work on a branch and open a PR, so review and CI gate the merge. Keep commits
