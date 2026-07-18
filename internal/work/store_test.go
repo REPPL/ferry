@@ -198,3 +198,55 @@ func TestStore_ClaimAccountNameValidated(t *testing.T) {
 		}
 	}
 }
+
+func TestStore_PruneKeepsLastN(t *testing.T) {
+	st := openTestStore(t)
+	key := testKey()
+	for i := 0; i < 5; i++ {
+		data := []byte{byte('a' + i)}
+		if _, err := st.WriteBundle(key, func(uint64) ([]byte, error) { return data, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := st.Prune(key, 3)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if len(removed) != 2 || removed[0].Seq != 1 || removed[1].Seq != 2 {
+		t.Errorf("removed = %+v, want seqs 1 and 2", removed)
+	}
+	left, err := st.Bundles(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 3 || left[0].Seq != 3 {
+		t.Errorf("left = %+v, want seqs 3..5", left)
+	}
+
+	// Keeping at least as many as exist removes nothing.
+	if removed, err := st.Prune(key, 10); err != nil || len(removed) != 0 {
+		t.Errorf("Prune(10) = %+v, %v", removed, err)
+	}
+	// keep < 1 would delete every bundle: refused.
+	if _, err := st.Prune(key, 0); err == nil {
+		t.Error("Prune(0) accepted, want refusal")
+	}
+}
+
+func TestStore_RemoveBundle(t *testing.T) {
+	st := openTestStore(t)
+	key := testKey()
+	ref, err := st.WriteBundle(key, func(uint64) ([]byte, error) { return []byte("x"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RemoveBundle(key, ref.SHA256); err != nil {
+		t.Fatalf("RemoveBundle: %v", err)
+	}
+	if left, _ := st.Bundles(key); len(left) != 0 {
+		t.Errorf("bundle survived removal: %+v", left)
+	}
+	if err := st.RemoveBundle(key, strings.Repeat("0", 64)); err == nil {
+		t.Error("RemoveBundle of absent hash succeeded, want error")
+	}
+}

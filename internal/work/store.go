@@ -266,3 +266,41 @@ func (st *Store) ensureProjectDir(key string) error {
 	}
 	return nil
 }
+
+// Prune applies keep-last-N to a project's bundles, removing the oldest ones
+// beyond keep and returning what was removed. keep must be at least 1 —
+// pruning every bundle would erase the handover history entirely.
+func (st *Store) Prune(key string, keep int) ([]BundleRef, error) {
+	if keep < 1 {
+		return nil, fmt.Errorf("work: prune must keep at least 1 bundle, got %d", keep)
+	}
+	refs, err := st.Bundles(key)
+	if err != nil {
+		return nil, err
+	}
+	if len(refs) <= keep {
+		return nil, nil
+	}
+	victims := refs[:len(refs)-keep]
+	for _, v := range victims {
+		if err := os.Remove(v.Path); err != nil {
+			return nil, err
+		}
+	}
+	return victims, nil
+}
+
+// RemoveBundle deletes one bundle by content hash — the targeted form used
+// to resolve an equal-seq fork.
+func (st *Store) RemoveBundle(key, sha256Hex string) error {
+	refs, err := st.Bundles(key)
+	if err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if r.SHA256 == sha256Hex {
+			return os.Remove(r.Path)
+		}
+	}
+	return fmt.Errorf("work: no bundle with hash %s in the store", sha256Hex)
+}
