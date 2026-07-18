@@ -17,6 +17,7 @@ import (
 	"github.com/REPPL/ferry/internal/paths"
 	"github.com/REPPL/ferry/internal/platform"
 	"github.com/REPPL/ferry/internal/terminal"
+	"github.com/REPPL/ferry/internal/work"
 )
 
 func init() {
@@ -280,12 +281,20 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 	// resolveScopedPaths would misread the name as a dotfile (~/.agents).
 	var rest []string
 	agentsRequested := false
+	workRequested := false
 	for _, d := range domains {
-		if d == "agents" {
+		switch d {
+		case "agents":
 			agentsRequested = true
-			continue
+		case "work":
+			// The "work" domain fans out to every path the work verbs have
+			// written, enumerated from the per-project work state files —
+			// like agents, expanded here before resolveScopedPaths would
+			// misread the name as a dotfile (~/.work).
+			workRequested = true
+		default:
+			rest = append(rest, d)
 		}
-		rest = append(rest, d)
 	}
 
 	// resolveScopedPaths refuses ~/.ssh + path-traversal dotfile names (the security
@@ -299,6 +308,16 @@ func scopedRestore(ctx *cmdContext, domains []string, out io.Writer) error {
 		}
 		for _, p := range apaths {
 			validDomains = append(validDomains, "agents")
+			absPaths = append(absPaths, p)
+		}
+	}
+	if workRequested {
+		wpaths, werr := work.AllWrittenPaths()
+		if werr != nil {
+			refusals = append(refusals, fmt.Sprintf("restore: cannot enumerate the work domain's written paths (%v)", werr))
+		}
+		for _, p := range wpaths {
+			validDomains = append(validDomains, "work")
 			absPaths = append(absPaths, p)
 		}
 	}
