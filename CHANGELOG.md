@@ -11,6 +11,8 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-07-19
+
 ### Added
 
 - **`ferry work` carries in-flight project work between accounts** as an

@@ -1,6 +1,6 @@
 # Work-state ferrying: carry in-flight project work between accounts
 
-Date: 2026-07-18 · Status: approved, awaiting implementation
+Date: 2026-07-18 · Status: shipped in v0.10.0
 
 ## Why
 
