@@ -1210,3 +1210,29 @@ func asErrLockHeld(err error, target **ErrLockHeld) bool {
 	}
 	return false
 }
+
+func TestSnapshotIsDirectlyReversible(t *testing.T) {
+	e, home := newEngine(t)
+	present := filepath.Join(home, "present")
+	absent := filepath.Join(home, "absent")
+	mustWrite(t, present, []byte("BEFORE"), 0o600)
+
+	snapID, err := e.Snapshot([]string{present, absent})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Mutate both: overwrite one, create the other.
+	mustWrite(t, present, []byte("AFTER"), 0o600)
+	mustWrite(t, absent, []byte("NEW"), 0o600)
+
+	if err := e.RestoreSnapshot(snapID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(present); string(got) != "BEFORE" {
+		t.Errorf("present = %q, want BEFORE", got)
+	}
+	if _, err := os.Lstat(absent); err == nil {
+		t.Error("absent path exists after snapshot revert, want deleted")
+	}
+}

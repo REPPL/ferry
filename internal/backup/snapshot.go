@@ -58,6 +58,15 @@ func (e *Engine) snapshotCurrent(absPaths []string) (string, error) {
 	return id, nil
 }
 
+// Snapshot captures the current state of absPaths into a new snapshot and
+// returns its ID — the exported entry point for callers OUTSIDE a restore
+// flow that need their mutation to be precisely reversible (the work domain
+// takes one per receive, so `ferry work restore` can revert exactly that
+// receive). RestoreSnapshot re-applies it.
+func (e *Engine) Snapshot(absPaths []string) (string, error) {
+	return e.snapshotCurrent(absPaths)
+}
+
 // RestoreSnapshot re-applies a previously taken pre-restore snapshot, undoing a
 // restore. It returns the machine's affected paths to their pre-restore state.
 func (e *Engine) RestoreSnapshot(snapID string) error {

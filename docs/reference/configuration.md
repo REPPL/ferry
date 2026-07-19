@@ -431,6 +431,26 @@ a local path, a version-tagged spec, or a flag in the list is refused before npm
 runs. The `~/.npmrc` config file and its registry auth token are carried
 separately, as a dotfile — see [npm registry auth](#npm-registry-auth-npmrc).
 
+## The work cargo store (`[work]`)
+
+The `work` verbs need a per-machine cargo store, declared in the machine
+config `~/.config/ferry/config.toml` (not the repo-side manifests — the path
+differs per machine):
+
+```toml
+[work]
+store = "/Users/Shared/ferry-cargo"  # shared or portable directory, created once
+keep = 5                              # optional: keep-last-N bundles per project
+allow_sync_root = false               # optional: accept a store under iCloud/Dropbox/…
+```
+
+`store` is required for the work verbs and has no default. A store that
+resolves inside any git worktree is refused; one under a known cloud-sync
+directory is refused unless `allow_sync_root = true` here or
+`--allow-sync-root` per run. `keep` defaults to 5. See
+[The work domain](../explanation/work-domain.md) for the design and
+[Hand work over to another account](../how-to/hand-over-work.md) for setup.
+
 ## The `.local` layer
 
 Some settings should differ per machine on purpose: a colour scheme on your laptop, a

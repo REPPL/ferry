@@ -112,3 +112,49 @@ func indexOf(haystack, needle string) int {
 	}
 	return -1
 }
+
+func TestMachineConfig_WorkTableOptional(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Without [work] the config loads with no work settings.
+	plain := MachineConfig{Hostname: "h", Repo: filepath.Join(dir, "clone")}
+	if err := saveMachineConfigTo(path, plain); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadMachineConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Work != nil {
+		t.Errorf("Work = %+v, want nil when the table is absent", got.Work)
+	}
+
+	// With [work] the settings round-trip.
+	withWork := plain
+	withWork.Work = &WorkConfig{Store: "/Users/Shared/ferry-cargo", Keep: 3, AllowSyncRoot: true}
+	if err := saveMachineConfigTo(path, withWork); err != nil {
+		t.Fatal(err)
+	}
+	got, err = loadMachineConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Work == nil || got.Work.Store != "/Users/Shared/ferry-cargo" || got.Work.Keep != 3 || !got.Work.AllowSyncRoot {
+		t.Errorf("Work = %+v", got.Work)
+	}
+
+	// A hand-written [work] table parses too.
+	handWritten := "hostname = \"h\"\nrepo = \"/r\"\n\n[work]\nstore = \"/cargo\"\n"
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = loadMachineConfigFrom(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Work == nil || got.Work.Store != "/cargo" || got.Work.Keep != 0 {
+		t.Errorf("hand-written Work = %+v", got.Work)
+	}
+}

@@ -33,4 +33,5 @@ ferry [flags]
 * [ferry status](ferry_status.md)	 - Report config drift (what changed on this machine)
 * [ferry sync](ferry_sync.md)	 - Publish captured changes and pull remote ones for a managed repo
 * [ferry version](ferry_version.md)	 - Print ferry's version (add --verbose for build details)
+* [ferry work](ferry_work.md)	 - Carry in-flight project work between accounts as an explicit handover
 
