@@ -7,6 +7,10 @@
 set -uo pipefail
 FERRY="$1"; H="$(mktemp -d)"; export HOME="$H"
 fail=0; ok(){ echo "  OK  $*"; }; bad(){ echo "  XX  FAIL: $*"; fail=1; }; step(){ echo; echo "### $*"; }
+# Portable mtime: GNU stat first (-c), BSD/macOS stat second (-f). On Linux,
+# `stat -f %m` is FILESYSTEM info, not a format string — comparing it tells you
+# nothing about the file, so the branch order matters.
+mtime(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 SRC="$H/src"; mkdir -p "$SRC/dotfiles"
 ( cd "$SRC" && git init -q && git config user.email t@t && git config user.name t )
 printf 'export FERRY_SMOKE=shared\nalias ll="ls -la"\n' > "$SRC/dotfiles/zshrc"
@@ -26,13 +30,15 @@ step "2. diff (read-only)"
 [ "$(shasum "$H/.zshrc"|awk '{print $1}')" = "$ORIG" ] && ok "diff left ~/.zshrc unchanged" || bad "diff mutated ~/.zshrc"
 
 step "3. apply"
-"$FERRY" apply </dev/null >"$H/o3" 2>&1; ac=$?; [ $ac -eq 0 ] && ok "apply exit 0" || { bad "apply exit $ac"; sed 's/^/    /' "$H/o3"; }
+# Adopting the pre-existing ~/.zshrc is a risky change the wizard asks about;
+# confirm it interactively ("yes"), since a non-interactive apply refuses it.
+printf 'yes\n' | "$FERRY" apply >"$H/o3" 2>&1; ac=$?; [ $ac -eq 0 ] && ok "apply exit 0" || { bad "apply exit $ac"; sed 's/^/    /' "$H/o3"; }
 grep -q FERRY_SMOKE "$H/.zshrc" && ok "shared zshrc deployed" || bad "not deployed"
 [ -d "$H/.local/state/ferry/baseline" ] && ok "baseline recorded" || bad "no baseline"
 
 step "4. apply idempotent"
-M1="$(stat -f %m "$H/.zshrc")"; sleep 1; "$FERRY" apply </dev/null >"$H/o4" 2>&1; M2="$(stat -f %m "$H/.zshrc")"
-[ "$M1" = "$M2" ] && ok "second apply no-op" || bad "second apply rewrote"
+M1="$(mtime "$H/.zshrc")"; sleep 1; "$FERRY" apply </dev/null >"$H/o4" 2>&1; M2="$(mtime "$H/.zshrc")"
+[ -n "$M1" ] && [ "$M1" = "$M2" ] && ok "second apply no-op" || bad "second apply rewrote (m1=$M1 m2=$M2)"
 
 step "5. capture (empty stdin, no auto-commit)"
 C0="$(cd "$REPO" && git rev-list --count HEAD)"; printf 'export LOCAL_EDIT=1\n' >> "$H/.zshrc"
