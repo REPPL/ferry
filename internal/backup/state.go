@@ -126,8 +126,9 @@ func restoreState(state PathState, blob []byte) error {
 	// rm -rf'd the directory between apply and restore), mirroring the apply
 	// side's MkdirAll in BackupAndWrite. Without this, one missing parent
 	// aborts the whole restore — and wedges rollback, which shares this path.
-	// Containment was re-validated on the resolved chain just above, so the
-	// recreate cannot land outside $HOME or under ~/.ssh.
+	// Containment was re-validated on the resolved chain just above (same
+	// guard-then-MkdirAll ordering as the apply side's BackupAndWrite), and
+	// the leaf mutation below still goes through the os.Root.
 	if state.Kind != KindAbsent {
 		if err := os.MkdirAll(filepath.Dir(state.Path), 0o755); err != nil {
 			return err
