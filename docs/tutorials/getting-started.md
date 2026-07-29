@@ -178,7 +178,7 @@ default), then writes ferry's config. (A bare `ferry init`, with no source, take
 ferry init https://github.com/REPPL/ferry.git   # clone your ferry repo over HTTPS, write ferry's config
 ferry diff                # preview what will change on this machine (optional)
 ferry apply               # reconcile this machine to the repo
-ferry apply --deps        # install dependencies (separate, explicit step)
+ferry apply --deps        # install dependencies (needs brew = true under [manage])
 ```
 
 `ferry apply` is idempotent and safe to re-run: run it after every `git pull`. It

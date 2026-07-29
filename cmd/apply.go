@@ -987,7 +987,7 @@ func applyDeps(ctx *cmdContext, out io.Writer) error {
 	// The brew key covers apt too — manifest selection follows the detected
 	// manager, and status/capture already key both on brew.
 	if !ctx.Scope.IsManaged("brew") {
-		fmt.Fprintln(out, "deps: brew is not managed on this machine; skipping dependency install")
+		fmt.Fprintln(out, "deps: the dependency domain is not managed on this machine (set `brew = true` under [manage] to enable Homebrew/apt installs); skipping dependency install")
 	} else if result, err := deps.Install(depsDir, deps.ExecRunner{}); errors.Is(err, deps.ErrNoPackageManager) {
 		// No OS package manager: report and fall through to npm globals, which are
 		// ORTHOGONAL (a machine can have npm but no brew/apt).

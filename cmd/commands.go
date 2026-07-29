@@ -114,7 +114,7 @@ target. --packages additionally uninstalls only the packages ferry installed.`,
 
 func init() {
 	// Documented apply flags (lowercase kebab-case). Behaviour lands later.
-	applyCmd.Flags().Bool("deps", false, "install declared dependencies (separate, explicit step)")
+	applyCmd.Flags().Bool("deps", false, "install declared dependencies (separate, explicit step; needs brew = true under [manage])")
 
 	// sync flags: an optional commit message for the captured changes, and the
 	// route-1 override (a route-2 managed repo needs neither).
