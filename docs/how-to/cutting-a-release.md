@@ -34,8 +34,10 @@ already-tagged version is re-released only if its GitHub Release is missing (a
 transient publish failure), built from the tagged commit, never a moved-on `main`.
 
 Because the tag exists moments after the promotion commit lands, run the local gates
-**before** pushing that commit — `docs-currency-lint` and the cross-compile rehearsal
-run only in `scripts/release.sh`, not in CI:
+**before** pushing that commit — `docs-currency-lint` runs only in
+`scripts/release.sh`, not in CI (CI does cross-compile every release target on each
+push, but the driver's rehearsal also stamps the version and builds the checksum
+manifest and prune plan):
 
 ```bash
 scripts/release.sh vX.Y.Z --dry-run   # every gate + rehearsal, changes nothing
@@ -114,9 +116,9 @@ requires any matching plan under `.abcd/development/plans/` to be marked
 [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
 the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
 (unless `--yes`) and run the single irreversible act: `git tag vX.Y.Z && git push
-origin vX.Y.Z`. Note that on the automatic path above `auto-release` has usually
-already created the tag by the time the promotion commit is pushed, so the driver's
-tag step fails on an existing tag — that is the expected outcome, not an error in the
+origin vX.Y.Z`. Note that on the automatic path above `auto-release` tags the
+promotion commit as soon as it is pushed, so a driver run started afterwards fails at
+its tag step on the existing tag — that is the expected outcome, not an error in the
 release: the gates have still run, and the tag already points at the right commit.
 
 To prepare a release-ready tree locally (e.g. to inspect the manifest before tagging, or
@@ -164,7 +166,7 @@ build-provenance attestation above is the real signature.
 - [`scripts/release.sh`](../../scripts/release.sh): the manual release driver — gates, rehearses, then tags and pushes.
 - [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
 - [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
-- [`.github/workflows/release.yml`](../../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
+- [`.github/workflows/release.yml`](../../.github/workflows/release.yml): build → checksum → attest → publish; called by auto-release, or triggered directly by a hand-pushed tag.
 - [`install.sh`](../../install.sh): the installer that fetches and verifies `checksums.txt`.
 - [README—Install](../../README.md#install): the user-facing install command.
 - [Getting started](../tutorials/getting-started.md): build-from-source, which needs no release.
