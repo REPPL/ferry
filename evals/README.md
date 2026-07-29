@@ -7,49 +7,50 @@ inspects ferry's source — each is a black-box check against the documented CLI
 contract in `README.md`, `docs/tutorials/getting-started.md`, `docs/reference/configuration.md`,
 and `docs/explanation/ssh.md`, mapped to the numbered acceptance criteria encoded in the eval names (the `AC_*` identifiers).
 
-## Status: RED until the build lands
+## Status
 
-The implementation does not exist yet. These evals are written **against the
-documented contract first** and go red → green as the binary is built. That is the
-point: they are the executable acceptance spec.
+These evals are the executable acceptance spec: black-box checks written against
+the documented contract, mapped to the numbered acceptance criteria. CI runs the
+full suite against a real binary on every push.
 
 Every real assertion is gated behind `requireBin(t)`, which `t.Skip`s the test when
 `FERRY_BIN` is unset or does not point at an executable. So the package **always
-compiles** and `go test ./evals/...` runs **clean (all skipped)** before any binary
-exists — no false failures.
+compiles**, and a run without `FERRY_BIN` proves nothing — see below.
 
 ## How to run
 
 ```bash
-# 1. Build the binary (once the implementing wave lands):
-make build                       # or: go build -o bin/ferry ./cmd/ferry
+# 1. Build this host's binary. `make build` cross-compiles every target to
+#    bin/ferry-<goos>-<arch>; there is no plain bin/ferry.
+make build
+export FERRY_BIN="$PWD/bin/ferry-$(go env GOOS)-$(go env GOARCH)"
 
-# 2. Point the harness at it and run the evals:
-FERRY_BIN="$PWD/bin/ferry" go test ./evals/...
+# 2. Run the evals against it:
+FERRY_BIN="$FERRY_BIN" go test ./evals/...
 
-# Optional: also exercise the installer evals once install.sh exists:
-FERRY_BIN="$PWD/bin/ferry" FERRY_INSTALL_SH="$PWD/install.sh" go test ./evals/...
+# Also exercise the installer evals:
+FERRY_BIN="$FERRY_BIN" FERRY_INSTALL_SH="$PWD/install.sh" go test ./evals/...
 
-# Final-conformance run (Wave-3+): a MISSING install.sh is a FAILURE, not a skip,
-# for the offline-gating installer ACs — so an impl can't ship with no installer.
-FERRY_CONFORMANCE=1 FERRY_BIN="$PWD/bin/ferry" go test ./evals/...
+# Final-conformance run: a MISSING install.sh is a FAILURE, not a skip, for the
+# offline-gating installer ACs — so an implementation cannot ship with no installer.
+FERRY_CONFORMANCE=1 FERRY_BIN="$FERRY_BIN" FERRY_INSTALL_SH="$PWD/install.sh" go test ./evals/...
 ```
 
 With **no** `FERRY_BIN`, `go test ./evals/...` skips every behavioral test and
-passes. This is intentional — it lets the harness live in the repo and stay
-green in CI before the binary is buildable.
+**passes** — the skip reasons surface only under `-v`. A green run without
+`FERRY_BIN` therefore gates nothing; only a run with it set proves anything.
 
 ### Installer evals & the conformance guard
 
 The offline installer gates — **AC-install-path**, **AC-install-prints-path-line**,
 and the installer-half of **AC-install-no-homebrew** — drive `install.sh`. On a
-normal dev run, if `install.sh` is absent they **skip** with
-`(Wave-3: install.sh not present)`; once it exists they **run and gate** (only the
+normal dev run, if `install.sh` is absent they **skip**; with it present (as it is
+in this repo) they **run and gate** (only the
 network/`curl | bash` leg stays deferred). To stop an implementation from shipping
 with **no installer at all**, the final-conformance run sets `FERRY_CONFORMANCE=1`
 (or `FERRY_REQUIRE_INSTALL_SH=1`): under that flag a **missing `install.sh` FAILS**
-these installer ACs instead of skipping. Dev runs stay green pre-Wave-3; the final
-gate cannot silently pass without `install.sh`.
+these installer ACs instead of skipping, so the final
+gate cannot silently pass without `install.sh` — CI sets it on every eval job.
 
 ## Design
 
