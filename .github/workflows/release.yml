@@ -117,6 +117,13 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # verify must gate what the release job will actually build: that job
+      # runs `make build` (all four targets), not the host-only `go build ./...`
+      # above, and by this point the tag is immutable — a target-specific break
+      # caught only there would leave the version permanently unreleasable.
+      - name: Cross-compile every release target (make build)
+        run: make build
+
       - name: Vet
         run: go vet ./...
 
