@@ -11,6 +11,15 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Fixed
+
+- **`ferry restore` survives a deleted parent directory.** When a managed
+  path's parent directory had been removed after the baseline was recorded
+  (for example by `rm -rf ~/.config/foo`), restore aborted on the first such
+  path and left every later path unreverted — and the shared rollback
+  primitive wedged every subsequent `ferry apply` the same way. Restore now
+  recreates the missing parent first, as the apply side always has.
+
 ## [0.10.0] - 2026-07-19
 
 ### Added

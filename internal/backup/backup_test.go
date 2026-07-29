@@ -1236,3 +1236,91 @@ func TestSnapshotIsDirectlyReversible(t *testing.T) {
 		t.Error("absent path exists after snapshot revert, want deleted")
 	}
 }
+
+// TestRestoreRecreatesMissingParentAndContinues proves a restore survives the
+// user deleting a managed path's parent directory after the baseline was
+// recorded: the baseline recorded a file there, so its parent existed pre-ferry,
+// and restore must recreate it rather than abort — stranding every later sorted
+// path unreverted.
+func TestRestoreRecreatesMissingParentAndContinues(t *testing.T) {
+	e, home := newEngine(t)
+	nested := filepath.Join(home, ".config", "foo", "conf")
+	later := filepath.Join(home, "zz")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, nested, []byte("NESTED-ORIGINAL"), 0o600)
+	mustWrite(t, later, []byte("LATER-ORIGINAL"), 0o600)
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupAndWrite(r, nested, []byte("NESTED-CHANGED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupAndWrite(r, later, []byte("LATER-CHANGED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The user removes the whole directory tree between apply and restore.
+	if err := os.RemoveAll(filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := e.Restore(); err != nil {
+		t.Fatalf("Restore aborted on a missing parent directory: %v", err)
+	}
+	if got, _ := os.ReadFile(nested); string(got) != "NESTED-ORIGINAL" {
+		t.Errorf("nested baseline not restored: live = %q, want NESTED-ORIGINAL", got)
+	}
+	if got, _ := os.ReadFile(later); string(got) != "LATER-ORIGINAL" {
+		t.Errorf("later-sorted baseline stranded: live = %q, want LATER-ORIGINAL", got)
+	}
+}
+
+// TestRollbackSurvivesMissingParentDirectory proves the rollback primitive is not
+// wedged by a deleted parent: an incomplete run whose backed-up path lost its
+// parent directory still rolls back cleanly, restoring the original content, and
+// leaves no incomplete run behind.
+func TestRollbackSurvivesMissingParentDirectory(t *testing.T) {
+	e, home := newEngine(t)
+	nested := filepath.Join(home, ".config", "foo", "conf")
+	if err := os.MkdirAll(filepath.Dir(nested), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, nested, []byte("ROLLBACK-ORIGINAL"), 0o600)
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupAndWrite(r, nested, []byte("ROLLBACK-CHANGED"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Crash before commit, then the parent directory disappears.
+	if err := os.RemoveAll(filepath.Join(home, ".config")); err != nil {
+		t.Fatal(err)
+	}
+	rolled, err := e.RollbackIncomplete()
+	if err != nil {
+		t.Fatalf("RollbackIncomplete wedged on a missing parent directory: %v", err)
+	}
+	if len(rolled) != 1 {
+		t.Fatalf("rolled back %d runs, want 1", len(rolled))
+	}
+	if got, _ := os.ReadFile(nested); string(got) != "ROLLBACK-ORIGINAL" {
+		t.Errorf("original not restored past the missing parent: live = %q, want ROLLBACK-ORIGINAL", got)
+	}
+	// A second sweep finds nothing left to roll back — the run dir is gone.
+	again, err := e.RollbackIncomplete()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(again) != 0 {
+		t.Errorf("incomplete run persisted after rollback: %d runs remain", len(again))
+	}
+}

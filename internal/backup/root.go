@@ -21,8 +21,8 @@ import (
 //
 // os.OpenRoot works on ANY directory, including a non-$HOME test state root, so
 // this adds no home-only restriction beyond guardResolvedContainment's own; the
-// parent must merely already exist (the write callers MkdirAll it first, and a
-// restore targets a baseline path whose parent exists).
+// parent must merely already exist (the write callers MkdirAll it first, and
+// restoreState recreates a missing parent before opening it).
 func leafRoot(absPath string) (*os.Root, string, error) {
 	root, err := os.OpenRoot(filepath.Dir(absPath))
 	if err != nil {

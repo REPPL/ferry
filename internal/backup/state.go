@@ -121,6 +121,18 @@ func restoreState(state PathState, blob []byte) error {
 	// the remove and the re-create; routing BOTH the remove and the write through
 	// the root means such a swapped-in symlink can never redirect the mutation out
 	// of the parent (the follow-open refuses).
+	// The baseline recorded a file or symlink here, so its parent existed
+	// pre-ferry; recreate it if it has since been removed (e.g. the user
+	// rm -rf'd the directory between apply and restore), mirroring the apply
+	// side's MkdirAll in BackupAndWrite. Without this, one missing parent
+	// aborts the whole restore — and wedges rollback, which shares this path.
+	// Containment was re-validated on the resolved chain just above, so the
+	// recreate cannot land outside $HOME or under ~/.ssh.
+	if state.Kind != KindAbsent {
+		if err := os.MkdirAll(filepath.Dir(state.Path), 0o755); err != nil {
+			return err
+		}
+	}
 	root, err := os.OpenRoot(filepath.Dir(state.Path))
 	if err != nil {
 		if state.Kind == KindAbsent && errors.Is(err, fs.ErrNotExist) {
