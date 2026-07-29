@@ -23,32 +23,27 @@ to a branch.
 
 ## Automated flow (primary)
 
-Cut a release with the blessed driver, run from a clean `main`:
+Pushing the CHANGELOG promotion commit to `main` **is** the release act. The
+[`auto-release` workflow](../../.github/workflows/auto-release.yml) runs on every push
+to `main`: when the newest dated `## [X.Y.Z] - <date>` CHANGELOG heading has no git
+tag yet, it creates the annotated `vX.Y.Z` tag at that commit and invokes the
+[`release` workflow](../../.github/workflows/release.yml) directly as a reusable
+workflow. An ordinary push — no newly promoted CHANGELOG heading — tags nothing and
+does nothing. Tags are immutable: only the newest dated version is ever tagged, and an
+already-tagged version is re-released only if its GitHub Release is missing (a
+transient publish failure), built from the tagged commit, never a moved-on `main`.
+
+Because the tag exists moments after the promotion commit lands, run the local gates
+**before** pushing that commit — `docs-currency-lint` and the cross-compile rehearsal
+run only in `scripts/release.sh`, not in CI:
 
 ```bash
-scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
+scripts/release.sh vX.Y.Z --dry-run   # every gate + rehearsal, changes nothing
 ```
 
-[`scripts/release.sh`](../../scripts/release.sh) fails closed at every gate before it
-creates anything: it checks the preconditions (on `main`, clean tree, `main` up to
-date with `origin/main`), asserts the `## [X.Y.Z]` CHANGELOG section is promoted out
-of `[Unreleased]`, runs `docs-currency-lint`, requires any matching plan under
-`.abcd/development/plans/` to be marked `shipped in vX.Y.Z` (via
-[`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
-the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
-(unless `--yes`) and run the single irreversible act:
-
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-
-`--dry-run` runs every gate and the rehearsal, prints exactly what the tag/push and the
-`.abcd/.work.local/NEXT.md` reset would do, and changes nothing in git or in `.abcd/.work.local/NEXT.md`.
-
-The [`release` workflow](../../.github/workflows/release.yml) then, for the pushed tag
-(its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan left
-un-shipped fails the release even on a hand-pushed tag):
+The [`release` workflow](../../.github/workflows/release.yml) then, for the tagged
+commit (its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan
+left un-shipped fails the release even on a hand-pushed tag):
 
 1. Cross-compiles the four `bin/ferry-<goos>-<arch>` binaries (`make build`).
 2. Runs [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh), which writes the real
@@ -102,7 +97,27 @@ scripts/prune-releases.sh --current vX.Y.Z --dry-run
 The release just published is never pruned, and pruning refuses if a newer patch than
 the current one already exists.
 
-## Local / fallback flow
+## Manual / recovery flow
+
+When `auto-release` is disabled, or a tag must be cut by hand,
+[`scripts/release.sh`](../../scripts/release.sh) is the blessed driver, run from a
+clean `main` that is up to date with `origin/main`:
+
+```bash
+scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
+```
+
+It fails closed at every gate before it creates anything: it asserts the `## [X.Y.Z]`
+CHANGELOG section is promoted out of `[Unreleased]`, runs `docs-currency-lint`,
+requires any matching plan under `.abcd/development/plans/` to be marked
+`shipped in vX.Y.Z` (via
+[`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
+the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
+(unless `--yes`) and run the single irreversible act: `git tag vX.Y.Z && git push
+origin vX.Y.Z`. Note that on the automatic path above `auto-release` has usually
+already created the tag by the time the promotion commit is pushed, so the driver's
+tag step fails on an existing tag — that is the expected outcome, not an error in the
+release: the gates have still run, and the tag already points at the right commit.
 
 To prepare a release-ready tree locally (e.g. to inspect the manifest before tagging, or
 if you publish by hand):
@@ -145,7 +160,8 @@ build-provenance attestation above is the real signature.
 
 ## Related Documentation
 
-- [`scripts/release.sh`](../../scripts/release.sh): the blessed release driver — gates, rehearses, then tags and pushes.
+- [`.github/workflows/auto-release.yml`](../../.github/workflows/auto-release.yml): tags the newest dated CHANGELOG version on push to `main` and calls the release workflow.
+- [`scripts/release.sh`](../../scripts/release.sh): the manual release driver — gates, rehearses, then tags and pushes.
 - [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
 - [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
 - [`.github/workflows/release.yml`](../../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
