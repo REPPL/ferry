@@ -382,14 +382,16 @@ secret-routed file is deployed `0600`.
 
 ferry carries the packages a machine needs as declarative manifests under
 `deps/` in the config repo, one representation per manager. Installing packages
-mutates system state, so it happens **only** under the explicit `ferry apply
---deps` step — never during a default unattended `apply`. Every manager here is
-**install/reconcile-only**: ferry adds what the manifest declares and never
-removes a package the manifest omits.
+mutates system state, so it happens **only** when the domain is declared under
+`[manage]` **and** the explicit `ferry apply --deps` step runs — never during a
+default unattended `apply`, and never for an undeclared or disabled domain.
+Every manager here is **install/reconcile-only**: ferry adds what the manifest
+declares and never removes a package the manifest omits.
 
 ### Homebrew
 
-Enable `brew = true` under `[manage]`. The git-tracked representation is a
+Enable `brew = true` under `[manage]`; without it, `apply --deps` skips the
+OS-package-manager install entirely. The git-tracked representation is a
 `Brewfile.<os>` (`deps/Brewfile.darwin`, `deps/Brewfile.linux`) plus an optional
 per-machine `deps/Brewfile.<os>.local` overlay for casks or Mac App Store apps
 that belong to one machine only. `ferry capture` re-dumps the Brewfile from

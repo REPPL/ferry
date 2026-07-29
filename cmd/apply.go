@@ -980,15 +980,21 @@ func fileSkippedMessage(fileDomain string) string {
 // installed. ErrNoPackageManager is reported, never a bootstrap trigger.
 func applyDeps(ctx *cmdContext, out io.Writer) error {
 	depsDir := filepath.Join(ctx.RepoPath, "deps")
-	result, err := deps.Install(depsDir, deps.ExecRunner{})
-	switch {
-	case errors.Is(err, deps.ErrNoPackageManager):
+	// The OS-package-manager install is gated on the brew domain being managed,
+	// exactly like the npm-globals gate below and the brew gates in status and
+	// capture: Scope is the single source of truth for which domains this
+	// machine manages, so `--deps` selects the step but never widens the scope.
+	// The brew key covers apt too — manifest selection follows the detected
+	// manager, and status/capture already key both on brew.
+	if !ctx.Scope.IsManaged("brew") {
+		fmt.Fprintln(out, "deps: brew is not managed on this machine; skipping dependency install")
+	} else if result, err := deps.Install(depsDir, deps.ExecRunner{}); errors.Is(err, deps.ErrNoPackageManager) {
 		// No OS package manager: report and fall through to npm globals, which are
 		// ORTHOGONAL (a machine can have npm but no brew/apt).
 		fmt.Fprintln(out, "deps: no package manager present; skipping dependency install")
-	case err != nil:
+	} else if err != nil {
 		return fmt.Errorf("install dependencies: %w", err)
-	default:
+	} else {
 		installed := result.RecordedInstalledSet()
 		if err := persistInstalledSet(installed); err != nil {
 			return fmt.Errorf("record installed packages: %w", err)

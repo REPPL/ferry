@@ -13,6 +13,12 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **`apply --deps` honours the `[manage]` scope for the OS package manager.**
+  The Homebrew/apt install ran for every `apply --deps`, even when `brew` was
+  undeclared or set to `false` — while npm globals, `status`, and `capture`
+  all honoured the scope. The install is now gated on `brew = true`, so an
+  unmanaged dependency domain is never applied, as the configuration
+  reference has always promised.
 - **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
   The pre-integration guard that refuses to let a remote-added file overwrite
   a local untracked or ignored file compared git's quoted path listing against
