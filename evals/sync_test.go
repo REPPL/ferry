@@ -945,6 +945,50 @@ func TestSyncIgnoredGuard_NonASCII(t *testing.T) {
 	noForcePush(t, sr)
 }
 
+// TestSyncIgnoredGuard_RemoteRename proves the guard also catches a collision
+// the remote introduces as a RENAME: with rename detection on, `git diff
+// --diff-filter=A` classifies the path R, not A, so a rename-blind enumeration
+// never sees it and the ignored file is silently overwritten.
+func TestSyncIgnoredGuard_RemoteRename(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	sr := newSyncRepo(t, s, true)
+
+	appendLocalExclude(t, sr, "*.ign\n")
+	tipBefore := seedRemoteRename(t, sr, "shared.txt", "notes.ign", "remote renames onto ignored path")
+	localP := s.WriteRepoFile(t, "notes.ign", "LOCAL-IGNORED-BYTES\n")
+	before := s.SnapshotFile(t, localP)
+
+	out, errOut, code := s.FerryEnv(sr.syncEnv(), "sync")
+	combined := out + errOut
+	if code == 0 {
+		t.Errorf("AC-sync-untracked-guard: sync whose remote RENAME would clobber a local ignored file exited 0 (must abort)")
+	}
+	if !containsAnyFold(combined, "untracked", "overwrite", "clobber", "conflict", "local") {
+		t.Errorf("AC-sync-untracked-guard: abort did not explain the ignored-overwrite guard\n%s", combined)
+	}
+	before.AssertUnchanged(t)
+	if tipAfter := originTip(t, sr); tipAfter != tipBefore {
+		t.Errorf("AC-sync-untracked-guard: origin tip moved despite the abort — was %s now %s", tipBefore, tipAfter)
+	}
+	noForcePush(t, sr)
+}
+
+// seedRemoteRename commits a rename (oldPath -> newPath) to the bare origin via
+// a throwaway clone — a "remote ahead" commit whose new path arrives as R, not
+// A, under rename detection. Returns the origin tip oid after the push.
+func seedRemoteRename(t *testing.T, sr *syncRepo, oldPath, newPath, msg string) string {
+	t.Helper()
+	tmp := t.TempDir()
+	syncGit(t, tmp, "clone", "-q", sr.bare, ".")
+	syncGit(t, tmp, "config", "user.email", "eval@localhost")
+	syncGit(t, tmp, "config", "user.name", "eval")
+	syncGit(t, tmp, "mv", oldPath, newPath)
+	syncGit(t, tmp, "commit", "-q", "-m", msg)
+	syncGit(t, tmp, "push", "-q", "origin", syncBranch)
+	return originTip(t, sr)
+}
+
 // appendLocalExclude adds a pattern to the clone's .git/info/exclude — ignored
 // for the LOCAL repo only, invisible to the remote side's throwaway clones.
 func appendLocalExclude(t *testing.T, sr *syncRepo, pattern string) {

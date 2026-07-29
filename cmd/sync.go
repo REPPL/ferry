@@ -743,9 +743,12 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 	// NUL-delimited (-z) so the paths come back as raw bytes: without it, git's
 	// core.quotePath default octal-escapes and quotes non-ASCII names, which can
 	// never match the raw -z paths in s.untracked/s.backups, silently disarming
-	// the guard for exactly those files. A failure to enumerate is a hard error
-	// (fail closed): returning nil here would wave the merge through unguarded.
-	added, err := gitSync(repo, "diff", "--name-only", "-z", "--diff-filter=A", "HEAD", upstream)
+	// the guard for exactly those files. --no-renames keeps a remote rename in
+	// scope: with detection on, a renamed-in path classifies R, not A, and would
+	// slip past the filter even though the merge lands it as a new file here.
+	// A failure to enumerate is a hard error (fail closed): returning nil here
+	// would wave the merge through unguarded.
+	added, err := gitSync(repo, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", "HEAD", upstream)
 	if err != nil {
 		return fmt.Errorf("sync: cannot enumerate remote-added paths for the overwrite guard: %w", err)
 	}
