@@ -885,6 +885,84 @@ func TestSyncUntrackedGuard_AC_sync_untracked_guard(t *testing.T) {
 	noForcePush(t, sr)
 }
 
+// TestSyncIgnoredGuard_ASCII pins the guard's one non-redundant job: git refuses
+// to overwrite an UNTRACKED collision on its own, but silently overwrites an
+// IGNORED one, so the ignored case is ferry's guard or nothing.
+func TestSyncIgnoredGuard_ASCII(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	sr := newSyncRepo(t, s, true)
+
+	// Ignore *.ign locally only (core exclude, not a tracked .gitignore), so the
+	// remote side can still add the path as a tracked file.
+	appendLocalExclude(t, sr, "*.ign\n")
+	tipBefore := seedRemoteAhead(t, sr, "notes.ign", "REMOTE-BYTES\n", "remote adds ignored path")
+	localP := s.WriteRepoFile(t, "notes.ign", "LOCAL-IGNORED-BYTES\n")
+	before := s.SnapshotFile(t, localP)
+
+	out, errOut, code := s.FerryEnv(sr.syncEnv(), "sync")
+	combined := out + errOut
+	if code == 0 {
+		t.Errorf("AC-sync-untracked-guard: sync that would clobber a local ignored file exited 0 (must abort)")
+	}
+	if !containsAnyFold(combined, "untracked", "overwrite", "clobber", "conflict", "local") {
+		t.Errorf("AC-sync-untracked-guard: abort did not explain the ignored-overwrite guard\n%s", combined)
+	}
+	before.AssertUnchanged(t)
+	if tipAfter := originTip(t, sr); tipAfter != tipBefore {
+		t.Errorf("AC-sync-untracked-guard: origin tip moved despite the abort — was %s now %s", tipBefore, tipAfter)
+	}
+	noForcePush(t, sr)
+}
+
+// TestSyncIgnoredGuard_NonASCII proves the guard survives git's core.quotePath
+// default: `git diff --name-only` octal-escapes and quotes a non-ASCII path
+// ("caf\303\251.ign") while the snapshot's `status --porcelain -z` yields raw
+// bytes, so a newline-split guard never matches and the ignored file is silently
+// overwritten — then the post-sync cleanup deletes its out-of-band backup too.
+func TestSyncIgnoredGuard_NonASCII(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	sr := newSyncRepo(t, s, true)
+
+	appendLocalExclude(t, sr, "*.ign\n")
+	tipBefore := seedRemoteAhead(t, sr, "café.ign", "REMOTE-BYTES\n", "remote adds non-ascii ignored path")
+	localP := s.WriteRepoFile(t, "café.ign", "LOCAL-IGNORED-BYTES\n")
+	before := s.SnapshotFile(t, localP)
+
+	out, errOut, code := s.FerryEnv(sr.syncEnv(), "sync")
+	combined := out + errOut
+	if code == 0 {
+		t.Errorf("AC-sync-untracked-guard: sync that would clobber a non-ASCII local ignored file exited 0 (must abort)")
+	}
+	if !containsAnyFold(combined, "untracked", "overwrite", "clobber", "conflict", "local") {
+		t.Errorf("AC-sync-untracked-guard: abort did not explain the ignored-overwrite guard\n%s", combined)
+	}
+	before.AssertUnchanged(t)
+	if tipAfter := originTip(t, sr); tipAfter != tipBefore {
+		t.Errorf("AC-sync-untracked-guard: origin tip moved despite the abort — was %s now %s", tipBefore, tipAfter)
+	}
+	noForcePush(t, sr)
+}
+
+// appendLocalExclude adds a pattern to the clone's .git/info/exclude — ignored
+// for the LOCAL repo only, invisible to the remote side's throwaway clones.
+func appendLocalExclude(t *testing.T, sr *syncRepo, pattern string) {
+	t.Helper()
+	p := filepath.Join(sr.clone, ".git", "info", "exclude")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatalf("appendLocalExclude mkdir: %v", err)
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("appendLocalExclude open: %v", err)
+	}
+	defer f.Close()
+	if _, err := f.WriteString(pattern); err != nil {
+		t.Fatalf("appendLocalExclude write: %v", err)
+	}
+}
+
 // -----------------------------------------------------------------------------
 // AC-sync-no-apply — sync deploys nothing to live/system locations.
 // -----------------------------------------------------------------------------

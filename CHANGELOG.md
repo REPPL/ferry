@@ -13,6 +13,14 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
+  The pre-integration guard that refuses to let a remote-added file overwrite
+  a local untracked or ignored file compared git's quoted path listing against
+  raw paths, so a collision on a non-ASCII filename (or one with a leading
+  space) slipped through: the fast-forward merge silently replaced the local
+  ignored file and the cleanup then discarded its out-of-band backup. The
+  guard now reads NUL-delimited raw paths and treats a failed enumeration as
+  an abort instead of waving the merge through.
 - **`ferry restore` survives a deleted parent directory.** When a managed
   path's parent directory had been removed after the baseline was recorded
   (for example by `rm -rf ~/.config/foo`), restore aborted on the first such
