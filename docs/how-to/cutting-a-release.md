@@ -34,14 +34,21 @@ already-tagged version is re-released only if its GitHub Release is missing (a
 transient publish failure), built from the tagged commit, never a moved-on `main`.
 
 Because the tag exists moments after the promotion commit lands, run the local gates
-**before** pushing that commit — `docs-currency-lint` runs only in
-`scripts/release.sh`, not in CI (CI does cross-compile every release target on each
-push, but the driver's rehearsal also stamps the version and builds the checksum
-manifest and prune plan):
+**before** pushing that commit. The driver itself cannot run at this point — its
+first gate insists local `main` matches `origin/main`, which is false while the
+promotion commit sits unpushed — so run its gates individually
+(`docs-currency-lint` runs only here, not in CI):
 
 ```bash
-scripts/release.sh vX.Y.Z --dry-run   # every gate + rehearsal, changes nothing
+docs-currency-lint                                     # docs gate (CI does not run it)
+scripts/check-plan-shipped.sh vX.Y.Z                   # plan marked shipped
+make release VERSION=vX.Y.Z                            # build, version stamp, checksum manifest
+scripts/prune-releases.sh --current vX.Y.Z --dry-run   # prune plan preview
 ```
+
+A full driver run (`scripts/release.sh vX.Y.Z`) works only after the push, where it
+stops at the already-created tag with every gate having run — the expected outcome
+described under the [manual flow](#manual--recovery-flow) below.
 
 The [`release` workflow](../../.github/workflows/release.yml) then, for the tagged
 commit (its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan
