@@ -47,8 +47,13 @@ on:
 
 # Never run two releases of the same tag concurrently, and never cancel a
 # release mid-flight — a half-published release is worse than a queued one.
+# Keyed on the TAG so both entry points converge: in a workflow_call run the
+# github context is the CALLER's (ref = refs/heads/main), so a ref-keyed group
+# would put a called release and a tag-push release of the SAME tag in
+# different groups and let them race to `gh release create`. The expression
+# mirrors the TAG derivation below (env is not available in `concurrency`).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 # The tag name this run releases, derived ONCE for both entry points:

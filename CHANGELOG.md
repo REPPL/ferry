@@ -26,6 +26,12 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **Two release runs of the same tag are serialised.** The release
+  workflow's concurrency group was keyed on `github.ref`, which differs
+  between its two entry points (a tag push versus the auto-release call,
+  whose context is the caller's `main`), so two runs releasing the same tag
+  landed in different groups and could race to publish — one red run and
+  stray duplicate attestations. The group is now keyed on the tag itself.
 - **The release gate now runs the macOS eval leg and the cheap main-branch
   gates.** The pre-publish `verify` job exercised the eval suite against a
   Linux binary only, so the darwin-only evals — covering ferry's flagship
