@@ -26,6 +26,13 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **The release gate now runs the macOS eval leg and the cheap main-branch
+  gates.** The pre-publish `verify` job exercised the eval suite against a
+  Linux binary only, so the darwin-only evals — covering ferry's flagship
+  platform — never gated a release, and a hand-pushed tag ran no CI at all
+  (the CI workflow triggers on branches, not tags). Publishing now also
+  requires a `verify-macos` job mirroring CI's macOS eval leg, plus the
+  gofmt, CLI-reference staleness, and consistency-lint checks in `verify`.
 - **`ferry work prune` and `ferry work pack` act on the located cargo
   directory.** After a rev-list reorder (a subtree import adding a second
   root commit), the project's computed key changes; `status` and `receive`
