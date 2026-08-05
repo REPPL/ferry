@@ -137,8 +137,8 @@ make release
 
 `make release` builds the binaries and runs `gen-checksums` (`scripts/gen-checksums.sh`),
 which writes `bin/checksums.txt` over the built binaries: idempotent and re-runnable. It
-then prints how to publish (push a tag for CI, or create the Release and upload the
-`bin/ferry-*` binaries and `bin/checksums.txt` yourself).
+then points back at the two publishing paths — the promotion push for the automatic
+flow, or `scripts/release.sh` as the recovery driver.
 
 You can also run the pieces directly:
 

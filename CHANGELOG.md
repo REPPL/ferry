@@ -26,6 +26,14 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **`make release` prints publishing instructions that work.** The target's
+  printout prescribed `git tag vX.Y.Z && git push --follow-tags`, which can
+  never push the tag it creates (`--follow-tags` pushes only annotated tags,
+  `git tag` makes a lightweight one) and races the auto-release flow the
+  documentation prescribes; a second target offered a hand-upload path that
+  bypasses the verified release workflow entirely. The printout now names
+  the two real paths — the CHANGELOG promotion push, or `scripts/release.sh`
+  for recovery — and the hand-upload target is gone.
 - **Two release runs of the same tag are serialised.** The release
   workflow's concurrency group was keyed on `github.ref`, which differs
   between its two entry points (a tag push versus the auto-release call,
