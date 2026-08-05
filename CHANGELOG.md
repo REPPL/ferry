@@ -37,6 +37,14 @@ called out in a **Breaking** section. See
   separately (parsers see pure stdout; error messages keep git's
   diagnostics), and the status enumeration behind the backup fails closed on
   any field it cannot parse instead of skipping it.
+- **`ferry sync`'s overwrite guard now covers symlinks.** A local symlink at
+  a path the remote newly adds was invisible to the guard: an ignored
+  symlink is recorded only as its target (git silently overwrites ignored
+  paths during checkout), and an untracked symlink was compared by
+  *following* it, so target bytes equal to the remote's file waved the merge
+  through — either way the symlink was replaced by a regular file in a run
+  that then succeeded, leaving nothing to roll back. A symlink at a
+  remote-added path now aborts the sync unconditionally.
 - **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
   The pre-integration guard that refuses to let a remote-added file overwrite
   a local untracked or ignored file compared git's quoted path listing against

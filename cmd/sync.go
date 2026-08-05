@@ -822,6 +822,15 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 			local[rel] = readBackupOrWorktree(repo, s, rel)
 		}
 	}
+	// A local SYMLINK (untracked or ignored) is recorded only in s.symlinks —
+	// backupOne stores its target, no byte backup — and git silently overwrites
+	// an ignored path during checkout. A symlink can never be byte-identical to
+	// the remote's regular blob, so a path collision aborts unconditionally.
+	for rel := range s.symlinks {
+		if remoteAdded[rel] {
+			return untrackedClobberErr(rel)
+		}
+	}
 	// Staged-added (A in the index): new files the user staged but did not commit. The
 	// snapshot stash removed them from the worktree, but `stash apply` would re-add them
 	// and collide with the remote's version. Their bytes come from the stash blob.
@@ -865,13 +874,20 @@ func stagedAddedPaths(repo string) []string {
 
 // readBackupOrWorktree returns the LOCAL bytes for an untracked/ignored path: the
 // out-of-band backup if present, else the live worktree file (nil on any error).
+// The worktree read is lstat-gated: a symlink or other non-regular file returns
+// nil (treated as differing → abort) — following a link and comparing its
+// TARGET's bytes would let the merge replace the symlink with a regular file.
 func readBackupOrWorktree(repo string, s *snapshot, rel string) []byte {
 	if bp, ok := s.backups[rel]; ok {
 		if b, err := os.ReadFile(bp); err == nil {
 			return b
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(repo, rel)); err == nil {
+	abs := filepath.Join(repo, rel)
+	if fi, err := os.Lstat(abs); err != nil || !fi.Mode().IsRegular() {
+		return nil
+	}
+	if b, err := os.ReadFile(abs); err == nil {
 		return b
 	}
 	return nil
