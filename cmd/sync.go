@@ -740,13 +740,21 @@ func (s *snapshot) cleanup() {
 // bytes collision aborts, so the guard never cries wolf on an identical file.
 func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 	// Paths present in the remote tip but not on our HEAD (candidate new files).
-	added, ok := gitSyncOK(repo, "diff", "--name-only", "--diff-filter=A", "HEAD", upstream)
-	if !ok || strings.TrimSpace(added) == "" {
-		return nil
+	// NUL-delimited (-z) so the paths come back as raw bytes: without it, git's
+	// core.quotePath default octal-escapes and quotes non-ASCII names, which can
+	// never match the raw -z paths in s.untracked/s.backups, silently disarming
+	// the guard for exactly those files. --no-renames keeps a remote rename in
+	// scope: with detection on, a renamed-in path classifies R, not A, and would
+	// slip past the filter even though the merge lands it as a new file here.
+	// A failure to enumerate is a hard error (fail closed): returning nil here
+	// would wave the merge through unguarded.
+	added, err := gitSync(repo, "diff", "--name-only", "-z", "--no-renames", "--diff-filter=A", "HEAD", upstream)
+	if err != nil {
+		return fmt.Errorf("sync: cannot enumerate remote-added paths for the overwrite guard: %w", err)
 	}
 	remoteAdded := map[string]bool{}
-	for _, p := range strings.Split(added, "\n") {
-		if p = strings.TrimSpace(p); p != "" {
+	for _, p := range strings.Split(added, "\x00") {
+		if p != "" {
 			remoteAdded[p] = true
 		}
 	}
@@ -789,10 +797,11 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 }
 
 // stagedAddedPaths lists paths added (new) in the index vs HEAD — staged but not yet
-// committed. NUL-delimited so odd paths survive.
+// committed. NUL-delimited so odd paths survive; the raw gitSync output is split
+// as-is (gitSyncOK's TrimSpace would corrupt a leading-space first path).
 func stagedAddedPaths(repo string) []string {
-	o, ok := gitSyncOK(repo, "diff", "--cached", "--name-only", "--diff-filter=A", "-z", "HEAD")
-	if !ok {
+	o, err := gitSync(repo, "diff", "--cached", "--name-only", "--diff-filter=A", "-z", "HEAD")
+	if err != nil {
 		return nil
 	}
 	var out []string

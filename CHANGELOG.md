@@ -11,6 +11,38 @@ called out in a **Breaking** section. See
 
 ## [Unreleased]
 
+### Breaking
+
+- **`apply --deps` now requires `brew = true` under `[manage]`.** The
+  Homebrew/apt install previously ran for every `apply --deps`, even when
+  `brew` was undeclared or set to `false` — while npm globals, `status`, and
+  `capture` all honoured the scope, and the configuration reference promised
+  an undeclared domain is never applied. What an *absent* `brew` key means
+  under `--deps` therefore changes: the install is skipped (with a message
+  naming the key to add) instead of running. A repo that relies on
+  `apply --deps` must declare `brew = true` in `ferry.toml` (or a machine's
+  `ferry.local.toml`); nothing else changes, and `--deps` remains the
+  explicit opt-in step.
+
+### Fixed
+
+- **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
+  The pre-integration guard that refuses to let a remote-added file overwrite
+  a local untracked or ignored file compared git's quoted path listing against
+  raw paths, so a collision on a non-ASCII filename (or one with a leading
+  space) slipped through: the fast-forward merge silently replaced the local
+  ignored file and the cleanup then discarded its out-of-band backup. The
+  same guard was also blind to a collision the remote introduces as a
+  rename, which rename detection classifies `R` rather than `A`. The guard
+  now reads NUL-delimited raw paths with rename detection off, and treats a
+  failed enumeration as an abort instead of waving the merge through.
+- **`ferry restore` survives a deleted parent directory.** When a managed
+  path's parent directory had been removed after the baseline was recorded
+  (for example by `rm -rf ~/.config/foo`), restore aborted on the first such
+  path and left every later path unreverted — and the shared rollback
+  primitive wedged every subsequent `ferry apply` the same way. Restore now
+  recreates the missing parent first, as the apply side always has.
+
 ## [0.10.0] - 2026-07-19
 
 ### Added

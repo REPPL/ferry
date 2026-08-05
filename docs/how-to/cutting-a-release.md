@@ -13,7 +13,7 @@ the CLI surface may still change between minor versions (pre-1.0 = not yet API-s
 `v1.0.0` marks the first stable surface. The tag drives everything: the release
 workflow triggers on `v*`, and the tag is stamped into the binary via `-ldflags` so
 `ferry --version` reports it (e.g. `ferry v0.1.0`). Un-tagged local builds report the
-current development line (`v0.8.0-dev`).
+current development line (`v0.11.0-dev`).
 
 Checksums are **automated**, not hand-pasted. A script computes the SHA256 of each
 binary into a `checksums.txt` manifest that ships as a release asset; CI runs that
@@ -23,32 +23,36 @@ to a branch.
 
 ## Automated flow (primary)
 
-Cut a release with the blessed driver, run from a clean `main`:
+Pushing the CHANGELOG promotion commit to `main` **is** the release act. The
+[`auto-release` workflow](../../.github/workflows/auto-release.yml) runs on every push
+to `main`: when the newest dated `## [X.Y.Z] - <date>` CHANGELOG heading has no git
+tag yet, it creates the annotated `vX.Y.Z` tag at that commit and invokes the
+[`release` workflow](../../.github/workflows/release.yml) directly as a reusable
+workflow. An ordinary push — no newly promoted CHANGELOG heading — tags nothing and
+does nothing. Tags are immutable: only the newest dated version is ever tagged, and an
+already-tagged version is re-released only if its GitHub Release is missing (a
+transient publish failure), built from the tagged commit, never a moved-on `main`.
+
+Because the tag exists moments after the promotion commit lands, run the local gates
+**before** pushing that commit. The driver itself cannot run at this point — its
+first gate insists local `main` matches `origin/main`, which is false while the
+promotion commit sits unpushed — so run its gates individually
+(`docs-currency-lint` runs only here, not in CI):
 
 ```bash
-scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
+docs-currency-lint                                     # docs gate (CI does not run it)
+scripts/check-plan-shipped.sh vX.Y.Z                   # plan marked shipped
+make release VERSION=vX.Y.Z                            # build, version stamp, checksum manifest
+scripts/prune-releases.sh --current vX.Y.Z --dry-run   # prune plan preview
 ```
 
-[`scripts/release.sh`](../../scripts/release.sh) fails closed at every gate before it
-creates anything: it checks the preconditions (on `main`, clean tree, `main` up to
-date with `origin/main`), asserts the `## [X.Y.Z]` CHANGELOG section is promoted out
-of `[Unreleased]`, runs `docs-currency-lint`, requires any matching plan under
-`.abcd/development/plans/` to be marked `shipped in vX.Y.Z` (via
-[`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
-the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
-(unless `--yes`) and run the single irreversible act:
+A full driver run (`scripts/release.sh vX.Y.Z`) works only after the push, where it
+stops at the already-created tag with every gate having run — the expected outcome
+described under the [manual flow](#manual--recovery-flow) below.
 
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-
-`--dry-run` runs every gate and the rehearsal, prints exactly what the tag/push and the
-`.abcd/.work.local/NEXT.md` reset would do, and changes nothing in git or in `.abcd/.work.local/NEXT.md`.
-
-The [`release` workflow](../../.github/workflows/release.yml) then, for the pushed tag
-(its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan left
-un-shipped fails the release even on a hand-pushed tag):
+The [`release` workflow](../../.github/workflows/release.yml) then, for the tagged
+commit (its `verify` job re-runs `check-plan-shipped.sh` as a docs backstop, so a plan
+left un-shipped fails the release even on a hand-pushed tag):
 
 1. Cross-compiles the four `bin/ferry-<goos>-<arch>` binaries (`make build`).
 2. Runs [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh), which writes the real
@@ -102,7 +106,27 @@ scripts/prune-releases.sh --current vX.Y.Z --dry-run
 The release just published is never pruned, and pruning refuses if a newer patch than
 the current one already exists.
 
-## Local / fallback flow
+## Manual / recovery flow
+
+When `auto-release` is disabled, or a tag must be cut by hand,
+[`scripts/release.sh`](../../scripts/release.sh) is the blessed driver, run from a
+clean `main` that is up to date with `origin/main`:
+
+```bash
+scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without tagging
+```
+
+It fails closed at every gate before it creates anything: it asserts the `## [X.Y.Z]`
+CHANGELOG section is promoted out of `[Unreleased]`, runs `docs-currency-lint`,
+requires any matching plan under `.abcd/development/plans/` to be marked
+`shipped in vX.Y.Z` (via
+[`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
+the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
+(unless `--yes`) and run the single irreversible act: `git tag vX.Y.Z && git push
+origin vX.Y.Z`. Note that on the automatic path above `auto-release` tags the
+promotion commit as soon as it is pushed, so a driver run started afterwards fails at
+its tag step on the existing tag — that is the expected outcome, not an error in the
+release: the gates have still run, and the tag already points at the right commit.
 
 To prepare a release-ready tree locally (e.g. to inspect the manifest before tagging, or
 if you publish by hand):
@@ -145,10 +169,11 @@ build-provenance attestation above is the real signature.
 
 ## Related Documentation
 
-- [`scripts/release.sh`](../../scripts/release.sh): the blessed release driver — gates, rehearses, then tags and pushes.
+- [`.github/workflows/auto-release.yml`](../../.github/workflows/auto-release.yml): tags the newest dated CHANGELOG version on push to `main` and calls the release workflow.
+- [`scripts/release.sh`](../../scripts/release.sh): the manual release driver — gates, rehearses, then tags and pushes.
 - [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh): asserts a version's plan doc is marked shipped.
 - [`scripts/gen-checksums.sh`](../../scripts/gen-checksums.sh): writes the `checksums.txt` manifest.
-- [`.github/workflows/release.yml`](../../.github/workflows/release.yml): tag-triggered build → checksum → attest → publish.
+- [`.github/workflows/release.yml`](../../.github/workflows/release.yml): build → checksum → attest → publish; called by auto-release, or triggered directly by a hand-pushed tag.
 - [`install.sh`](../../install.sh): the installer that fetches and verifies `checksums.txt`.
 - [README—Install](../../README.md#install): the user-facing install command.
 - [Getting started](../tutorials/getting-started.md): build-from-source, which needs no release.

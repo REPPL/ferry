@@ -31,8 +31,14 @@ FERRY_BIN="$FERRY_BIN" go test -run TestApplyIdempotent_AC_apply_idempotent ./ev
 ```
 
 Without `FERRY_BIN` the eval suite skips every behavioural test and passes.
-CI (`.github/workflows/ci.yml`) runs build, vet, `go test ./...`, race tests
-on the internal packages, and the full eval suite against a real Linux binary.
+CI (`.github/workflows/ci.yml`) runs gofmt, build, the cross-compile of every
+release target, vet, `go test ./...`, race tests on the internal packages, the
+CLI-reference staleness check, the consistency lint, and the full eval suite
+against real Linux and macOS binaries.
+
+`make gen-docs` regenerates the committed CLI reference under
+`docs/reference/cli/` — run it after any command, flag, or help-text change,
+and never hand-edit those pages.
 
 Never run git-mutating operations (`git worktree add`, merges, rebases)
 against this repository while a `go test` or other tooling run is in flight

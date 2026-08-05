@@ -15,10 +15,14 @@ permissions:
 
 jobs:
   arm-auto-merge:
-    # Only docs:/chore: titles, and never for drafts. startsWith runs in the
-    # Actions expression context, so the title is compared here, never
-    # interpolated into a shell — no script-injection surface.
+    # Only docs:/chore: titles, never drafts, and only same-repo branches: a
+    # fork PR's GITHUB_TOKEN is capped read-only on pull_request regardless of
+    # the permissions block below, so arming auto-merge there can only fail
+    # red. startsWith runs in the Actions expression context, so the title is
+    # compared here, never interpolated into a shell — no script-injection
+    # surface.
     if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false &&
       (startsWith(github.event.pull_request.title, 'docs:') ||
        startsWith(github.event.pull_request.title, 'chore:'))

@@ -57,8 +57,15 @@ Every user-facing change keeps the docs and the CHANGELOG in sync.
   History lives in git; intent lives in `.abcd/development/plans/`.
 - The repository root carries only `README.md`, `AGENTS.md` (with its
   `CLAUDE.md`/`GEMINI.md` bridges), `CHANGELOG.md`, `CONTRIBUTING.md`,
-  `SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`
-  (user-facing) or `.abcd/development/` (developer records).
+  `SECURITY.md`, and `LICENSE`. Elsewhere, Markdown lives under `docs/`
+  (user-facing) or `.abcd/` (developer records under `development/`, working
+  memory under `work/`); a component directory (`deps/`, `evals/`) may also
+  carry its own `README.md`.
+- The per-command reference under `docs/reference/cli/` is generated from the
+  cobra command tree. A change to a command, a flag, or help text needs
+  `make gen-docs` and the regenerated pages committed — CI fails on a stale
+  tree. Never hand-edit those pages; the next `make gen-docs` discards the
+  edit.
 
 ## Decisions and the ADR workflow
 

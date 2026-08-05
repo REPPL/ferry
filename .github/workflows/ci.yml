@@ -1,10 +1,11 @@
 name: ci
 
 # Lightweight checks on every push and pull request: build, vet, and test on
-# macOS and Linux, plus a Linux job that runs the FULL behavioral eval suite
-# against a real Linux binary (exercising the cross-platform core — dotfiles,
-# deps, backup/restore — on actual Linux; terminal-domain evals are darwin-only
-# and skip cleanly on linux).
+# macOS and Linux, plus eval jobs that run the FULL behavioral eval suite
+# against a real binary on each OS — Linux exercises the cross-platform core
+# (dotfiles, deps, backup/restore) plus the strace-backed ~/.ssh tripwire, and
+# macOS exercises the darwin-only terminal/keybindings/iTerm2 evals that skip
+# everywhere else.
 on:
   push:
     branches: ['**']
@@ -83,6 +84,17 @@ jobs:
       - name: Build
         run: go build ./...
 
+      # `go build ./...` compiles only the host target, but a release ships all
+      # four Makefile TARGETS — and the first `make build` on the release path
+      # runs only AFTER auto-release has pushed the (immutable) tag, so a
+      # target-specific break would make that version permanently unreleasable.
+      # Cross-compile every target here, pre-tag. Output is gitignored, so the
+      # gen-docs staleness check above is unaffected; one leg suffices because
+      # cross-compilation is host-independent.
+      - name: Cross-compile every release target (make build)
+        if: matrix.os == 'ubuntu-latest'
+        run: make build
+
       - name: Vet
         run: go vet ./...
 
@@ -157,6 +169,35 @@ jobs:
             exit 1
           fi
           echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."
+
+  # Run the eval suite against a REAL darwin binary. The darwin-gated ACs —
+  # AC-platform-macos, the iTerm2 / Apple Terminal preference domains, the
+  # iTerm2 profile staging, and the live `plutil -lint` keybindings gate — skip
+  # on every other host, so without this job ferry's flagship platform has no
+  # end-to-end coverage. $HOME is a temp sandbox and the external tools are
+  # PATH-stubbed, so nothing on the runner is mutated; the darwin fs_usage
+  # tracer legs capability-skip unprivileged. No strace step: that is the
+  # Linux-only leg above.
+  evals-macos:
+    timeout-minutes: 20
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25'
+
+      - name: Build the macOS ferry binary
+        run: go build -o "$RUNNER_TEMP/ferry" .
+
+      # FERRY_CONFORMANCE=1 matches the evals-linux contract: a missing
+      # install.sh is a FAILURE (not a skip) for the offline installer ACs.
+      - name: Run the full eval suite against the macOS binary
+        run: FERRY_BIN="$RUNNER_TEMP/ferry" FERRY_INSTALL_SH="$PWD/install.sh" FERRY_CONFORMANCE=1 go test ./evals/...
 
   # Secrets never land in history: full-history scan on every push/PR.
   gitleaks:

@@ -41,6 +41,12 @@ devtree = "Development"           # optional workspace layer, relative to $HOME
 # enabled = ["alacritty", "wezterm"] # optional; default is every built-in terminal
 ```
 
+Every key above except `fonts` names an implemented domain. `[manage]` accepts
+unknown keys silently so the manifest stays forward-compatible, which means an
+unimplemented domain such as `fonts` is ignored whatever value it takes —
+`fonts = true` syncs nothing. Font casks on macOS travel in
+`deps/Brewfile.darwin` under the `brew` key instead.
+
 ```toml
 # ferry.local.toml (this machine only, gitignored)
 [manage]
@@ -67,8 +73,11 @@ carries its whole config tree file by file; a single-file terminal (WezTerm)
 carries its one file.
 
 Terminal configs participate in the secret store like dotfiles: a
-`{{ferry.secret …}}` placeholder is rendered on apply, a real secret is
-commit-gated on capture, and a secret-routed file is deployed `0600`.
+`{{ferry.secret …}}` placeholder is rendered on apply, and a secret-routed file
+is deployed `0600`. There is no capture pass for this domain, so the secret gate
+sits at publish time instead: `ferry sync` scans the whole worktree before it
+commits and the whole push range before it pushes, so a real secret committed
+under `terminals/` blocks the commit and never leaves the machine.
 
 The registry is data, edited in the manifest — never in code:
 
@@ -375,21 +384,25 @@ GUI-versus-tty) that lives on one machine alone. The exclude filter and symlink
 refusal apply to both trees.
 
 Emacs files participate in the secret store like dotfiles: a `{{ferry.secret …}}`
-placeholder is rendered on apply, a real secret is commit-gated on capture, and a
-secret-routed file is deployed `0600`.
+placeholder is rendered on apply, and a secret-routed file is deployed `0600`.
+As with terminals, there is no capture pass, so the secret gate sits at publish
+time: `ferry sync` scans every changed file before committing, so a real secret
+under `emacs/` blocks the commit and never leaves the machine.
 
 ## Dependencies
 
 ferry carries the packages a machine needs as declarative manifests under
 `deps/` in the config repo, one representation per manager. Installing packages
-mutates system state, so it happens **only** under the explicit `ferry apply
---deps` step — never during a default unattended `apply`. Every manager here is
-**install/reconcile-only**: ferry adds what the manifest declares and never
-removes a package the manifest omits.
+mutates system state, so it happens **only** when the domain is declared under
+`[manage]` **and** the explicit `ferry apply --deps` step runs — never during a
+default unattended `apply`, and never for an undeclared or disabled domain.
+Every manager here is **install/reconcile-only**: ferry adds what the manifest
+declares and never removes a package the manifest omits.
 
 ### Homebrew
 
-Enable `brew = true` under `[manage]`. The git-tracked representation is a
+Enable `brew = true` under `[manage]`; without it, `apply --deps` skips the
+OS-package-manager install entirely. The git-tracked representation is a
 `Brewfile.<os>` (`deps/Brewfile.darwin`, `deps/Brewfile.linux`) plus an optional
 per-machine `deps/Brewfile.<os>.local` overlay for casks or Mac App Store apps
 that belong to one machine only. `ferry capture` re-dumps the Brewfile from
@@ -408,6 +421,26 @@ as Ruby, so ferry gates every directive through a fail-closed allow-list
 (`brew`, `cask`, `mas`, `tap`, `vscode`, `whalebrew` only) before any `brew
 bundle` runs. There is no `brew bundle cleanup` step: ferry never uninstalls an
 undeclared package.
+
+### apt (Debian/Ubuntu)
+
+On a Linux machine with no Homebrew, ferry selects `deps/apt.txt` instead of a
+Brewfile — one package per line, with blank lines and `#` comments ignored.
+Selection follows the detected manager, so apt needs no `[manage]` key of its
+own: the same `brew = true` switch enables the OS-package-manager domain, and
+`ferry apply --deps` then installs the list with `apt-get install -y` (which
+needs root on most machines).
+
+The list is hand-curated, not a machine dump: apt has no clean installed-set
+dump, so `ferry capture` never rewrites `apt.txt` and `ferry status` reports no
+apt drift. There is no per-machine `.local` overlay for apt.
+
+Because a cloned repo's `apt.txt` reaches `apt-get`, every entry is validated as
+a plain Debian package name before anything runs: letters, digits and `+ - . :
+~` only, starting with a letter or digit, and a trailing `-` is refused (apt
+reads it as the remove modifier). Like Homebrew, this is
+install/reconcile-only — `apply --deps` never uninstalls a package the manifest
+omits.
 
 ### npm globals
 

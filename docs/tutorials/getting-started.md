@@ -12,7 +12,7 @@ the work it deliberately does **not** reimplement:
 
 | Prerequisite | Why ferry needs it | When |
 |---|---|---|
-| **macOS** | Terminal configuration (iTerm2, Apple Terminal) uses macOS-native preference mechanisms and is macOS-only. The cross-platform core (dotfiles, dependencies, backup/restore) is CI-tested on Linux. | terminal configuration |
+| **macOS** | The preference-based terminal apps (iTerm2, Apple Terminal) keep their settings in macOS-native preferences, so those domains are macOS-only. Config-file terminals (Alacritty, kitty, WezTerm) and the cross-platform core (dotfiles, dependencies, backup/restore) run anywhere, and are CI-tested on Linux. | iTerm2 and Apple Terminal configuration |
 | **`git`** | ferry does not embed git. It shells out to clone your config repo, and you commit/push your captured changes with git yourself. ferry preflights it and tells you how to install it if missing. | `init`, `capture` |
 | **A package manager** (Homebrew on macOS) | Only for installing declared dependencies via `ferry apply --deps`. ferry never installs the package manager for you: it uses whatever is present and tells you if none is. | `apply --deps` only |
 
@@ -20,7 +20,9 @@ You do **not** need admin/root, and you do not need to pre-install anything ferr
 manages: that's ferry's job. The above are the host tools ferry stands on.
 
 > **Linux scope.** The core (dotfiles, dependencies, backup/restore) is cross-platform
-> and CI-tested on Linux; terminal-emulator configuration is macOS-only.
+> and CI-tested on Linux, as are the config-file terminal emulators (Alacritty, kitty,
+> WezTerm). Only the preference-based terminal apps — iTerm2 and Apple Terminal — are
+> macOS-only.
 
 ---
 
@@ -47,10 +49,13 @@ To build from source instead:
 git clone https://github.com/REPPL/ferry.git && cd ferry
 make build
 mkdir -p ~/.local/bin
-cp bin/ferry-$(uname -s | tr A-Z a-z)-* ~/.local/bin/ferry
+cp "bin/ferry-$(go env GOOS)-$(go env GOARCH)" ~/.local/bin/ferry
 # If ~/.local/bin isn't on your PATH, add this to your shell config:
 #   export PATH="$HOME/.local/bin:$PATH"
 ```
+
+`make build` cross-compiles every target to `bin/ferry-<goos>-<arch>`, so the copy
+names the one for this host: there is no plain `bin/ferry`.
 
 ---
 
@@ -173,7 +178,7 @@ default), then writes ferry's config. (A bare `ferry init`, with no source, take
 ferry init https://github.com/REPPL/ferry.git   # clone your ferry repo over HTTPS, write ferry's config
 ferry diff                # preview what will change on this machine (optional)
 ferry apply               # reconcile this machine to the repo
-ferry apply --deps        # install dependencies (separate, explicit step)
+ferry apply --deps        # install dependencies (needs brew = true under [manage])
 ```
 
 `ferry apply` is idempotent and safe to re-run: run it after every `git pull`. It

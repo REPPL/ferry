@@ -509,6 +509,39 @@ brew = true
 	}
 }
 
+// TestDepsScopeGate proves `apply --deps` honours the [manage] scope for the OS
+// package manager the same way it already does for npm-globals: with `brew`
+// undeclared, and with `brew = false`, the present package manager is invoked
+// ZERO times — an undeclared or disabled domain is invisible to apply, exactly
+// as the configuration reference promises. (The >=1 case for `brew = true` is
+// pinned by AC-deps-install-attempted above.)
+func TestDepsScopeGate(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		manifest string
+	}{
+		{"brew-undeclared", "[manage]\ndotfiles = [\".zshrc\"]\n"},
+		{"brew-false", "[manage]\ndotfiles = [\".zshrc\"]\nbrew = false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := NewSandbox(t)
+			s.SeedSharedManifest(t, tc.manifest)
+			s.WriteRepoFile(t, ".zshrc", "# managed\n")
+			s.WriteRepoFile(t, filepath.Join("dotfiles", ".zshrc"), "# managed\n")
+			stubDir, count := makeBrewCountingStub(t)
+			pathOverride := "PATH=" + stubDir + string(os.PathListSeparator) + os.Getenv("PATH")
+			if _, errOut, code := s.FerryEnv([]string{pathOverride}, "apply", "--deps"); code != 0 {
+				t.Fatalf("apply --deps with brew out of scope exited %d; stderr:\n%s", code, errOut)
+			}
+			if n := countInvocations(count); n != 0 {
+				t.Errorf("apply --deps invoked the package manager %d times with brew %s (want 0: an unmanaged domain is never applied)", n, tc.name)
+			}
+		})
+	}
+}
+
 // makeBrewStub writes a fake `brew` executable into a temp dir that records each
 // invocation by touching a marker file. Returns (dir, markerPath).
 func makeBrewStub(t *testing.T) (dir, marker string) {

@@ -32,11 +32,18 @@ outside the documentation a ferry user reads.
 | Directory | Contents | Naming |
 |---|---|---|
 | `tutorials/`, `how-to/`, `reference/`, `explanation/` | The four Diátaxis types; each directory is created on first use | — |
+| `reference/cli/` | The per-command CLI reference, generated from the cobra command tree by `make gen-docs` — one page per command, never hand-edited (CI fails on a stale tree) | `ferry_<command>.md` |
 | `assets/` | Images and other static assets | — |
+
+The generated pages under `reference/cli/` are not listed individually in the
+Pages table above; [Commands](reference/commands.md) is the hand-written summary
+they back.
 
 ## Root-markdown allowlist
 
 The repository root carries only `README.md`, `AGENTS.md` (with its
 `CLAUDE.md`/`GEMINI.md` symlink bridges), `CHANGELOG.md`, `CONTRIBUTING.md`,
-`SECURITY.md`, and `LICENSE`. Every other Markdown file lives under `docs/`
-(user-facing) or `.abcd/development/` (developer records).
+`SECURITY.md`, and `LICENSE`. Elsewhere, Markdown lives under `docs/`
+(user-facing) or `.abcd/` (developer records under `development/`, working
+memory under `work/`); a component directory (`deps/`, `evals/`) may also carry
+its own `README.md`.

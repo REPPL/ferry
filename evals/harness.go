@@ -4,9 +4,9 @@
 // absence-of-write tripwires) and never inspects ferry's source.
 //
 // The binary under test is located via the FERRY_BIN environment variable. When
-// FERRY_BIN is unset (the default before the implementing wave lands), requireBin
-// skips the test with a clear message, so the package always compiles and
-// `go test ./evals/...` runs clean (all skipped, no failures).
+// FERRY_BIN is unset, requireBin skips the test with a clear message, so the
+// package always compiles and `go test ./evals/...` runs clean (all skipped,
+// no failures) — a run without FERRY_BIN therefore gates nothing.
 package evals
 
 import (
@@ -28,14 +28,14 @@ import (
 const ferryTimeout = 30 * time.Second
 
 // requireBin skips the calling test when FERRY_BIN is unset or does not point at
-// an executable file. This is the single gate that keeps the package green before
-// the binary exists: no FERRY_BIN => every real assertion is skipped, not failed.
+// an executable file. This is the single gate that keeps the package compiling
+// everywhere: no FERRY_BIN => every real assertion is skipped, not failed.
 func requireBin(t *testing.T) string {
 	t.Helper()
 	bin := os.Getenv("FERRY_BIN")
 	if bin == "" {
-		t.Skip("FERRY_BIN unset: ferry binary not built yet (evals are RED until the implementing wave lands). " +
-			"Build ferry, then run: FERRY_BIN=/path/to/ferry go test ./evals/...")
+		t.Skip("FERRY_BIN unset: no binary to drive, so this eval is skipped, not run. " +
+			"Build ferry (make build), then run: FERRY_BIN=\"$PWD/bin/ferry-$(go env GOOS)-$(go env GOARCH)\" go test ./evals/...")
 	}
 	info, err := os.Stat(bin)
 	if err != nil {
