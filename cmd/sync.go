@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
@@ -391,13 +392,25 @@ func hardenedGitEnv() []string {
 // init-side git (runGitIn) all route through it. It does NOT add `-C`: the caller
 // supplies `-C <repo>` for in-repo commands, while `clone` runs without one.
 // gh.GitPush is deliberately NOT routed here — it keeps its own credential-helper
-// path (a different trust context). Returns combined output + error.
+// path (a different trust context).
+//
+// Streams are captured SEPARATELY: on success only stdout is returned, so a git
+// stderr warning (unreadable config, broken ref, safe.directory advisory) can
+// never contaminate machine-parsed output — several callers split NUL-delimited
+// listings where a fused warning would silently swallow the first entry. On
+// failure stdout+stderr are returned together, so error messages keep git's
+// diagnostics.
 func runHardenedGit(args ...string) (string, error) {
 	full := append(hardenedGitConfigArgs(), args...)
 	cmd := exec.Command("git", full...)
 	cmd.Env = hardenedGitEnv()
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String() + stderr.String(), err
+	}
+	return stdout.String(), nil
 }
 
 // gitSync runs an in-repo git subprocess rooted at repo through the hardened
@@ -502,6 +515,53 @@ func takeSnapshot(repo string) (*snapshot, error) {
 	return s, nil
 }
 
+// statusZEntry is one parsed `git status --porcelain -z` path: untracked ("??")
+// or ignored ("!!").
+type statusZEntry struct {
+	rel       string
+	untracked bool
+}
+
+// validStatusByte reports whether b is a byte git's porcelain v1 status codes
+// use in either column.
+func validStatusByte(b byte) bool {
+	switch b {
+	case ' ', 'M', 'T', 'A', 'D', 'R', 'C', 'U', '?', '!':
+		return true
+	}
+	return false
+}
+
+// parseStatusZ splits `git status --porcelain [--ignored] -z` output into
+// untracked and ignored entries, FAILING CLOSED on any field it cannot parse:
+// once a hard git failure is ruled out, a malformed field can only mean the
+// enumeration is corrupt, and a corrupt enumeration cannot back the overwrite
+// guard or a byte-for-byte rollback. Tracked-status entries are valid and
+// skipped (the snapshot stash holds them); a rename/copy origin path travels
+// as the NEXT NUL field with no status code and is consumed with its entry.
+func parseStatusZ(out string) (untracked, ignored []statusZEntry, err error) {
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || entry[2] != ' ' || !validStatusByte(entry[0]) || !validStatusByte(entry[1]) {
+			return nil, nil, fmt.Errorf("unparseable `git status` entry %q", entry)
+		}
+		if entry[0] == 'R' || entry[0] == 'C' {
+			i++ // skip the rename/copy origin path field
+		}
+		switch entry[:2] {
+		case "??":
+			untracked = append(untracked, statusZEntry{rel: entry[3:], untracked: true})
+		case "!!":
+			ignored = append(ignored, statusZEntry{rel: entry[3:]})
+		}
+	}
+	return untracked, ignored, nil
+}
+
 // backupOutOfBand copies every UNTRACKED and IGNORED file in the worktree to a
 // ferry-owned temp dir, keyed by repo-relative path, so a checkout that would
 // clobber one can be restored on rollback. `git status --porcelain --ignored`
@@ -517,26 +577,16 @@ func (s *snapshot) backupOutOfBand(repo string) error {
 		// rollback. Abort the snapshot rather than proceed with an incomplete backup.
 		return fmt.Errorf("sync: could not enumerate untracked/ignored files for backup (`git status --ignored`): %s — refusing to proceed (your machine is unchanged)", ghcli.Redact(strings.TrimSpace(out)))
 	}
+	untrackedEntries, ignoredEntries, perr := parseStatusZ(out)
+	if perr != nil {
+		// FAIL CLOSED: an enumeration we cannot parse is an enumeration we cannot
+		// trust for byte-for-byte rollback.
+		return fmt.Errorf("sync: could not parse the untracked/ignored enumeration (`git status --ignored`): %s — refusing to proceed (your machine is unchanged)", ghcli.Redact(perr.Error()))
+	}
 	var untrackedRels, otherRels []string
-	for _, entry := range strings.Split(out, "\x00") {
-		if len(entry) < 3 {
-			continue
-		}
-		// `-z` status entries are "XY <path>" with a single space after the 2-char code.
-		code := entry[:2]
-		rel := entry[3:]
-		var untracked bool
-		switch code {
-		case "??":
-			untracked = true
-		case "!!":
-			untracked = false
-		default:
-			continue
-		}
-		if rel == "" {
-			continue
-		}
+	for _, e := range append(untrackedEntries, ignoredEntries...) {
+		untracked := e.untracked
+		rel := e.rel
 		if strings.HasSuffix(rel, "/") {
 			// A whole untracked/ignored directory: enumerate its files individually
 			// (lstat-based, so nested symlinks are recorded as links, not followed).

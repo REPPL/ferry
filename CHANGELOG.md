@@ -26,6 +26,17 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **A git stderr warning can no longer corrupt what `ferry sync` parses.**
+  Every ferry-spawned hardened git call merged stderr into stdout, so a
+  warning-emitting configuration (an unreadable config file, a broken ref, a
+  `safe.directory` advisory) fused with the first NUL-delimited field of a
+  machine-parsed listing: the first untracked or ignored file silently
+  vanished from `sync`'s out-of-band backup — blinding the overwrite guard
+  and rollback to it — and the snapshot's recorded HEAD could be
+  contaminated, breaking a later `reset --hard`. Streams are now captured
+  separately (parsers see pure stdout; error messages keep git's
+  diagnostics), and the status enumeration behind the backup fails closed on
+  any field it cannot parse instead of skipping it.
 - **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
   The pre-integration guard that refuses to let a remote-added file overwrite
   a local untracked or ignored file compared git's quoted path listing against
