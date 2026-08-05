@@ -335,3 +335,26 @@ func TestPack_SecretShapedFileNameRefusedWithoutEcho(t *testing.T) {
 		t.Fatalf("pack with the item excluded: %v", err)
 	}
 }
+
+// Pack lands the bundle in the LOCATED project directory: after a rev-list
+// reorder changes id.Key, writing under the new key would strand the old
+// directory — visible to no verb — while status/receive resolve the old one.
+func TestPack_WritesToLocatedProjectDir(t *testing.T) {
+	fx := newPackFixture(t)
+	if _, err := Pack(fx.st, fx.lc, fx.id, fx.state, defaultOpts()); err != nil {
+		t.Fatalf("pack 1: %v", err)
+	}
+	altKey := strings.Repeat("b", 40)
+	if err := os.Rename(fx.st.ProjectDir(fx.id.Key), fx.st.ProjectDir(altKey)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Pack(fx.st, fx.lc, fx.id, fx.state, defaultOpts()); err != nil {
+		t.Fatalf("pack 2: %v", err)
+	}
+	if refs, _ := fx.st.Bundles(altKey); len(refs) != 2 {
+		t.Errorf("relocated dir has %d bundle(s), want 2 (pack must land where the cargo lives)", len(refs))
+	}
+	if refs, _ := fx.st.Bundles(fx.id.Key); len(refs) != 0 {
+		t.Errorf("computed-key dir holds %d bundle(s): pack diverged from the located project dir", len(refs))
+	}
+}

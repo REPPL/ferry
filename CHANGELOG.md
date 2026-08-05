@@ -26,6 +26,15 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **`ferry work prune` and `ferry work pack` act on the located cargo
+  directory.** After a rev-list reorder (a subtree import adding a second
+  root commit), the project's computed key changes; `status` and `receive`
+  already resolve the existing cargo directory by root-set intersection, but
+  `prune` keyed on the computed key — reporting "nothing to prune" (or "no
+  bundle with hash") against an empty directory while the real store grew
+  past retention — and a fresh `pack` would strand the old directory by
+  writing under the new key. All store-touching verbs now key on the same
+  located directory.
 - **A git stderr warning can no longer corrupt what `ferry sync` parses.**
   Every ferry-spawned hardened git call merged stderr into stdout, so a
   warning-emitting configuration (an unreadable config file, a broken ref, a

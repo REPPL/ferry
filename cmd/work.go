@@ -91,12 +91,18 @@ const defaultWorkKeep = 5
 
 // workContext is everything a work verb needs, resolved once.
 type workContext struct {
-	store   *work.Store
-	lc      work.Locator
-	id      work.Identity
-	state   *work.State
-	account string
-	keep    int
+	store *work.Store
+	lc    work.Locator
+	id    work.Identity
+	// storeKey is the LOCATED project directory in the cargo store — usually
+	// id.Key, but after a rev-list reorder (subtree import) the existing
+	// cargo lives under a previous root's key, which LocateProject resolves
+	// by root-set intersection. Every store-touching verb keys on this, so
+	// status, receive, pack, and prune all act on the same directory.
+	storeKey string
+	state    *work.State
+	account  string
+	keep     int
 }
 
 // loadWorkContext resolves the project identity (with its shallow/worktree
@@ -140,17 +146,22 @@ then create the directory (world-writable if two accounts share it) and retry`)
 	if err != nil {
 		return nil, err
 	}
+	storeKey, _, err := st.LocateProject(id)
+	if err != nil {
+		return nil, err
+	}
 	keep := mc.Work.Keep
 	if keep == 0 {
 		keep = defaultWorkKeep
 	}
 	return &workContext{
-		store:   st,
-		lc:      work.Locator{Home: home, ProjectDir: projectDir, StoreKey: id.Key},
-		id:      id,
-		state:   state,
-		account: workAccount(mc.Hostname),
-		keep:    keep,
+		store:    st,
+		lc:       work.Locator{Home: home, ProjectDir: projectDir, StoreKey: id.Key},
+		id:       id,
+		storeKey: storeKey,
+		state:    state,
+		account:  workAccount(mc.Hostname),
+		keep:     keep,
 	}, nil
 }
 
@@ -252,7 +263,7 @@ func runWorkPack(c *cobra.Command, args []string) error {
 	fmt.Fprintf(out, "work: handover marker recorded; receive on the other account with `ferry work receive <project-dir>`\n")
 
 	// Retention runs after a successful pack, as the plan pins.
-	removed, err := ctx.store.Prune(ctx.id.Key, ctx.keep)
+	removed, err := ctx.store.Prune(ctx.storeKey, ctx.keep)
 	if err != nil {
 		return fmt.Errorf("work: pack succeeded but pruning failed: %w", err)
 	}
@@ -372,7 +383,7 @@ func runWorkPrune(c *cobra.Command, args []string) error {
 	}
 	out := c.OutOrStdout()
 	if sha, _ := c.Flags().GetString("bundle"); sha != "" {
-		if err := ctx.store.RemoveBundle(ctx.id.Key, sha); err != nil {
+		if err := ctx.store.RemoveBundle(ctx.storeKey, sha); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "work: removed bundle %s\n", sha[:12])
@@ -382,7 +393,7 @@ func runWorkPrune(c *cobra.Command, args []string) error {
 	if n, _ := c.Flags().GetInt("keep"); n > 0 {
 		keep = n
 	}
-	removed, err := ctx.store.Prune(ctx.id.Key, keep)
+	removed, err := ctx.store.Prune(ctx.storeKey, keep)
 	if err != nil {
 		return err
 	}
