@@ -26,6 +26,15 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **`ferry doctor` describes everything it does, and its hints are honest.**
+  The help text named only the tool checks, omitting the read-only `~/.ssh`
+  permission report and the managed-target invariant observation with its
+  non-zero exit — the two safety-relevant behaviours; the zsh hint presented
+  `ferry apply --deps` as an unconditional install path, though it installs
+  only what the config repo declares and only with `brew = true` under
+  `[manage]` (the wizard-seeded manifest provides neither); and an invariant
+  breach was mis-diagnosed by the footer as "a required prerequisite is
+  missing". All three now say what actually happens.
 - **`make release` prints publishing instructions that work.** The target's
   printout prescribed `git tag vX.Y.Z && git push --follow-tags`, which can
   never push the tag it creates (`--follow-tags` pushes only annotated tags,
