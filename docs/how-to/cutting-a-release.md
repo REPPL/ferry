@@ -122,7 +122,7 @@ requires any matching plan under `.abcd/development/plans/` to be marked
 `shipped in vX.Y.Z` (via
 [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
 the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
-(unless `--yes`) and run the single irreversible act: `git tag vX.Y.Z && git push
+(unless `--yes`) and run the single irreversible act: `git tag -a vX.Y.Z && git push
 origin vX.Y.Z`. Note that on the automatic path above `auto-release` tags the
 promotion commit as soon as it is pushed, so a driver run started afterwards fails at
 its tag step on the existing tag — that is the expected outcome, not an error in the

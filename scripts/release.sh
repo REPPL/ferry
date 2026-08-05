@@ -161,7 +161,7 @@ main() {
   # Step 6 — the single irreversible act: tag and push.
   # -------------------------------------------------------------------------
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "release: [dry-run] WOULD run: git tag $VERSION && git push origin $VERSION"
+    echo "release: [dry-run] WOULD run: git tag -a $VERSION -m 'ferry $VERSION' && git push origin $VERSION"
   else
     if [ "$ASSUME_YES" -ne 1 ]; then
       printf 'release: tag %s at %s and push to origin? [y/N] ' "$VERSION" "$local_main"
@@ -172,7 +172,9 @@ main() {
         *) die "aborted before tagging (no tag created)";;
       esac
     fi
-    git tag "$VERSION"
+    # Annotated, matching the tag auto-release creates — a lightweight tag
+    # here would diverge from the documented tag shape and clash on fetch.
+    git tag -a "$VERSION" -m "ferry $VERSION"
     git push origin "$VERSION"
     echo "release: pushed tag $VERSION — the release workflow now takes over."
   fi
