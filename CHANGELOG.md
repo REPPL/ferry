@@ -26,6 +26,16 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **The configuration reference documents the Apple Terminal domain.** The
+  `terminal` key has been implemented end-to-end — apply, capture, restore,
+  and the eval suite — but appeared nowhere in the reference: the `[manage]`
+  enumeration omitted it and no section described its plist, target domain,
+  or `.local` overlay, leaving an advertised feature unreachable from the
+  docs. The reference also now states that unimplemented `[manage]` keys
+  still require boolean values, describes the pre-commit secret scan
+  consistently ("every changed file", matching the code), notes that the
+  keybindings domain is not platform-gated on Linux, and names `[terminals]`
+  in the compatibility surface.
 - **`ferry doctor` describes everything it does, and its hints are honest.**
   The help text named only the tool checks, omitting the read-only `~/.ssh`
   permission report and the managed-target invariant observation with its
