@@ -808,18 +808,46 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 			remoteAdded[p] = true
 		}
 	}
+	// On a case-insensitive filesystem (core.ignorecase=true, set by git at
+	// init/clone from a filesystem probe) a remote-added path that differs from
+	// a local file only in case resolves to the SAME file on disk — and git
+	// treats the local spelling as ignored/excluded case-blindly too, so its
+	// checkout clobbers it silently. Fold-match exactly when the repo declares
+	// it; a case-sensitive repo keeps exact matching, so a legitimately
+	// distinct Notes.md/notes.md pair never aborts there.
+	foldRemote := map[string]string{}
+	if repoIgnoresCase(repo) {
+		for p := range remoteAdded {
+			foldRemote[strings.ToLower(p)] = p
+		}
+	}
+	// remoteMatch returns the remote-added spelling colliding with local rel.
+	remoteMatch := func(rel string) (string, bool) {
+		if remoteAdded[rel] {
+			return rel, true
+		}
+		if p, ok := foldRemote[strings.ToLower(rel)]; ok {
+			return p, true
+		}
+		return "", false
+	}
 
 	// Build the local-collision candidate set: untracked + backed-up ignored + staged-
-	// added-new. Each maps to the LOCAL bytes to compare against the remote's version.
-	local := map[string][]byte{}
+	// added-new. Each maps the LOCAL path to its bytes plus the REMOTE spelling to
+	// compare against (they differ only for a case-fold collision).
+	type collision struct {
+		bytes  []byte
+		remote string
+	}
+	local := map[string]collision{}
 	for rel := range s.untracked {
-		if remoteAdded[rel] {
-			local[rel] = readBackupOrWorktree(repo, s, rel)
+		if rem, ok := remoteMatch(rel); ok {
+			local[rel] = collision{readBackupOrWorktree(repo, s, rel), rem}
 		}
 	}
 	for rel := range s.backups {
-		if remoteAdded[rel] {
-			local[rel] = readBackupOrWorktree(repo, s, rel)
+		if rem, ok := remoteMatch(rel); ok {
+			local[rel] = collision{readBackupOrWorktree(repo, s, rel), rem}
 		}
 	}
 	// A local SYMLINK (untracked or ignored) is recorded only in s.symlinks —
@@ -827,32 +855,38 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 	// an ignored path during checkout. A symlink can never be byte-identical to
 	// the remote's regular blob, so a path collision aborts unconditionally.
 	for rel := range s.symlinks {
-		if remoteAdded[rel] {
-			return untrackedClobberErr(rel)
+		if rem, ok := remoteMatch(rel); ok {
+			return untrackedClobberErr(rel, rem)
 		}
 	}
 	// Staged-added (A in the index): new files the user staged but did not commit. The
 	// snapshot stash removed them from the worktree, but `stash apply` would re-add them
-	// and collide with the remote's version. Their bytes come from the stash blob.
+	// and collide with the remote's version. Their bytes come from the stash blob;
+	// unknown bytes stay nil → treated as differing (fail safe).
 	for _, rel := range stagedAddedPaths(repo) {
-		if remoteAdded[rel] {
-			if b, ok := stashBlob(repo, s, rel); ok {
-				local[rel] = b
-			} else {
-				local[rel] = nil // unknown bytes → treat as differing (fail safe)
-			}
+		if rem, ok := remoteMatch(rel); ok {
+			b, _ := stashBlob(repo, s, rel)
+			local[rel] = collision{b, rem}
 		}
 	}
 
-	for rel, localBytes := range local {
-		remoteBytes, rok := gitBlobBytes(repo, upstream+":"+rel)
+	for rel, c := range local {
+		remoteBytes, rok := gitBlobBytes(repo, upstream+":"+c.remote)
 		// If we cannot read either side's bytes, fail SAFE: treat as a clobber rather
 		// than silently overwriting.
-		if !rok || localBytes == nil || string(localBytes) != string(remoteBytes) {
-			return untrackedClobberErr(rel)
+		if !rok || c.bytes == nil || string(c.bytes) != string(remoteBytes) {
+			return untrackedClobberErr(rel, c.remote)
 		}
 	}
 	return nil
+}
+
+// repoIgnoresCase reports whether the repo sits on a case-insensitive
+// filesystem, as declared by core.ignorecase (git probes the filesystem and
+// sets it at init/clone). Unset or unreadable reads as false: exact matching.
+func repoIgnoresCase(repo string) bool {
+	v, ok := gitSyncOK(repo, "config", "--type=bool", "core.ignorecase")
+	return ok && v == "true"
 }
 
 // stagedAddedPaths lists paths added (new) in the index vs HEAD — staged but not yet
@@ -911,9 +945,12 @@ func gitBlobBytes(repo, spec string) ([]byte, bool) {
 	return []byte(o), true
 }
 
-func untrackedClobberErr(rel string) error {
-	r := ghcli.Redact(rel)
-	return fmt.Errorf("sync: the remote adds %q, but you have a local untracked/ignored/staged file at that path with different content — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", r, r)
+func untrackedClobberErr(localRel, remoteRel string) error {
+	l := ghcli.Redact(localRel)
+	if remoteRel != localRel {
+		return fmt.Errorf("sync: the remote adds %q, which on this case-insensitive filesystem is the same file as your local untracked/ignored/staged %q (the names differ only in case) — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", ghcli.Redact(remoteRel), l, l)
+	}
+	return fmt.Errorf("sync: the remote adds %q, but you have a local untracked/ignored/staged file at that path with different content — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", l, l)
 }
 
 // aheadBehind returns how many commits `ref` is ahead of and behind `base`

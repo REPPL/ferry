@@ -45,6 +45,15 @@ called out in a **Breaking** section. See
   through — either way the symlink was replaced by a regular file in a run
   that then succeeded, leaving nothing to roll back. A symlink at a
   remote-added path now aborts the sync unconditionally.
+- **`ferry sync`'s overwrite guard folds case on case-insensitive
+  filesystems.** On macOS's default APFS, a remote-added path differing from
+  a local ignored file only in case resolves to the same file on disk, and
+  git clobbers the ignored spelling silently — the guard's byte-exact path
+  comparison missed the collision entirely. When the repo declares
+  `core.ignorecase = true` (git sets it from a filesystem probe at
+  init/clone), the guard now matches case-blindly and the abort names both
+  spellings; case-sensitive repos keep exact matching, so a legitimately
+  distinct `Notes.md`/`notes.md` pair never aborts there.
 - **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
   The pre-integration guard that refuses to let a remote-added file overwrite
   a local untracked or ignored file compared git's quoted path listing against
