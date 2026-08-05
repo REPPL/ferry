@@ -35,6 +35,15 @@ called out in a **Breaking** section. See
   past retention — and a fresh `pack` would strand the old directory by
   writing under the new key. All store-touching verbs now key on the same
   located directory.
+- **A containment-refused rollback no longer wedges every future `apply`.**
+  When an interrupted run's recorded path stopped resolving inside `$HOME`
+  (a parent replaced by an escaping symlink after the crash), the automatic
+  rollback aborted with a bare "path escapes $HOME" — naming no path, rolling
+  back none of the other changes, and failing every subsequent `apply` at the
+  same point. The rollback now skips the refused write (never writing through
+  the redirected parent), completes the remaining changes, keeps the run's
+  record, and names the path plus both ways out; snapshot re-application
+  gains the same skip-and-name behaviour.
 - **A git stderr warning can no longer corrupt what `ferry sync` parses.**
   Every ferry-spawned hardened git call merged stderr into stdout, so a
   warning-emitting configuration (an unreadable config file, a broken ref, a

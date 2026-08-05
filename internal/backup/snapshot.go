@@ -2,6 +2,7 @@ package backup
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,6 +80,7 @@ func (e *Engine) RestoreSnapshot(snapID string) error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
+	var refused []error
 	for _, state := range snap.States {
 		var blob []byte
 		if state.HasBlob {
@@ -94,8 +96,18 @@ func (e *Engine) RestoreSnapshot(snapID string) error {
 			if isResourceRestoreSkip(err) {
 				continue
 			}
+			// A resolved-containment refusal: SKIP the write (never write through a
+			// redirected parent), keep re-applying the rest, and surface an error
+			// that names the path — mirroring restorePaths and rollbackRun.
+			if isContainmentRefusal(err) {
+				refused = append(refused, fmt.Errorf("snapshot restore refused for %s: %w", state.Path, err))
+				continue
+			}
 			return err
 		}
+	}
+	if len(refused) > 0 {
+		return errors.Join(refused...)
 	}
 	return nil
 }

@@ -220,6 +220,7 @@ func (e *Engine) rollbackRun(runID string) error {
 	}
 	dir := e.runDir(runID)
 	// Reverse order: undo the most recent mutation first.
+	var refused []error
 	for i := len(entry.Changes) - 1; i >= 0; i-- {
 		ch := entry.Changes[i]
 		var blob []byte
@@ -237,8 +238,21 @@ func (e *Engine) rollbackRun(runID string) error {
 			if isResourceRestoreSkip(err) {
 				continue
 			}
+			// A resolved-containment refusal: the path's parent now resolves outside
+			// $HOME or into ~/.ssh (e.g. swapped to a symlink since the run crashed).
+			// SKIP the write — never write through the redirected path — but keep
+			// rolling back the remaining changes, and KEEP the run directory: unlike
+			// the resource skip, deleting it would erase the only record of a change
+			// ferry could not revert. The joined error names the path and the way out.
+			if isContainmentRefusal(err) {
+				refused = append(refused, fmt.Errorf("rollback refused for %s (run %s): %w — remove the redirecting symlink and re-run, or delete that run directory under the ferry state dir to discard the record", ch.Prior.Path, runID, err))
+				continue
+			}
 			return err
 		}
+	}
+	if len(refused) > 0 {
+		return errors.Join(refused...)
 	}
 	return os.RemoveAll(dir)
 }

@@ -98,3 +98,14 @@ therefore never silently corrupt state that a newer ferry wrote.
 This refusal covers the interrupted-run path too: an incomplete journal run whose
 manifest a newer ferry wrote is neither rolled back nor deleted — it is reported
 and left in place.
+
+### A rollback the containment guard refuses
+
+Rolling back an interrupted run re-checks, at the write boundary, that each
+path still resolves inside `$HOME` and outside `~/.ssh`. If a recorded path no
+longer does — its parent has since been replaced by a symlink that escapes —
+the rollback **skips that one write, finishes the rest, and keeps the run's
+record**, and every subsequent `apply` repeats an error naming the refused
+path. Removing the redirecting symlink and re-running clears it; deleting the
+named run directory under the ferry state directory instead discards the
+record of the change ferry could not revert.
