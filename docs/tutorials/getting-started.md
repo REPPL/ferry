@@ -21,8 +21,10 @@ manages: that's ferry's job. The above are the host tools ferry stands on.
 
 > **Linux scope.** The core (dotfiles, dependencies, backup/restore) is cross-platform
 > and CI-tested on Linux, as are the config-file terminal emulators (Alacritty, kitty,
-> WezTerm). Only the preference-based terminal apps — iTerm2 and Apple Terminal — are
-> macOS-only.
+> WezTerm). The preference-based terminal apps — iTerm2 and Apple Terminal — are
+> macOS-only and skip cleanly on Linux. The `keybindings` and `iterm2-profiles`
+> domains deploy into `~/Library/…` paths only macOS reads — on a Linux machine,
+> leave them out of scope in `ferry.local.toml` (e.g. `keybindings = false`).
 
 ---
 
@@ -154,7 +156,7 @@ What it guarantees:
   on a non-interactive run — into the out-of-repo secret store before anything is
   committed, so the pushed repo carries only placeholders. The same secret scan
   `capture` uses still runs before the first commit and again before the push as
-  defense in depth: a raw secret somehow left in the planned commit blocks the push.
+  defence in depth: a raw secret somehow left in the planned commit blocks the push.
 - **HTTPS only.** The remote ferry sets is always `https://…`; it never sets an `ssh://`
   remote and never touches `~/.ssh`.
 
