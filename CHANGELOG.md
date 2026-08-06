@@ -26,6 +26,101 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **The configuration reference documents the Apple Terminal domain.** The
+  `terminal` key has been implemented end-to-end — apply, capture, restore,
+  and the eval suite — but appeared nowhere in the reference: the `[manage]`
+  enumeration omitted it and no section described its plist, target domain,
+  or `.local` overlay, leaving an advertised feature unreachable from the
+  docs. The reference also now states that unimplemented `[manage]` keys
+  still require boolean values, describes the pre-commit secret scan
+  consistently ("every changed file", matching the code), notes that the
+  keybindings domain is not platform-gated on Linux, and names `[terminals]`
+  in the compatibility surface.
+- **`ferry doctor` describes everything it does, and its hints are honest.**
+  The help text named only the tool checks, omitting the read-only `~/.ssh`
+  permission report and the managed-target invariant observation with its
+  non-zero exit — the two safety-relevant behaviours; the zsh hint presented
+  `ferry apply --deps` as an unconditional install path, though it installs
+  only what the config repo declares and only with `brew = true` under
+  `[manage]` (the wizard-seeded manifest provides neither); and an invariant
+  breach was mis-diagnosed by the footer as "a required prerequisite is
+  missing". All three now say what actually happens.
+- **The recovery release driver matches the documented tag shape and runs
+  off the author's machine.** `scripts/release.sh` created a lightweight tag
+  where auto-release and the how-to specify an annotated one, and its
+  docs-currency gate hard-failed on `docs-currency-lint`, a maintainer-local
+  tool that is not part of this repository — making the documented recovery
+  path (including `--dry-run`) unrunnable anywhere else. The driver now cuts
+  an annotated tag, and `FERRY_RELEASE_SKIP_DOCS_LINT=1` skips that one gate
+  explicitly and loudly; the default remains fail-closed.
+- **`make release` prints publishing instructions that work.** The target's
+  printout prescribed `git tag vX.Y.Z && git push --follow-tags`, which can
+  never push the tag it creates (`--follow-tags` pushes only annotated tags,
+  `git tag` makes a lightweight one) and races the auto-release flow the
+  documentation prescribes; a second target offered a hand-upload path that
+  bypasses the verified release workflow entirely. The printout now names
+  the two real paths — the CHANGELOG promotion push, or `scripts/release.sh`
+  for recovery — and the hand-upload target is gone.
+- **Two release runs of the same tag are serialised.** The release
+  workflow's concurrency group was keyed on `github.ref`, which differs
+  between its two entry points (a tag push versus the auto-release call,
+  whose context is the caller's `main`), so two runs releasing the same tag
+  landed in different groups and could race to publish — one red run and
+  stray duplicate attestations. The group is now keyed on the tag itself.
+- **The release gate now runs the macOS eval leg and the cheap main-branch
+  gates.** The pre-publish `verify` job exercised the eval suite against a
+  Linux binary only, so the darwin-only evals — covering ferry's flagship
+  platform — never gated a release, and a hand-pushed tag ran no CI at all
+  (the CI workflow triggers on branches, not tags). Publishing now also
+  requires a `verify-macos` job mirroring CI's macOS eval leg, plus the
+  gofmt, CLI-reference staleness, and consistency-lint checks in `verify`.
+- **`ferry work prune` and `ferry work pack` act on the located cargo
+  directory.** After a rev-list reorder (a subtree import adding a second
+  root commit), the project's computed key changes; `status` and `receive`
+  already resolve the existing cargo directory by root-set intersection, but
+  `prune` keyed on the computed key — reporting "nothing to prune" (or "no
+  bundle with hash") against an empty directory while the real store grew
+  past retention — and a fresh `pack` would strand the old directory by
+  writing under the new key. All store-touching verbs now key on the same
+  located directory.
+- **A containment-refused rollback completes the other changes and names
+  the path.** When an interrupted run's recorded path stopped resolving
+  inside `$HOME` (a parent replaced by an escaping symlink after the crash),
+  the automatic rollback aborted with a bare "path escapes $HOME" — naming
+  no path and rolling back none of the other changes. The rollback now skips
+  the refused write (never writing through the redirected parent), completes
+  the remaining changes, keeps the run's record, and names the path plus
+  both ways out — subsequent `apply` runs still repeat that error until the
+  refusal is cleared; snapshot re-application gains the same skip-and-name
+  behaviour.
+- **A git stderr warning can no longer corrupt what `ferry sync` parses.**
+  Every ferry-spawned hardened git call merged stderr into stdout, so a
+  warning-emitting configuration (an unreadable config file, a broken ref, a
+  `safe.directory` advisory) fused with the first NUL-delimited field of a
+  machine-parsed listing: the first untracked or ignored file silently
+  vanished from `sync`'s out-of-band backup — blinding the overwrite guard
+  and rollback to it — and the snapshot's recorded HEAD could be
+  contaminated, breaking a later `reset --hard`. Streams are now captured
+  separately (parsers see pure stdout; error messages keep git's
+  diagnostics), and the status enumeration behind the backup fails closed on
+  any field it cannot parse instead of skipping it.
+- **`ferry sync`'s overwrite guard now covers symlinks.** A local symlink at
+  a path the remote newly adds was invisible to the guard: an ignored
+  symlink is recorded only as its target (git silently overwrites ignored
+  paths during checkout), and an untracked symlink was compared by
+  *following* it, so target bytes equal to the remote's file waved the merge
+  through — either way the symlink was replaced by a regular file in a run
+  that then succeeded, leaving nothing to roll back. A symlink at a
+  remote-added path now aborts the sync unconditionally.
+- **`ferry sync`'s overwrite guard folds case on case-insensitive
+  filesystems.** On macOS's default APFS, a remote-added path differing from
+  a local ignored file only in case resolves to the same file on disk, and
+  git clobbers the ignored spelling silently — the guard's byte-exact path
+  comparison missed the collision entirely. When the repo declares
+  `core.ignorecase = true` (git sets it from a filesystem probe at
+  init/clone), the guard now matches case-blindly and the abort names both
+  spellings; case-sensitive repos keep exact matching, so a legitimately
+  distinct `Notes.md`/`notes.md` pair never aborts there.
 - **`ferry sync` no longer misses overwrite collisions on non-ASCII paths.**
   The pre-integration guard that refuses to let a remote-added file overwrite
   a local untracked or ignored file compared git's quoted path listing against

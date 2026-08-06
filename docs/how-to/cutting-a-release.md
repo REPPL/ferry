@@ -36,8 +36,10 @@ transient publish failure), built from the tagged commit, never a moved-on `main
 Because the tag exists moments after the promotion commit lands, run the local gates
 **before** pushing that commit. The driver itself cannot run at this point — its
 first gate insists local `main` matches `origin/main`, which is false while the
-promotion commit sits unpushed — so run its gates individually
-(`docs-currency-lint` runs only here, not in CI):
+promotion commit sits unpushed — so run its gates individually.
+`docs-currency-lint` is maintainer-local tooling (it ships in the maintainer's
+config repo, not in this repository) and runs only here, not in CI; on a
+machine without it, skip that gate and rely on the others:
 
 ```bash
 docs-currency-lint                                     # docs gate (CI does not run it)
@@ -117,12 +119,14 @@ scripts/release.sh vX.Y.Z             # add --dry-run to rehearse without taggin
 ```
 
 It fails closed at every gate before it creates anything: it asserts the `## [X.Y.Z]`
-CHANGELOG section is promoted out of `[Unreleased]`, runs `docs-currency-lint`,
+CHANGELOG section is promoted out of `[Unreleased]`, runs `docs-currency-lint`
+(maintainer-local; on a machine without it, `FERRY_RELEASE_SKIP_DOCS_LINT=1`
+skips that one gate explicitly and loudly),
 requires any matching plan under `.abcd/development/plans/` to be marked
 `shipped in vX.Y.Z` (via
 [`scripts/check-plan-shipped.sh`](../../scripts/check-plan-shipped.sh)), and rehearses
 the build, version stamp, checksum manifest, and prune plan. Only then does it prompt
-(unless `--yes`) and run the single irreversible act: `git tag vX.Y.Z && git push
+(unless `--yes`) and run the single irreversible act: `git tag -a vX.Y.Z && git push
 origin vX.Y.Z`. Note that on the automatic path above `auto-release` tags the
 promotion commit as soon as it is pushed, so a driver run started afterwards fails at
 its tag step on the existing tag — that is the expected outcome, not an error in the
@@ -137,8 +141,8 @@ make release
 
 `make release` builds the binaries and runs `gen-checksums` (`scripts/gen-checksums.sh`),
 which writes `bin/checksums.txt` over the built binaries: idempotent and re-runnable. It
-then prints how to publish (push a tag for CI, or create the Release and upload the
-`bin/ferry-*` binaries and `bin/checksums.txt` yourself).
+then points back at the two publishing paths — the promotion push for the automatic
+flow, or `scripts/release.sh` as the recovery driver.
 
 You can also run the pieces directly:
 

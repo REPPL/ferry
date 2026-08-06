@@ -25,6 +25,7 @@ to ferry: it is never applied and never captured.
 dotfiles  = [".zshrc", ".gitconfig"]
 brew      = true
 iterm2    = true        # the iTerm2 global preferences; see iTerm2 below
+terminal  = true        # Apple Terminal's preferences; see Apple Terminal below
 fonts     = false       # never sync fonts
 agents          = true  # AI-agent instruction files; see agents.md
 terminals       = true  # config-file terminal emulators (Alacritty, kitty, WezTerm)
@@ -42,10 +43,12 @@ devtree = "Development"           # optional workspace layer, relative to $HOME
 ```
 
 Every key above except `fonts` names an implemented domain. `[manage]` accepts
-unknown keys silently so the manifest stays forward-compatible, which means an
-unimplemented domain such as `fonts` is ignored whatever value it takes —
-`fonts = true` syncs nothing. Font casks on macOS travel in
-`deps/Brewfile.darwin` under the `brew` key instead.
+unknown keys silently so the manifest stays forward-compatible: an
+unimplemented domain such as `fonts` is ignored at either boolean value —
+`fonts = true` syncs nothing. The value must still parse as a boolean
+(anything else, such as `fonts = "off"`, is a manifest error every command
+refuses). Font casks on macOS travel in `deps/Brewfile.darwin` under the
+`brew` key instead.
 
 ```toml
 # ferry.local.toml (this machine only, gitignored)
@@ -75,7 +78,7 @@ carries its one file.
 Terminal configs participate in the secret store like dotfiles: a
 `{{ferry.secret …}}` placeholder is rendered on apply, and a secret-routed file
 is deployed `0600`. There is no capture pass for this domain, so the secret gate
-sits at publish time instead: `ferry sync` scans the whole worktree before it
+sits at publish time instead: `ferry sync` scans every changed file before it
 commits and the whole push range before it pushes, so a real secret committed
 under `terminals/` blocks the commit and never leaves the machine.
 
@@ -170,6 +173,28 @@ such constraint — it is a plain file copy iTerm2 live-reloads.)
 The `.local` layer applies whole-domain: a committed
 `local/iterm2/com.googlecode.iterm2.plist` is imported instead of the shared copy
 on machines that need a wholesale-divergent global set.
+
+## Apple Terminal
+
+Apple Terminal's preferences are carried as a **whole-domain** `defaults`
+plist — unlike iTerm2's global preferences there is no allowlist filter,
+because the domain is dominated by the profile set rather than volatile
+machine state:
+
+| `[manage]` key | Repo source | Home target | Mechanism |
+|---|---|---|---|
+| `terminal` | `terminal/com.apple.Terminal.plist` | the `com.apple.Terminal` domain | `defaults import` |
+
+Enable it with `terminal = true` (one character away from `terminals`, the
+config-file emulators above — they are different domains). On `capture`, ferry
+exports the live domain and offers the whole plist through the same accept and
+route flow as other captures — shared, local, or reject; a shared-routed
+capture commits it at `terminal/com.apple.Terminal.plist`. On `apply`, ferry
+imports the committed plist, which replaces the whole domain; relaunch
+Terminal for the change to take effect (`cfprefsd` may serve a cached copy
+until then). The domain is macOS-only and skips cleanly elsewhere. The `.local` layer applies
+whole-domain: a committed `local/terminal/com.apple.Terminal.plist` is
+imported instead of the shared copy.
 
 ## tmux
 
@@ -310,6 +335,11 @@ Enable the domain with `keybindings = true` under `[manage]`, then commit your
 dict at `keybindings/DefaultKeyBinding.dict`. With the domain enabled but no
 source committed, nothing deploys. The file is deployed as a regular-file copy,
 reconciled by hash like every other target — ferry never symlinks it.
+
+The domain is not platform-gated: on Linux it deploys into `~/Library/…`,
+which nothing reads (only the macOS `plutil` validation is skipped). On a
+Linux machine, leave it out of scope per-machine with `keybindings = false` in
+`ferry.local.toml`.
 
 The domain is **repo-authoritative**: edit the dict in the config repo and
 `apply` deploys it. A live edit to the deployed file shows as drift, and `apply`

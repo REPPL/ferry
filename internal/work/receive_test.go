@@ -420,6 +420,9 @@ func TestReceive_FailedPlanReleasesTranscriptLock(t *testing.T) {
 }
 
 func TestReceive_MidWriteFailureLeavesRevertibleState(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: chmod 0555 does not deny write, so the mid-write failure cannot be staged")
+	}
 	h := newHandoffFixture(t)
 	// Make the memory target directory unwritable: the guarded file items
 	// (written first, in manifest order) land, then the memory write fails —

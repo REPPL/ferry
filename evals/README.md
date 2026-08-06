@@ -101,14 +101,18 @@ not dropped.
 ## File map
 
 Command-surface gating is "the command **exists and runs**" (`--help` exits 0 and
-the command appears in `ferry --help`); **help-text wording is non-gating** (logged
-as a soft signal, never a failure), a round-3 demotion.
+the command appears in `ferry --help`); **help-text wording is non-gating**
+(logged as a soft signal, never a failure).
+
+The first table lists the core acceptance-spec files individually; the second
+groups the remaining eval files by feature area. The authoritative AC→file
+index is a search away: `grep -rn "func Test.*_AC_" evals/`.
 
 | File | ACs covered |
 |---|---|
 | `harness.go` | shared sandbox, binary runner, SSH (incl. ReSnapshotSSH) + write tripwires, stub helpers (no tests) |
 | `commands_test.go` | AC-cmd-* (exists-and-runs gating; help-text wording non-gating), AC-cmd-set-complete, AC-cmd-apply-deps-flag (--deps accepted + bogus rejected), AC-cmd-apply-dryrun-flag (optional, non-gating) |
-| `apply_test.go` | apply-idempotent, conflict-refuse, local-wins, local-survives-apply, scope-respected-apply, deps-not-during-default-apply, deps-install-attempted (differential gate), backup-before-change (observable restore only) |
+| `apply_test.go` | apply-idempotent, conflict-refuse, local-wins, local-survives-apply, scope-respected-apply, deps-not-during-default-apply, deps-install-attempted (differential gate; also covered in `edgecases_test.go`), backup-before-change (observable restore only) |
 | `capture_test.go` | capture-interactive-route (shared/local/reject differential), capture-hunk-by-hunk, capture-no-autocommit (wrote→dirty + HEAD + bare-remote push tripwire), secret-blocked, scope-respected-capture (in-vs-out differential), ssh-not-captured |
 | `scope_test.go` | **scope-bidirectional** (same allowlist governs apply AND capture) |
 | `status_diff_test.go` | **status-reports-drift**, **diff-preview-only** (tripwire + predicted-vs-actual) |
@@ -120,6 +124,21 @@ as a soft signal, never a failure), a round-3 demotion.
 | `terminal_test.go` | terminal-config (iTerm2 + Apple Terminal; native-pref-domain vs file-copy differential; macOS-only) |
 | `platform_test.go` | platform-macos (gating on darwin), platform-linux-core (non-gating doc note) |
 | `install_test.go` | **install-path** (offline ~/.local/bin placement), install-single-binary, install-prints-path-line (exactly one line), install-no-homebrew + "or run anything else", **deps-uses-present-pm** (no-PM report + no-bootstrap tripwire) |
+
+The remaining eval files, by feature area:
+
+| Area | Files |
+|---|---|
+| Bundle export/import | `bundle_test.go`, `compat_test.go` (AC-export-*, AC-import-*) |
+| GitHub onboarding (`init --github`) | `github_test.go` (AC-github-*) |
+| Sync | `sync_test.go`, `sync_hardening_test.go`, `git_test.go`, `git_isolation_test.go` |
+| Work-state ferrying | `work_test.go` (AC-work-*) |
+| Wizard | `wizard_test.go`, `wizard_capture_test.go` |
+| Agents capture | `capture_agents_test.go` |
+| Guided apply | `guided_apply_test.go` |
+| Terminal-adjacent domains | `emacs_test.go`, `tmux_test.go`, `keybindings_test.go`, `npmrc_test.go`, `iterm2_profiles_test.go`, `iterm2_staging_test.go`, `terminal_config_test.go` |
+| Dependency tracking | `deps_track_test.go` |
+| Safety overlays and edge cases | `safety_apply_test.go`, `safety_overlay_bypass_test.go`, `edgecases_test.go`, `fn5_migration_test.go` |
 
 ## Related documentation
 

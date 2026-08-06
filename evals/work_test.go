@@ -277,3 +277,46 @@ func TestWorkStoreGuard_AC_work_store_in_worktree_refused(t *testing.T) {
 		t.Errorf("in-worktree store: exit %d, stderr:\n%s", code, stderr)
 	}
 }
+
+// AC: work prune operates on the LOCATED project directory. After a rev-list
+// reorder renames the cargo directory's key, status and receive still resolve
+// it by root-set intersection — prune must act on that same directory instead
+// of reporting an empty store while it grows past retention.
+func TestWorkPruneLocatesRelocatedCargo_AC_work_prune_located_key(t *testing.T) {
+	requireBin(t)
+	store := t.TempDir()
+	alice := newWorkFixture(t, store, "alicebox")
+	if _, se, code := alice.sb.Ferry("work", "pack", alice.project); code != 0 {
+		t.Fatalf("pack 1 failed: %s", se)
+	}
+	alice.sb.WriteHomeFile(t, "src/proj/.abcd/.work.local/NEXT.md", "second handoff\n", 0o644)
+	if _, se, code := alice.sb.Ferry("work", "pack", alice.project); code != 0 {
+		t.Fatalf("pack 2 failed: %s", se)
+	}
+	// Simulate the reorder: the cargo directory's name no longer matches the
+	// computed key.
+	entries, err := os.ReadDir(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renamed := false
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) == 40 {
+			if err := os.Rename(filepath.Join(store, e.Name()), filepath.Join(store, strings.Repeat("b", 40))); err != nil {
+				t.Fatal(err)
+			}
+			renamed = true
+			break
+		}
+	}
+	if !renamed {
+		t.Fatal("fixture: no cargo project directory found to rename")
+	}
+	stdout, stderr, code := alice.sb.Ferry("work", "prune", alice.project, "--keep", "1")
+	if code != 0 {
+		t.Fatalf("prune: exit %d\nstderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "pruned") {
+		t.Errorf("prune did not reach the relocated cargo:\n%s", stdout)
+	}
+}

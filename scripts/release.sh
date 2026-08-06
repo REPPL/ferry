@@ -125,12 +125,19 @@ main() {
   echo "release: gate CHANGELOG — '## [${ver_no_v}]' present."
 
   # -------------------------------------------------------------------------
-  # Gate 3 — docs currency (deterministic lint).
+  # Gate 3 — docs currency (deterministic lint). The tool is maintainer-local
+  # (it ships in the maintainer's config repo, not in this repository), so on
+  # a machine without it the gate would otherwise be unsatisfiable and the
+  # whole recovery driver unrunnable. Skipping stays an explicit, loud choice.
   # -------------------------------------------------------------------------
-  command -v docs-currency-lint >/dev/null 2>&1 || \
-    die "docs-currency-lint is not on PATH; install it before releasing"
-  docs-currency-lint || die "docs-currency-lint reported findings; fix them before releasing"
-  echo "release: gate docs-currency-lint — clean."
+  if [ "${FERRY_RELEASE_SKIP_DOCS_LINT:-0}" = "1" ]; then
+    echo "release: gate docs-currency-lint — SKIPPED (FERRY_RELEASE_SKIP_DOCS_LINT=1); docs currency is unverified for this release." >&2
+  else
+    command -v docs-currency-lint >/dev/null 2>&1 || \
+      die "docs-currency-lint is not on PATH. It is maintainer-local tooling (not part of this repository); on a machine without it, set FERRY_RELEASE_SKIP_DOCS_LINT=1 to skip this one gate explicitly"
+    docs-currency-lint || die "docs-currency-lint reported findings; fix them before releasing"
+    echo "release: gate docs-currency-lint — clean."
+  fi
 
   # -------------------------------------------------------------------------
   # Gate 4 — the release plan (if any) is marked shipped.
@@ -161,7 +168,7 @@ main() {
   # Step 6 — the single irreversible act: tag and push.
   # -------------------------------------------------------------------------
   if [ "$DRY_RUN" -eq 1 ]; then
-    echo "release: [dry-run] WOULD run: git tag $VERSION && git push origin $VERSION"
+    echo "release: [dry-run] WOULD run: git tag -a $VERSION -m 'ferry $VERSION' && git push origin $VERSION"
   else
     if [ "$ASSUME_YES" -ne 1 ]; then
       printf 'release: tag %s at %s and push to origin? [y/N] ' "$VERSION" "$local_main"
@@ -172,7 +179,9 @@ main() {
         *) die "aborted before tagging (no tag created)";;
       esac
     fi
-    git tag "$VERSION"
+    # Annotated, matching the tag auto-release creates — a lightweight tag
+    # here would diverge from the documented tag shape and clash on fetch.
+    git tag -a "$VERSION" -m "ferry $VERSION"
     git push origin "$VERSION"
     echo "release: pushed tag $VERSION — the release workflow now takes over."
   fi

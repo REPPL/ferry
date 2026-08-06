@@ -890,9 +890,10 @@ func ensureLocalManifest(out io.Writer, repo string) error {
 }
 
 // runGitIn runs an init-side git command rooted at dir through the hardened
-// untrusted-transport helper (hooks/fsmonitor off, ext denied) and returns
-// combined output. init/import seed and commit inside a ferry-created tree, but a
-// wired repo's `.git/config` is untrusted, so all init-side git is hardened (F18).
+// untrusted-transport helper (hooks/fsmonitor off, ext denied): stdout on
+// success, stdout+stderr on failure. init/import seed and commit inside a
+// ferry-created tree, but a wired repo's `.git/config` is untrusted, so all
+// init-side git is hardened (F18).
 func runGitIn(dir string, args ...string) (string, error) {
 	return runHardenedGit(append([]string{"-C", dir}, args...)...)
 }

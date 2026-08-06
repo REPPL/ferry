@@ -10,7 +10,7 @@ VERSION ?=
 # smaller, path-clean binary suitable for public distribution.
 LDFLAGS := -s -w$(if $(VERSION), -X github.com/REPPL/ferry/cmd.version=$(VERSION),)
 
-.PHONY: build test vet clean checksums release-prep release preflight gen-docs
+.PHONY: build test vet clean checksums release preflight gen-docs
 
 # Cross-compile every supported target to bin/ferry-<goos>-<arch>.
 # Pass VERSION=vX.Y.Z to stamp the version (release builds); omit for a dev build.
@@ -55,21 +55,13 @@ clean:
 checksums: build
 	@scripts/gen-checksums.sh
 
-# Local release prep: build, then write bin/checksums.txt. Publishing (the GitHub
-# Release + asset upload) is normally done by the tag-triggered CI workflow
-# (.github/workflows/release.yml); this target just prepares a release-ready tree.
+# Local release prep: build, then write bin/checksums.txt. Publishing (the
+# GitHub Release + asset upload) is done by the verified release workflow
+# (.github/workflows/release.yml); this target just prepares a release-ready
+# tree for local inspection.
 release: checksums
 	@echo ""; \
 	echo "bin/checksums.txt written over bin/ferry-* (see docs/how-to/cutting-a-release.md)."; \
-	echo "To publish: push a version tag and let CI build + checksum + release, e.g."; \
-	echo "  git commit -am 'release vX.Y.Z' && git tag vX.Y.Z && git push --follow-tags"; \
-	echo "Or, to publish manually, create a GitHub Release for the tag and upload"; \
-	echo "the four bin/ferry-* binaries and bin/checksums.txt yourself."
-
-# Build + checksums, then remind the maintainer of the manual release steps.
-release-prep: checksums
-	@echo ""; \
-	echo "Next steps (see docs/how-to/cutting-a-release.md):"; \
-	echo "  1. Create a GitHub Release (tag vX.Y.Z)."; \
-	echo "  2. Upload the four bin/ferry-* binaries and bin/checksums.txt as assets."; \
-	echo "  3. install.sh then fetches checksums.txt from the release and verifies."
+	echo "To publish: push the CHANGELOG promotion commit to main — auto-release"; \
+	echo "tags the version and publishes through the verified release workflow."; \
+	echo "Recovery path (auto-release disabled): scripts/release.sh vX.Y.Z"

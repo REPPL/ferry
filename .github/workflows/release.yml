@@ -1,8 +1,9 @@
 name: release
 
 # Pushing a version tag (vX.Y.Z) first re-runs the full verification gate
-# (build, vet, tests including the race leg, and the behavioural eval suite
-# against a real Linux binary) against the PUSHED COMMIT; only if that gate is
+# (gofmt, CLI-reference staleness, consistency lint, build, vet, tests
+# including the race leg, and the behavioural eval suite against real Linux
+# AND macOS binaries) against the PUSHED COMMIT; only if that gate is
 # green does it build the four cross-compiled binaries FROM THAT SAME COMMIT,
 # generate a checksums.txt manifest over them, and publish a GitHub Release with
 # the binaries, checksums.txt, and (on a public repo) their build-provenance
@@ -46,8 +47,13 @@ on:
 
 # Never run two releases of the same tag concurrently, and never cancel a
 # release mid-flight — a half-published release is worse than a queued one.
+# Keyed on the TAG so both entry points converge: in a workflow_call run the
+# github context is the CALLER's (ref = refs/heads/main), so a ref-keyed group
+# would put a called release and a tag-push release of the SAME tag in
+# different groups and let them race to `gh release create`. The expression
+# mirrors the TAG derivation below (env is not available in `concurrency`).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 # The tag name this run releases, derived ONCE for both entry points:
@@ -102,6 +108,35 @@ jobs:
           # cache: false — this workflow is tag-triggered; module caching in a
           # release-triggering workflow is a cache-poisoning vector (zizmor).
           cache: false
+
+      # The three cheap main-branch gates ci.yml runs that were previously
+      # absent here — a hand-pushed tag never runs ci.yml (it triggers on
+      # branches only), so without them a release could ship what the declared
+      # gate set would have refused.
+      - name: Format (gofmt)
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt: these files are not formatted (run gofmt -w .):" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: CLI reference is current (docs/reference/cli)
+        run: |
+          set -euo pipefail
+          make gen-docs
+          status="$(git status --porcelain docs/reference/cli/)"
+          if [ -n "$status" ]; then
+            echo "docs/reference/cli is stale — run 'make gen-docs' and commit the result." >&2
+            echo "$status" >&2
+            git diff -- docs/reference/cli/ >&2 || true
+            exit 1
+          fi
+
+      - name: Consistency lint (ADR numbering, memory split)
+        run: scripts/consistency-lint.sh
 
       - name: Plan-doc shipped check
         # Docs backstop for scripts/release.sh's local plan gate: if a
@@ -178,12 +213,43 @@ jobs:
           fi
           echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."
 
-  # Build and publish ONLY after verify is green. Binaries are cross-compiled
-  # from the same pushed commit (github.sha) that verify just gated, so the
-  # shipped artefacts match the code that passed — even if the tag has been
-  # re-pointed since verify started.
+  # The macOS leg of the release gate, mirroring ci.yml's `evals-macos`:
+  # ferry is macOS-first, and the darwin-only evals (terminal, iTerm2,
+  # keybindings staging) skip on Linux — without this leg a darwin-only
+  # regression would tag, attest, and publish green.
+  verify-macos:
+    timeout-minutes: 20
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the pushed commit
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Same immutable-SHA rule as verify: never a tag NAME.
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.25'
+          cache: false
+
+      - name: Build the macOS ferry binary
+        run: go build -o "$RUNNER_TEMP/ferry" .
+
+      # FERRY_CONFORMANCE=1 matches the Linux leg's contract: a missing
+      # install.sh is a FAILURE (not a skip) for the offline installer ACs.
+      - name: Run the full eval suite against the macOS binary
+        run: FERRY_BIN="$RUNNER_TEMP/ferry" FERRY_INSTALL_SH="$PWD/install.sh" FERRY_CONFORMANCE=1 go test ./evals/...
+
+  # Build and publish ONLY after both verify legs are green. Binaries are
+  # cross-compiled from the same pushed commit (github.sha) that verify just
+  # gated, so the shipped artefacts match the code that passed — even if the
+  # tag has been re-pointed since verify started.
   release:
-    needs: verify
+    needs: [verify, verify-macos]
     timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:

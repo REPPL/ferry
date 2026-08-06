@@ -45,8 +45,11 @@ func runDoctor(c *cobra.Command, _ []string) error {
 	// Package manager: report whichever is present, or that none is.
 	reportPackageManager(out, colour)
 
-	// zsh: not required, but ferry's dotfiles target zsh; recommend apply --deps.
-	reportTool(out, colour, "zsh", "recommended", "ferry's target shell; install it via `ferry apply --deps`")
+	// zsh: not required, but ferry's dotfiles target zsh. `apply --deps` can
+	// install it only when the config repo declares it and `brew = true` is set
+	// under [manage] (the wizard-seeded manifest declares neither), so the hint
+	// must not present that path as unconditional.
+	reportTool(out, colour, "zsh", "recommended", "ferry's target shell; install it with your package manager (`ferry apply --deps` installs it only if your config repo declares it and `brew = true` is set under [manage])")
 
 	// ~/.ssh permission check (read-only: stat only, never read contents, never
 	// modify). ferry is hands-off with ~/.ssh contents.
@@ -63,10 +66,11 @@ func runDoctor(c *cobra.Command, _ []string) error {
 
 	fmt.Fprintln(out) // blank line before the verdict footer
 	if !healthy {
-		// A required prerequisite is missing: signal an unhealthy machine with a
-		// clear message and a non-zero exit.
-		fmt.Fprintf(out, "%s: a required prerequisite is missing (see [fail] above)\n", colour(colRed, "doctor: unhealthy"))
-		return fmt.Errorf("doctor: required prerequisite missing")
+		// A required tool is missing OR a managed-target invariant is breached:
+		// signal an unhealthy machine with a message that covers both [fail]
+		// classes and a non-zero exit.
+		fmt.Fprintf(out, "%s: a required prerequisite is missing or an invariant is breached (see [fail] above)\n", colour(colRed, "doctor: unhealthy"))
+		return fmt.Errorf("doctor: required prerequisite missing or invariant breached")
 	}
 	fmt.Fprintf(out, "%s: all prerequisites present\n", colour(colGreen, "doctor: ok"))
 	return nil

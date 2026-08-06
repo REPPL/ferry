@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
@@ -391,13 +392,25 @@ func hardenedGitEnv() []string {
 // init-side git (runGitIn) all route through it. It does NOT add `-C`: the caller
 // supplies `-C <repo>` for in-repo commands, while `clone` runs without one.
 // gh.GitPush is deliberately NOT routed here — it keeps its own credential-helper
-// path (a different trust context). Returns combined output + error.
+// path (a different trust context).
+//
+// Streams are captured SEPARATELY: on success only stdout is returned, so a git
+// stderr warning (unreadable config, broken ref, safe.directory advisory) can
+// never contaminate machine-parsed output — several callers split NUL-delimited
+// listings where a fused warning would silently swallow the first entry. On
+// failure stdout+stderr are returned together, so error messages keep git's
+// diagnostics.
 func runHardenedGit(args ...string) (string, error) {
 	full := append(hardenedGitConfigArgs(), args...)
 	cmd := exec.Command("git", full...)
 	cmd.Env = hardenedGitEnv()
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return stdout.String() + stderr.String(), err
+	}
+	return stdout.String(), nil
 }
 
 // gitSync runs an in-repo git subprocess rooted at repo through the hardened
@@ -502,6 +515,53 @@ func takeSnapshot(repo string) (*snapshot, error) {
 	return s, nil
 }
 
+// statusZEntry is one parsed `git status --porcelain -z` path: untracked ("??")
+// or ignored ("!!").
+type statusZEntry struct {
+	rel       string
+	untracked bool
+}
+
+// validStatusByte reports whether b is a byte git's porcelain v1 status codes
+// use in either column.
+func validStatusByte(b byte) bool {
+	switch b {
+	case ' ', 'M', 'T', 'A', 'D', 'R', 'C', 'U', '?', '!':
+		return true
+	}
+	return false
+}
+
+// parseStatusZ splits `git status --porcelain [--ignored] -z` output into
+// untracked and ignored entries, FAILING CLOSED on any field it cannot parse:
+// once a hard git failure is ruled out, a malformed field can only mean the
+// enumeration is corrupt, and a corrupt enumeration cannot back the overwrite
+// guard or a byte-for-byte rollback. Tracked-status entries are valid and
+// skipped (the snapshot stash holds them); a rename/copy origin path travels
+// as the NEXT NUL field with no status code and is consumed with its entry.
+func parseStatusZ(out string) (untracked, ignored []statusZEntry, err error) {
+	fields := strings.Split(out, "\x00")
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if entry == "" {
+			continue
+		}
+		if len(entry) < 4 || entry[2] != ' ' || !validStatusByte(entry[0]) || !validStatusByte(entry[1]) {
+			return nil, nil, fmt.Errorf("unparseable `git status` entry %q", entry)
+		}
+		if entry[0] == 'R' || entry[0] == 'C' || entry[1] == 'R' || entry[1] == 'C' {
+			i++ // skip the rename/copy origin path field (either column)
+		}
+		switch entry[:2] {
+		case "??":
+			untracked = append(untracked, statusZEntry{rel: entry[3:], untracked: true})
+		case "!!":
+			ignored = append(ignored, statusZEntry{rel: entry[3:]})
+		}
+	}
+	return untracked, ignored, nil
+}
+
 // backupOutOfBand copies every UNTRACKED and IGNORED file in the worktree to a
 // ferry-owned temp dir, keyed by repo-relative path, so a checkout that would
 // clobber one can be restored on rollback. `git status --porcelain --ignored`
@@ -517,26 +577,16 @@ func (s *snapshot) backupOutOfBand(repo string) error {
 		// rollback. Abort the snapshot rather than proceed with an incomplete backup.
 		return fmt.Errorf("sync: could not enumerate untracked/ignored files for backup (`git status --ignored`): %s — refusing to proceed (your machine is unchanged)", ghcli.Redact(strings.TrimSpace(out)))
 	}
+	untrackedEntries, ignoredEntries, perr := parseStatusZ(out)
+	if perr != nil {
+		// FAIL CLOSED: an enumeration we cannot parse is an enumeration we cannot
+		// trust for byte-for-byte rollback.
+		return fmt.Errorf("sync: could not parse the untracked/ignored enumeration (`git status --ignored`): %s — refusing to proceed (your machine is unchanged)", ghcli.Redact(perr.Error()))
+	}
 	var untrackedRels, otherRels []string
-	for _, entry := range strings.Split(out, "\x00") {
-		if len(entry) < 3 {
-			continue
-		}
-		// `-z` status entries are "XY <path>" with a single space after the 2-char code.
-		code := entry[:2]
-		rel := entry[3:]
-		var untracked bool
-		switch code {
-		case "??":
-			untracked = true
-		case "!!":
-			untracked = false
-		default:
-			continue
-		}
-		if rel == "" {
-			continue
-		}
+	for _, e := range append(untrackedEntries, ignoredEntries...) {
+		untracked := e.untracked
+		rel := e.rel
 		if strings.HasSuffix(rel, "/") {
 			// A whole untracked/ignored directory: enumerate its files individually
 			// (lstat-based, so nested symlinks are recorded as links, not followed).
@@ -758,42 +808,85 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 			remoteAdded[p] = true
 		}
 	}
+	// On a case-insensitive filesystem (core.ignorecase=true, set by git at
+	// init/clone from a filesystem probe) a remote-added path that differs from
+	// a local file only in case resolves to the SAME file on disk — and git
+	// treats the local spelling as ignored/excluded case-blindly too, so its
+	// checkout clobbers it silently. Fold-match exactly when the repo declares
+	// it; a case-sensitive repo keeps exact matching, so a legitimately
+	// distinct Notes.md/notes.md pair never aborts there.
+	foldRemote := map[string]string{}
+	if repoIgnoresCase(repo) {
+		for p := range remoteAdded {
+			foldRemote[strings.ToLower(p)] = p
+		}
+	}
+	// remoteMatch returns the remote-added spelling colliding with local rel.
+	remoteMatch := func(rel string) (string, bool) {
+		if remoteAdded[rel] {
+			return rel, true
+		}
+		if p, ok := foldRemote[strings.ToLower(rel)]; ok {
+			return p, true
+		}
+		return "", false
+	}
 
 	// Build the local-collision candidate set: untracked + backed-up ignored + staged-
-	// added-new. Each maps to the LOCAL bytes to compare against the remote's version.
-	local := map[string][]byte{}
+	// added-new. Each maps the LOCAL path to its bytes plus the REMOTE spelling to
+	// compare against (they differ only for a case-fold collision).
+	type collision struct {
+		bytes  []byte
+		remote string
+	}
+	local := map[string]collision{}
 	for rel := range s.untracked {
-		if remoteAdded[rel] {
-			local[rel] = readBackupOrWorktree(repo, s, rel)
+		if rem, ok := remoteMatch(rel); ok {
+			local[rel] = collision{readBackupOrWorktree(repo, s, rel), rem}
 		}
 	}
 	for rel := range s.backups {
-		if remoteAdded[rel] {
-			local[rel] = readBackupOrWorktree(repo, s, rel)
+		if rem, ok := remoteMatch(rel); ok {
+			local[rel] = collision{readBackupOrWorktree(repo, s, rel), rem}
+		}
+	}
+	// A local SYMLINK (untracked or ignored) is recorded only in s.symlinks —
+	// backupOne stores its target, no byte backup — and git silently overwrites
+	// an ignored path during checkout. A symlink can never be byte-identical to
+	// the remote's regular blob, so a path collision aborts unconditionally.
+	for rel := range s.symlinks {
+		if rem, ok := remoteMatch(rel); ok {
+			return untrackedClobberErr(rel, rem)
 		}
 	}
 	// Staged-added (A in the index): new files the user staged but did not commit. The
 	// snapshot stash removed them from the worktree, but `stash apply` would re-add them
-	// and collide with the remote's version. Their bytes come from the stash blob.
+	// and collide with the remote's version. Their bytes come from the stash blob;
+	// unknown bytes stay nil → treated as differing (fail safe).
 	for _, rel := range stagedAddedPaths(repo) {
-		if remoteAdded[rel] {
-			if b, ok := stashBlob(repo, s, rel); ok {
-				local[rel] = b
-			} else {
-				local[rel] = nil // unknown bytes → treat as differing (fail safe)
-			}
+		if rem, ok := remoteMatch(rel); ok {
+			b, _ := stashBlob(repo, s, rel)
+			local[rel] = collision{b, rem}
 		}
 	}
 
-	for rel, localBytes := range local {
-		remoteBytes, rok := gitBlobBytes(repo, upstream+":"+rel)
+	for rel, c := range local {
+		remoteBytes, rok := gitBlobBytes(repo, upstream+":"+c.remote)
 		// If we cannot read either side's bytes, fail SAFE: treat as a clobber rather
 		// than silently overwriting.
-		if !rok || localBytes == nil || string(localBytes) != string(remoteBytes) {
-			return untrackedClobberErr(rel)
+		if !rok || c.bytes == nil || string(c.bytes) != string(remoteBytes) {
+			return untrackedClobberErr(rel, c.remote)
 		}
 	}
 	return nil
+}
+
+// repoIgnoresCase reports whether the repo sits on a case-insensitive
+// filesystem, as declared by core.ignorecase (git probes the filesystem and
+// sets it at init/clone). Unset or unreadable reads as false: exact matching.
+func repoIgnoresCase(repo string) bool {
+	v, ok := gitSyncOK(repo, "config", "--type=bool", "core.ignorecase")
+	return ok && v == "true"
 }
 
 // stagedAddedPaths lists paths added (new) in the index vs HEAD — staged but not yet
@@ -815,13 +908,20 @@ func stagedAddedPaths(repo string) []string {
 
 // readBackupOrWorktree returns the LOCAL bytes for an untracked/ignored path: the
 // out-of-band backup if present, else the live worktree file (nil on any error).
+// The worktree read is lstat-gated: a symlink or other non-regular file returns
+// nil (treated as differing → abort) — following a link and comparing its
+// TARGET's bytes would let the merge replace the symlink with a regular file.
 func readBackupOrWorktree(repo string, s *snapshot, rel string) []byte {
 	if bp, ok := s.backups[rel]; ok {
 		if b, err := os.ReadFile(bp); err == nil {
 			return b
 		}
 	}
-	if b, err := os.ReadFile(filepath.Join(repo, rel)); err == nil {
+	abs := filepath.Join(repo, rel)
+	if fi, err := os.Lstat(abs); err != nil || !fi.Mode().IsRegular() {
+		return nil
+	}
+	if b, err := os.ReadFile(abs); err == nil {
 		return b
 	}
 	return nil
@@ -845,9 +945,12 @@ func gitBlobBytes(repo, spec string) ([]byte, bool) {
 	return []byte(o), true
 }
 
-func untrackedClobberErr(rel string) error {
-	r := ghcli.Redact(rel)
-	return fmt.Errorf("sync: the remote adds %q, but you have a local untracked/ignored/staged file at that path with different content — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", r, r)
+func untrackedClobberErr(localRel, remoteRel string) error {
+	l := ghcli.Redact(localRel)
+	if remoteRel != localRel {
+		return fmt.Errorf("sync: the remote adds %q, which on this case-insensitive filesystem is the same file as your local untracked/ignored/staged %q (the names differ only in case) — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", ghcli.Redact(remoteRel), l, l)
+	}
+	return fmt.Errorf("sync: the remote adds %q, but you have a local untracked/ignored/staged file at that path with different content — refusing to overwrite it. Move or commit your local %q, then re-run (your machine is unchanged)", l, l)
 }
 
 // aheadBehind returns how many commits `ref` is ahead of and behind `base`

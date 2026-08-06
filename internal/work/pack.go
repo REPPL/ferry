@@ -206,7 +206,15 @@ func Pack(st *Store, lc Locator, id Identity, state *State, opts PackOptions) (*
 		ScanVerdict:  verdict,
 		Items:        manifestItems,
 	}
-	ref, err := st.WriteBundle(id.Key, func(seq uint64) ([]byte, error) {
+	// Land the bundle where the project's cargo already lives: a subtree
+	// import can reorder rev-list and change id.Key, and writing under the
+	// new key would strand the existing directory — one project split across
+	// two directories, with the old one beyond every verb's reach.
+	storeKey, _, err := st.LocateProject(id)
+	if err != nil {
+		return nil, err
+	}
+	ref, err := st.WriteBundle(storeKey, func(seq uint64) ([]byte, error) {
 		manifest.Seq = seq
 		return buildCargoZip(manifest, files)
 	})
@@ -214,7 +222,7 @@ func Pack(st *Store, lc Locator, id Identity, state *State, opts PackOptions) (*
 		return nil, err
 	}
 
-	if err := st.AppendClaim(id.Key, opts.Account, ClaimEvent{Op: OpPack, Seq: ref.Seq, Bundle: ref.SHA256, At: opts.Now}); err != nil {
+	if err := st.AppendClaim(storeKey, opts.Account, ClaimEvent{Op: OpPack, Seq: ref.Seq, Bundle: ref.SHA256, At: opts.Now}); err != nil {
 		return nil, fmt.Errorf("work: bundle %06d stored but recording the claim failed: %w", ref.Seq, err)
 	}
 

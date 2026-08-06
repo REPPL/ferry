@@ -32,7 +32,7 @@ outside the documentation a ferry user reads.
 | Directory | Contents | Naming |
 |---|---|---|
 | `tutorials/`, `how-to/`, `reference/`, `explanation/` | The four Diátaxis types; each directory is created on first use | — |
-| `reference/cli/` | The per-command CLI reference, generated from the cobra command tree by `make gen-docs` — one page per command, never hand-edited (CI fails on a stale tree) | `ferry_<command>.md` |
+| `reference/cli/` | The per-command CLI reference, generated from the cobra command tree by `make gen-docs` — one page per command, never hand-edited (CI fails on a stale tree) | `ferry_<command>.md`, plus the root page `ferry.md` |
 | `assets/` | Images and other static assets | — |
 
 The generated pages under `reference/cli/` are not listed individually in the

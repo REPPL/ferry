@@ -69,9 +69,15 @@ It prints the remedy for that file's kind:
 
 - **Dotfiles** — the fix is to pick a winner: `ferry capture` to keep your local
   edit, or `ferry apply --force` to take the repo's copy.
-- **Agents and terminal-config targets are repo-authoritative** — there is no
-  capture pass for them. The remedy is to update the repo copy (or source) to
-  match, or `ferry apply --force` to take the repo's version.
+- **Terminal-config targets are repo-authoritative** — there is no capture pass
+  for them. The remedy is to update the repo copy (or source) to match, or
+  `ferry apply --force` to take the repo's version.
+- **Agents targets** do have a capture pass ([the agents
+  domain](agents.md) describes it), but it will not resolve a *conflict*
+  either: capture refuses a true divergence and shows the diff rather than
+  guessing a winner. The remedy is to reconcile the repo source by hand, or
+  `ferry apply --force` to take the repo's version. A plain local drift — a
+  live edit with no competing repo change — is a capture candidate as usual.
 
 So an inbound conflict is resolved by *you* choosing a direction — keep local
 (capture) or take repo (`--force`) — not by ferry guessing.

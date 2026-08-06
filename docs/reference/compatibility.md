@@ -11,7 +11,7 @@ ferry has three surfaces a user or an automation depends on:
 | Surface | What it is |
 |---|---|
 | **CLI** | The commands, subcommands, flags, exit codes, and the machine-relevant wording of their output. |
-| **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](configuration.md) and [the agents domain](../explanation/agents.md) — `[manage]`, `[agents]`, and their tables. |
+| **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](configuration.md) and [the agents domain](../explanation/agents.md) — `[manage]`, `[agents]`, `[terminals]`, and their tables. |
 | **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`): the last-applied store, the agents target record, the backup journal, and the immutable baseline. |
 
 ## The pre-1.0 rule
@@ -98,3 +98,14 @@ therefore never silently corrupt state that a newer ferry wrote.
 This refusal covers the interrupted-run path too: an incomplete journal run whose
 manifest a newer ferry wrote is neither rolled back nor deleted — it is reported
 and left in place.
+
+### A rollback the containment guard refuses
+
+Rolling back an interrupted run re-checks, at the write boundary, that each
+path still resolves inside `$HOME` and outside `~/.ssh`. If a recorded path no
+longer does — its parent has since been replaced by a symlink that escapes —
+the rollback **skips that one write, finishes the rest, and keeps the run's
+record**, and every subsequent `apply` repeats an error naming the refused
+path. Removing the redirecting symlink and re-running clears it; deleting the
+named run directory under the ferry state directory instead discards the
+record of the change ferry could not revert.

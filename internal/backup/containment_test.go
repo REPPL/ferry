@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/REPPL/ferry/internal/sshguard"
@@ -307,5 +308,59 @@ func TestRestoreDoesNotSnapshotThroughParentSwappedIntoSSH(t *testing.T) {
 	}
 	if string(got) != secret {
 		t.Fatalf("ssh key mutated: got %q, want %q", got, secret)
+	}
+}
+
+// A rollback that hits a resolved-containment refusal must not wedge every
+// future apply: it SKIPS the refused path (surfacing an error that names it),
+// still rolls back the remaining changes, and KEEPS the run directory — the
+// only record of a change ferry could not revert.
+func TestRollbackIncompleteSkipsContainmentRefusalAndNamesPath(t *testing.T) {
+	e, home := homeEngine(t)
+	outside := t.TempDir()
+
+	cfg := filepath.Join(home, ".config")
+	if err := os.MkdirAll(cfg, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	swapped := filepath.Join(cfg, "app.conf")
+	other := filepath.Join(home, ".zshrc")
+
+	r, err := e.Begin()
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	if err := e.BackupAndWrite(r, other, []byte("applied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.BackupAndWrite(r, swapped, []byte("applied"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The run never completes (no marker), then ~/.config is swapped to a
+	// symlink escaping $HOME before the next apply's RollbackIncomplete.
+	if err := os.RemoveAll(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	_, rerr := e.RollbackIncomplete()
+	if rerr == nil {
+		t.Fatal("RollbackIncomplete succeeded through a containment refusal")
+	}
+	if !errors.Is(rerr, sshguard.ErrPathEscapesHome) {
+		t.Errorf("error does not carry the containment refusal: %v", rerr)
+	}
+	if !strings.Contains(rerr.Error(), swapped) {
+		t.Errorf("error does not name the refused path %s: %v", swapped, rerr)
+	}
+	// The OTHER change still rolled back (prior state: absent).
+	if _, statErr := os.Stat(other); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("the non-refused change was not rolled back: stat %v", statErr)
+	}
+	// A second rollback pass still surfaces the refusal (the record survives).
+	if _, again := e.RollbackIncomplete(); again == nil {
+		t.Error("the refused run's record was dropped: second rollback reports nothing")
 	}
 }
