@@ -273,7 +273,7 @@ func runWorkPack(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWorkReceive(c *cobra.Command, args []string) error {
+func runWorkReceive(c *cobra.Command, args []string) (retErr error) {
 	ctx, err := loadWorkContext(c, args[0])
 	if err != nil {
 		return err
@@ -290,9 +290,22 @@ func runWorkReceive(c *cobra.Command, args []string) error {
 	// lock apply holds so the two can never interleave.
 	lock, err := eng.Lock()
 	if err != nil {
-		return err
+		var held *backup.ErrLockHeld
+		if errors.As(err, &held) {
+			return fmt.Errorf("another ferry apply is in progress (pid %d); try again later", held.OwnerPID)
+		}
+		return fmt.Errorf("acquire apply lock: %w", err)
 	}
-	defer lock.Unlock()
+	// A FAILED unlock must not masquerade as success — same contract as apply.
+	defer func() {
+		if uErr := lock.Unlock(); uErr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("release apply lock: %w (the lock may be stale; remove it before the next apply)", uErr)
+			} else {
+				fmt.Fprintf(out, "warning: failed to release apply lock: %v; the lock may be stale and block the next apply\n", uErr)
+			}
+		}
+	}()
 
 	res, err := work.Receive(ctx.store, eng, ctx.lc, ctx.id, ctx.state, work.ReceiveOptions{
 		Force:        force,
@@ -398,7 +411,11 @@ func runWorkPrune(c *cobra.Command, args []string) error {
 		return err
 	}
 	if len(removed) == 0 {
-		fmt.Fprintf(out, "work: nothing to prune (%d bundle(s) within keep-last-%d)\n", len(removed), keep)
+		refs, berr := ctx.store.Bundles(ctx.storeKey)
+		if berr != nil {
+			return berr
+		}
+		fmt.Fprintf(out, "work: nothing to prune (%d bundle(s) within keep-last-%d)\n", len(refs), keep)
 		return nil
 	}
 	for _, r := range removed {
@@ -407,25 +424,39 @@ func runWorkPrune(c *cobra.Command, args []string) error {
 	return nil
 }
 
-func runWorkRestore(c *cobra.Command, args []string) error {
+func runWorkRestore(c *cobra.Command, args []string) (retErr error) {
 	ctx, err := loadWorkContext(c, args[0])
 	if err != nil {
 		return err
 	}
+	out := c.OutOrStdout()
 	eng, err := backup.New()
 	if err != nil {
 		return err
 	}
 	lock, err := eng.Lock()
 	if err != nil {
-		return err
+		var held *backup.ErrLockHeld
+		if errors.As(err, &held) {
+			return fmt.Errorf("another ferry apply is in progress (pid %d); try again later", held.OwnerPID)
+		}
+		return fmt.Errorf("acquire apply lock: %w", err)
 	}
-	defer lock.Unlock()
+	// A FAILED unlock must not masquerade as success — same contract as apply.
+	defer func() {
+		if uErr := lock.Unlock(); uErr != nil {
+			if retErr == nil {
+				retErr = fmt.Errorf("release apply lock: %w (the lock may be stale; remove it before the next apply)", uErr)
+			} else {
+				fmt.Fprintf(out, "warning: failed to release apply lock: %v; the lock may be stale and block the next apply\n", uErr)
+			}
+		}
+	}()
 
 	snapID, err := work.WorkRestore(eng, ctx.state)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(c.OutOrStdout(), "work: reverted the last receive (snapshot %s re-applied)\n", snapID)
+	fmt.Fprintf(out, "work: reverted the last receive (snapshot %s re-applied)\n", snapID)
 	return nil
 }
