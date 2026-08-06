@@ -54,14 +54,18 @@ fails the command, so a tampered or unofficial binary never passes.
 
 ```bash
 # On a machine whose setup you want to capture:
-ferry init            # first-run setup; starts a config repo at ~/.config/ferry/repo
+ferry init --github   # first-run setup; creates a private GitHub repo wired as the remote
 ferry capture         # review local config and pull it into the repo
-git -C <repo> push    # share it
+ferry sync            # commit the captured changes and push them
 
 # On another machine:
 ferry init <repo-url> # clone your config repo over HTTPS, set this machine up
 ferry apply           # reconcile this machine to the repo
 ```
+
+`ferry init --github` needs the GitHub CLI authenticated (`gh auth login`). For a purely
+local repo, use bare `ferry init` and add your own `origin` remote — a bare init wires
+none, so a plain `git push` has nowhere to go until you do.
 
 See [Getting started](docs/tutorials/getting-started.md) for the full happy path.
 

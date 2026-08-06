@@ -13,7 +13,7 @@ the work it deliberately does **not** reimplement:
 | Prerequisite | Why ferry needs it | When |
 |---|---|---|
 | **macOS** | The preference-based terminal apps (iTerm2, Apple Terminal) keep their settings in macOS-native preferences, so those domains are macOS-only. Config-file terminals (Alacritty, kitty, WezTerm) and the cross-platform core (dotfiles, dependencies, backup/restore) run anywhere, and are CI-tested on Linux. | iTerm2 and Apple Terminal configuration |
-| **`git`** | ferry does not embed git. It shells out to clone your config repo, and you commit/push your captured changes with git yourself. ferry preflights it and tells you how to install it if missing. | `init`, `capture` |
+| **`git`** | ferry does not embed git. It shells out to clone your config repo, and you commit/push your captured changes with git yourself. ferry preflights it and tells you how to install it if missing. | `init`, `capture`, `sync`, `bundle export`, `bundle import`, and the `work` verbs |
 | **A package manager** (Homebrew on macOS) | Only for installing declared dependencies via `ferry apply --deps`. ferry never installs the package manager for you: it uses whatever is present and tells you if none is. | `apply --deps` only |
 
 You do **not** need admin/root, and you do not need to pre-install anything ferry
@@ -41,9 +41,10 @@ curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | bash
 This installs **only** the `ferry` binary to `~/.local/bin`: **no admin rights
 required**, so it works on any account, including locked-down or managed machines. If
 `~/.local/bin` isn't already on your PATH, the installer prints the one line to add to
-your shell config (it never edits your shell itself). It does not install Homebrew, edit
-your shell, or run `ferry init`; it runs the freshly installed binary once to print
-ferry's banner, and nothing else.
+your shell config (it never edits your shell itself). It does not install Homebrew or
+edit your shell, and by default it does not run `ferry init`: it runs the freshly
+installed binary once to print ferry's banner, and nothing else. Pass `--init`
+(`curl … | bash -s -- --init`) to chain `ferry init` straight after the install.
 
 To build from source instead:
 
@@ -67,12 +68,16 @@ names the one for this host: there is no plain `bin/ferry`.
 ferry init                # first-run setup; starts a new config repo at ~/.config/ferry/repo
 ferry capture             # review your config; approve each change, route shared/local
 git -C <your-ferry-repo> commit -am "Initial capture"
-git -C <your-ferry-repo> push
+git -C <your-ferry-repo> remote add origin <your-empty-repo-url>
+git -C <your-ferry-repo> push -u origin HEAD
 ```
 
 A bare `ferry init` creates the repo at ferry's own default location,
 `~/.config/ferry/repo`: you do not need to pick a path. To place it somewhere
-else, pass a directory: `ferry init --fresh ~/somewhere`.
+else, pass a directory: `ferry init --fresh ~/somewhere`. A bare init also wires
+no remote — create an empty repo with your git host and add it as `origin`
+yourself (as above), or let ferry do both with
+[`ferry init --github`](#let-ferry-manage-a-private-github-repo).
 
 ### First run: adopt or build your shell config
 
@@ -111,7 +116,8 @@ ever dropped without you), and seeds placeholders in their place. A secret-free
 `~/.zshrc` is adopted byte-identically, so the first `ferry apply` matches what is
 already on disk and changes nothing. Your existing shell config is never zeroed.
 Scripting the wizard itself is possible with `ferry init --wizard=answers:<file>`
-(a TOML file carrying every decision).
+(a TOML file carrying every decision — the schema is in
+[the configuration reference](../reference/configuration.md#the-wizard-answers-file)).
 
 If you have no `~/.zshrc` (and skip the starter), ferry seeds no shell source at all —
 `.zshrc` is still in scope, and your first `ferry capture` fills the repo from the
@@ -173,14 +179,16 @@ a conflict. Run `ferry apply` after to deploy pulled changes.
 
 Point `ferry init` at your existing ferry repo as a positional argument: an HTTPS URL or
 a local/`file://` path. ferry clones it into its own space (`~/.config/ferry/repo` by
-default), then writes ferry's config. (A bare `ferry init`, with no source, takes the
+default), then writes ferry's config — except for a plain local path that is already a
+git working tree, which ferry uses where it stands rather than re-cloning. Either way it
+prints the repo path it settles on. (A bare `ferry init`, with no source, takes the
 **Fresh** path above and sets up a new repo at the same default location.)
 
 ```bash
-ferry init https://github.com/REPPL/ferry.git   # clone your ferry repo over HTTPS, write ferry's config
+ferry init <your-repo-url>   # clone your ferry repo over HTTPS, write ferry's config
 ferry diff                # preview what will change on this machine (optional)
 ferry apply               # reconcile this machine to the repo
-ferry apply --deps        # install dependencies (needs brew = true under [manage])
+ferry apply --deps        # install declared dependencies (needs brew and/or npm-globals under [manage])
 ```
 
 `ferry apply` is idempotent and safe to re-run: run it after every `git pull`. It

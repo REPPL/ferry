@@ -42,6 +42,9 @@ apply-only.
 
 ## What does NOT belong here
 
-npm/curl post-install tools (Claude Code, bun, opencode, codex) are **not** in any
-manifest — ferry runs them as named, pinned post-install steps. Manifests hold
-native package-manager dependencies only.
+npm/curl-installed coding tools are **not** in this repo's manifests, and ferry has
+no install step for them — install them by hand. ferry *can* carry globally-installed
+**npm** package names in a `deps/npm-globals.txt` manifest when `npm-globals = true`
+is declared under `[manage]` (see
+[Dependencies](../docs/reference/configuration.md#npm-globals)); this repo does not
+declare that domain, so the file is absent here.
