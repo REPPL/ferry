@@ -45,11 +45,16 @@ func TestGuardUntrackedClobberCatchesCaseFoldCollision(t *testing.T) {
 	}
 }
 
-// A case-SENSITIVE repo (core.ignorecase unset/false) keeps exact matching:
-// a legitimately distinct Notes.md beside a remote-added notes.md is not a
-// collision and must not abort.
+// A case-SENSITIVE repo (core.ignorecase=false) keeps exact matching: a
+// legitimately distinct Notes.md beside a remote-added notes.md is not a
+// collision and must not abort. The fixture PINS core.ignorecase=false —
+// git sets it from a filesystem probe at init, so on a case-insensitive
+// host filesystem (macOS APFS) the unpinned default would be true and the
+// test's premise false; note the distinct-case pair below is only genuinely
+// two files on a case-sensitive filesystem anyway.
 func TestGuardUntrackedClobberExactMatchOnCaseSensitiveRepo(t *testing.T) {
 	repo := upstreamAdding(t, "notes.md", "remote spelling\n", false)
+	testGit(t, repo, "config", "core.ignorecase", "false")
 	if err := os.WriteFile(filepath.Join(repo, "Notes.md"), []byte("local spelling\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
