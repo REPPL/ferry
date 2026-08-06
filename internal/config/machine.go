@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
+	"github.com/REPPL/ferry/internal/backup"
 	"github.com/REPPL/ferry/internal/paths"
 )
 
@@ -135,13 +137,17 @@ func saveMachineConfigTo(path string, mc MachineConfig) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create config dir for %s: %w", path, err)
 	}
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return fmt.Errorf("open machine config %s: %w", path, err)
-	}
-	defer f.Close()
-	if err := toml.NewEncoder(f).Encode(mc); err != nil {
+	// Encode to memory, then write via the canonical crash-safe temp+rename:
+	// an in-place O_TRUNC write destroys the previous config the moment it opens,
+	// so a crash or full disk mid-write left a zero-length file that failed
+	// validate() on every later load — with nothing to recover. AtomicWrite also
+	// refuses a leaf symlink, so a swapped config.toml cannot redirect the write.
+	var buf bytes.Buffer
+	if err := toml.NewEncoder(&buf).Encode(mc); err != nil {
 		return fmt.Errorf("encode machine config %s: %w", path, err)
+	}
+	if err := backup.AtomicWrite(path, buf.Bytes(), 0o644); err != nil {
+		return fmt.Errorf("write machine config %s: %w", path, err)
 	}
 	return nil
 }

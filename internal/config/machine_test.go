@@ -158,3 +158,40 @@ func TestMachineConfig_WorkTableOptional(t *testing.T) {
 		t.Errorf("hand-written Work = %+v", got.Work)
 	}
 }
+
+// Round-5: saving must never write THROUGH a symlinked config.toml leaf — the
+// write goes to a same-dir temp and renames over the leaf, so a symlink is
+// replaced, not followed. The old in-place O_TRUNC open followed the link and
+// truncated whatever it pointed at.
+func TestMachineConfig_SaveDoesNotFollowLeafSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	elsewhere := filepath.Join(dir, "elsewhere.toml")
+	if err := os.WriteFile(elsewhere, []byte("untouched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfgDir := filepath.Join(dir, "ferry")
+	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(cfgDir, "config.toml")
+	if err := os.Symlink(elsewhere, path); err != nil {
+		t.Fatal(err)
+	}
+
+	err := saveMachineConfigTo(path, MachineConfig{Hostname: "h", Repo: filepath.Join(dir, "clone")})
+
+	got, rerr := os.ReadFile(elsewhere)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if string(got) != "untouched\n" {
+		t.Fatalf("save wrote THROUGH the leaf symlink: elsewhere.toml = %q (err=%v)", got, err)
+	}
+	if err == nil {
+		// A successful save must have replaced the symlink with a regular file.
+		if fi, lerr := os.Lstat(path); lerr != nil || fi.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("save succeeded but config.toml is still a symlink (lstat err=%v)", lerr)
+		}
+	}
+}
