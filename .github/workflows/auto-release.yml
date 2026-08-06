@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read          # count prior release.yml attempts for the retry bound
     outputs:
       version: ${{ steps.detect.outputs.version }}
       need_tag: ${{ steps.detect.outputs.need_tag }}
@@ -98,11 +99,34 @@ jobs:
               echo "need_release=false" >> "$GITHUB_OUTPUT"
             else
               commit="$(git rev-parse --verify "$tag^{commit}")"
-              echo "$tag is tagged but has NO GitHub Release; re-releasing from $commit."
-              echo "need_release=true" >> "$GITHUB_OUTPUT"
-              echo "release_ref=$commit" >> "$GITHUB_OUTPUT"
+              # Bound the retry: the re-release rebuilds the TAGGED commit, so a
+              # DETERMINISTIC verify failure (as opposed to the transient publish
+              # blip this healing exists for) would otherwise re-run the full
+              # gate on every later main push, forever, and can never heal
+              # forward. Three failed release.yml runs for the tagged commit =
+              # stop retrying and say so loudly; a fix requires the owner
+              # (deleting the tag or publishing by hand).
+              attempts="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?per_page=100" \
+                --jq "[.workflow_runs[] | select(.head_sha==\"$commit\" and .conclusion==\"failure\")] | length" \
+                2>/dev/null || true)"
+              [ -n "$attempts" ] || attempts=0
+              if [ "$attempts" -ge 3 ]; then
+                echo "::error::$tag is tagged but has no GitHub Release after $attempts failed release runs — NOT retrying again. The tagged commit fails the release gate deterministically; see docs/how-to/cutting-a-release.md (Manual / recovery flow)."
+                echo "need_release=false" >> "$GITHUB_OUTPUT"
+              else
+                echo "$tag is tagged but has NO GitHub Release ($attempts prior failed attempt(s)); re-releasing from $commit."
+                echo "need_release=true" >> "$GITHUB_OUTPUT"
+                echo "release_ref=$commit" >> "$GITHUB_OUTPUT"
+              fi
             fi
           else
+            # Pre-tag gate: the tag created below is immutable the moment it is
+            # pushed, and release.yml's verify runs only AFTER it exists — but
+            # its plan-doc shipped check is the one gate with no pre-tag
+            # coverage anywhere (ci.yml does not run it). Run it here so a
+            # promotion commit with an un-shipped plan Status: line fails THIS
+            # job instead of burning the version number.
+            scripts/check-plan-shipped.sh "$tag"
             echo "$tag has no git tag; will tag and release at github.sha."
             echo "need_tag=true" >> "$GITHUB_OUTPUT"
             echo "need_release=true" >> "$GITHUB_OUTPUT"

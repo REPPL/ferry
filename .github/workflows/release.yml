@@ -90,6 +90,23 @@ jobs:
     permissions:
       contents: read
     steps:
+      # $TAG later reaches `make build VERSION="$TAG"` in the release job, where
+      # make re-expands it inside a double-quoted /bin/sh recipe — backticks in
+      # a tag name would be command-substituted there, in a job holding write +
+      # attestation permissions. Constrain the name once, at the gate's entry
+      # point (git permits backticks in ref names; both tag-creating paths
+      # already produce plain vX.Y.Z, so this only ever refuses a hand-crafted
+      # hostile or mistyped tag). Prerelease/build suffixes stay allowed.
+      - name: Tag name is a semver release tag
+        env:
+          VERSION: ${{ env.TAG }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "release: refusing tag '$VERSION' — not a vMAJOR.MINOR.PATCH[-prerelease] name" >&2
+            exit 1
+          fi
+
       - name: Check out the pushed commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -213,12 +230,14 @@ jobs:
           fi
           echo "AC-ssh-not-read: no ~/.ssh opens observed under strace (status)."
 
-  # The macOS leg of the release gate, mirroring ci.yml's `evals-macos`:
-  # ferry is macOS-first, and the darwin-only evals (terminal, iTerm2,
-  # keybindings staging) skip on Linux — without this leg a darwin-only
-  # regression would tag, attest, and publish green.
+  # The macOS leg of the release gate, mirroring ci.yml's macOS `check` steps
+  # (vet/test/race) plus `evals-macos`: ferry is macOS-first, its case-fold and
+  # symlink guards behave differently on APFS, and a hand-pushed tag never runs
+  # ci.yml — without this leg a darwin-only regression (or a vet finding in a
+  # darwin-only file, invisible to the Linux analysis set) would tag, attest,
+  # and publish green.
   verify-macos:
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: macos-latest
     permissions:
       contents: read
@@ -235,6 +254,15 @@ jobs:
         with:
           go-version: '1.25'
           cache: false
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Test (race, internal)
+        run: go test -race ./internal/...
 
       - name: Build the macOS ferry binary
         run: go build -o "$RUNNER_TEMP/ferry" .
@@ -330,8 +358,35 @@ jobs:
             bin/ferry-*
             bin/checksums.txt
 
+      # The release body is this version's CHANGELOG section — keyed on $TAG
+      # specifically (never "newest dated heading": a hand-pushed tag for an
+      # older version must not get another version's notes), matched with
+      # literal index() so the dots in the version cannot act as regex. Fail
+      # SOFT: an unextractable section publishes an empty body (the previous
+      # behaviour) rather than blocking the one irreversible act — the
+      # promotion flow already guarantees the dated section exists.
+      - name: Extract this version's CHANGELOG section as the release notes
+        run: |
+          set -euo pipefail
+          ver="${TAG#v}"
+          notes="$RUNNER_TEMP/release-notes.md"
+          awk -v hdr="## [$ver] - " '
+            index($0, hdr) == 1 { inside = 1; next }
+            inside && index($0, "## [") == 1 { exit }
+            inside { print }
+          ' CHANGELOG.md > "$notes"
+          if ! grep -q '[^[:space:]]' "$notes"; then
+            echo "WARNING: no '## [$ver] - <date>' section in CHANGELOG.md; publishing empty notes." >&2
+            : > "$notes"
+          fi
+          {
+            echo
+            echo "Full changelog: https://github.com/${GITHUB_REPOSITORY}/blob/${TAG}/CHANGELOG.md"
+          } >> "$notes"
+          echo "NOTES_FILE=$notes" >> "$GITHUB_ENV"
+
       - name: Create the GitHub Release and upload the binaries + checksums.txt
-        run: gh release create "$TAG" bin/ferry-* bin/checksums.txt --verify-tag --title "$TAG" --notes ""
+        run: gh release create "$TAG" bin/ferry-* bin/checksums.txt --verify-tag --title "$TAG" --notes-file "$NOTES_FILE"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
