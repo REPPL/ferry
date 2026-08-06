@@ -23,7 +23,7 @@ ferry apply [flags]
 ### Options
 
 ```
-      --deps          install declared dependencies (separate, explicit step; needs brew = true under [manage])
+      --deps          install declared dependencies (separate, explicit step; installs only the dependency domains declared under [manage]: brew, npm-globals)
       --force         overwrite uncaptured local edits on conflict
   -h, --help          help for apply
       --skip-wizard   skip the guided walkthrough (safe changes auto-apply; risky changes are refused, not prompted)

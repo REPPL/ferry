@@ -12,7 +12,7 @@ first so the revert is itself reversible. restore <domain> scopes it to one
 target. --packages additionally uninstalls only the packages ferry installed.
 
 ```
-ferry restore [flags]
+ferry restore [<domain>...] [flags]
 ```
 
 ### Options

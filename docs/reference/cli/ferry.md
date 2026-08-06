@@ -17,7 +17,8 @@ ferry [flags]
 ### Options
 
 ```
-  -h, --help   help for ferry
+  -h, --help      help for ferry
+  -v, --version   version for ferry
 ```
 
 ### SEE ALSO

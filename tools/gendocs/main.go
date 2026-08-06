@@ -31,6 +31,10 @@ func disableAutoGenTag(cmd *cobra.Command) {
 func main() {
 	root := cmd.Root()
 	disableAutoGenTag(root)
+	// cobra adds the --version flag at Execute time, which GenMarkdownTree never
+	// reaches — without this the root page omits a flag the real binary has.
+	// Idempotent, local-only (no subcommand page changes).
+	root.InitDefaultVersionFlag()
 
 	// Clean-regenerate: remove the tree first so a page for a command that no
 	// longer exists is deleted rather than left as a stale orphan (GenMarkdownTree
