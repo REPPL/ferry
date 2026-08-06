@@ -79,11 +79,11 @@ func runStatus(c *cobra.Command, _ []string) error {
 			}
 			continue
 		}
-		// Converged FileDomain items (fn-5). Agents targets carry the domain's
-		// repo-authoritative guidance (capture never ingests them in v1), so their
-		// drift lines point at the repo copy, not `ferry capture`; dotfiles and
-		// config-file terminals share the three-way status rendering with capture
-		// guidance.
+		// Converged FileDomain items (fn-5). An agents target edited live is a
+		// capture candidate (capture reviews it hunk by hunk), so its drift line
+		// names `ferry capture` first; a true conflict stays repo-authoritative
+		// (capture refuses a divergence). Dotfiles and config-file terminals
+		// share the three-way status rendering with capture guidance.
 		if it.kind != kindFile {
 			continue
 		}
@@ -228,16 +228,16 @@ func terminalRepoStatusSource(repo, domain, prefID string) string {
 
 // reportAgentsStatus prints one status line for an agents-domain target and
 // reports whether it counts as drift. Same three-way states as reportStatus,
-// but the guidance is the domain's: agents targets are repo-authoritative in
-// v1 (capture skips them), so a live edit is resolved by updating the repo
-// copy (or overriding with `ferry apply --force`), never by capture.
+// with the domain's guidance: a live edit is a capture candidate (capture
+// reviews it hunk by hunk), while a true conflict is resolved at the repo
+// copy (capture refuses a divergence) or overridden with `ferry apply --force`.
 func reportAgentsStatus(out io.Writer, colour func(*color.Color, string) string, name string, state dotfile.State) (isDrift bool) {
 	switch state {
 	case dotfile.StateClean:
 		fmt.Fprintf(out, "  %-22s %s\n", name, colour(colGreen, "clean"))
 		return false
 	case dotfile.StateLocallyDrifted:
-		fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", name, colour(colYellow, "drifted"))
+		fmt.Fprintf(out, "  %-22s %s (edited live; run `ferry capture` to bring it into the repo, or `ferry apply --force` to overwrite)\n", name, colour(colYellow, "drifted"))
 		return true
 	case dotfile.StateConflict:
 		fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", name, colour(colRed, "conflict"))

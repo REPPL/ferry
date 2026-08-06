@@ -577,6 +577,14 @@ func effectiveSource(repo, sharedSrc, name string) string {
 	return sharedSrc
 }
 
+// The two boundary-refusal message bodies, shared with doctor's invariant
+// check: doctor recognises a plan-time containment refusal by these exact
+// strings, so they must only ever change together.
+const (
+	refusalSSHBody    = "ferry never manages paths under ~/.ssh"
+	refusalEscapeBody = "invalid managed path (escapes $HOME)"
+)
+
 // refusalWarning renders a clear, user-facing refusal for a dotfile TargetFor
 // rejected. The ~/.ssh refusal is called out explicitly (the absolute hands-off
 // contract); a traversal/escape is an invalid managed path. Any other error is
@@ -584,9 +592,9 @@ func effectiveSource(repo, sharedSrc, name string) string {
 func refusalWarning(name string, err error) string {
 	switch {
 	case errors.Is(err, dotfile.ErrForbiddenSSHPath):
-		return fmt.Sprintf("refusing %s: ferry never manages paths under ~/.ssh", name)
+		return fmt.Sprintf("refusing %s: %s", name, refusalSSHBody)
 	case errors.Is(err, dotfile.ErrPathEscapesHome):
-		return fmt.Sprintf("refusing %s: invalid managed path (escapes $HOME)", name)
+		return fmt.Sprintf("refusing %s: %s", name, refusalEscapeBody)
 	default:
 		return fmt.Sprintf("refusing %s: %v", name, err)
 	}
@@ -896,8 +904,8 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				fmt.Fprintf(out, "warning: --force replaced %s (a substantial existing file) with an empty/blank repo source — real config content was overwritten (backed up; run `ferry restore` to recover)\n", res.ForcedPath)
 			}
 			// Agents and config-file terminal targets carry the domain's own wording
-			// when apply SKIPS a locally-drifted target (repo-authoritative); a dotfile
-			// skip has no special wording and falls through to the generic action line.
+			// when apply SKIPS a locally-drifted target; a dotfile skip has no
+			// special wording and falls through to the generic action line.
 			if res.Action == dotfile.ActionSkipped {
 				if msg := fileSkippedMessage(it.fileDomain); msg != "" {
 					fmt.Fprintf(out, "  %-22s %s\n", it.domain, msg)
@@ -945,9 +953,8 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 // fileConflictMessage renders the per-domain CONFLICT report line body for a
 // FileDomain target apply refused to overwrite (edited live AND in the repo).
 // The wording is the domain's remedy: dotfiles point at `ferry capture`, while
-// agents and config-file terminals are repo-authoritative (no capture pass) so
-// they point at updating the repo copy/source. It is exactly the text the
-// pre-fn-5 per-kind mutate arms printed, now selected by owning domain.
+// agents and config-file terminals resolve a true divergence at the repo copy
+// (capture refuses a conflict), so they point at updating the repo copy/source.
 func fileConflictMessage(fileDomain string) string {
 	switch fileDomain {
 	case "agents":
@@ -960,14 +967,15 @@ func fileConflictMessage(fileDomain string) string {
 }
 
 // fileSkippedMessage renders the per-domain "skipped (locally drifted)" report
-// line body for a FileDomain target apply left for its repo-authoritative
-// remedy. Dotfiles have NO special wording — a locally-drifted dotfile is a
-// capture candidate that falls through to the generic action line — so this
-// returns "" for them.
+// line body for a FileDomain target apply left unwritten. A locally-drifted
+// agents target is a capture candidate (capture reviews it hunk by hunk), so
+// its line names `ferry capture` first. Dotfiles have NO special wording — a
+// locally-drifted dotfile is a capture candidate that falls through to the
+// generic action line — so this returns "" for them.
 func fileSkippedMessage(fileDomain string) string {
 	switch fileDomain {
 	case "agents":
-		return "skipped (edited live; agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)"
+		return "skipped (edited live; run `ferry capture` to bring it into the repo, or `ferry apply --force` to overwrite)"
 	case "terminals", "keybindings", "emacs":
 		return "skipped (local edits; update the repo source to match, or `ferry apply --force`)"
 	default:
@@ -1093,12 +1101,12 @@ func printPlan(out io.Writer, plan []planItem) {
 			// Converged FileDomain rendering (fn-5): all file targets share the
 			// three-way state lines; the owning domain (it.fileDomain) selects the
 			// locally-drifted / conflict guidance that used to be keyed on the kind —
-			// dotfiles point at `ferry capture`, agents and config-file terminals are
-			// repo-authoritative (no capture pass).
+			// dotfiles and agents point at `ferry capture` for a plain drift, while
+			// config-file terminals are repo-authoritative (no capture pass).
 			switch it.fileDomain {
 			case "agents":
-				// Agents targets carry the domain's repo-authoritative guidance: a live
-				// edit is fixed in the repo copy (capture never ingests these in v1).
+				// A live-edited agents target is a capture candidate; a true conflict
+				// is resolved at the repo copy (capture refuses a divergence).
 				switch it.state {
 				case dotfile.StateClean:
 					fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))
@@ -1109,7 +1117,7 @@ func printPlan(out io.Writer, plan []planItem) {
 					update++
 					fmt.Fprintf(out, "  %-22s %s\n", it.domain, colour(colYellow, "would update"))
 				case dotfile.StateLocallyDrifted:
-					fmt.Fprintf(out, "  %-22s %s (edited live; repo-authoritative — update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colYellow, "would skip"))
+					fmt.Fprintf(out, "  %-22s %s (edited live; run `ferry capture` to bring it into the repo, or `ferry apply --force` to overwrite)\n", it.domain, colour(colYellow, "would skip"))
 				case dotfile.StateConflict:
 					conflict++
 					fmt.Fprintf(out, "  %-22s %s (edited live AND in the repo; update the repo copy, or `ferry apply --force`)\n", it.domain, colour(colRed, "conflict"))

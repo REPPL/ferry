@@ -199,7 +199,7 @@ func reportInvariants(out io.Writer, colour func(*color.Color, string) string) b
 		return true
 	}
 
-	items, _, err := buildPlan(ctx)
+	items, warnings, err := buildPlan(ctx)
 	if err != nil {
 		// A managed target that is present but NOT a regular file (a symlink or
 		// directory) makes the plan REFUSE to treat it as managed content — this is
@@ -217,6 +217,25 @@ func reportInvariants(out io.Writer, colour func(*color.Color, string) string) b
 		return true
 	}
 
+	healthy := true
+
+	// A containment/~/.ssh refusal at plan time IS an invariant breach: the plan
+	// drops the refused target (so the loops below never see it), and before this
+	// check doctor printed [pass] for exactly the state it exists to catch (e.g. a
+	// manifest path under ~/.ssh, or a parent symlinked into forbidden space).
+	// Recognised by the shared refusal message bodies (see refusalWarning).
+	refused := false
+	for _, w := range warnings {
+		if strings.Contains(w, refusalSSHBody) || strings.Contains(w, refusalEscapeBody) {
+			refused = true
+			healthy = false
+			fmt.Fprintf(out, "  %s %s — the plan refuses this target; fix the manifest path or the symlinked parent\n", colour(colRed, "[fail]"), w)
+		}
+	}
+	if !refused {
+		fmt.Fprintf(out, "  %s no managed target is refused by the containment guard\n", colour(colGreen, "[pass]"))
+	}
+
 	// Collect the file targets (native preference domains carry no $HOME path).
 	var targets []string
 	for _, it := range items {
@@ -225,11 +244,12 @@ func reportInvariants(out io.Writer, colour func(*color.Color, string) string) b
 		}
 	}
 	if len(targets) == 0 {
+		if !healthy {
+			return false
+		}
 		fmt.Fprintf(out, "  %s no managed targets deployed yet — nothing to check\n", colour(colYellow, "[warn]"))
 		return true
 	}
-
-	healthy := true
 
 	// Invariant 1: no deployed target is a symlink. LSTAT the leaf only (never
 	// following it, never reading contents); a not-yet-deployed target is skipped.
