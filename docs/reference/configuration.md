@@ -190,9 +190,9 @@ config-file emulators above — they are different domains). On `capture`, ferry
 exports the live domain and offers the whole plist through the same accept and
 route flow as other captures — shared, local, or reject; a shared-routed
 capture commits it at `terminal/com.apple.Terminal.plist`. On `apply`, ferry
-imports the committed plist, which replaces the whole domain, and flushes
-`cfprefsd`; relaunch Terminal for the change to take effect. The domain is
-macOS-only and skips cleanly elsewhere. The `.local` layer applies
+imports the committed plist, which replaces the whole domain; relaunch
+Terminal for the change to take effect (`cfprefsd` may serve a cached copy
+until then). The domain is macOS-only and skips cleanly elsewhere. The `.local` layer applies
 whole-domain: a committed `local/terminal/com.apple.Terminal.plist` is
 imported instead of the shared copy.
 

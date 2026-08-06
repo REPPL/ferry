@@ -45,6 +45,14 @@ called out in a **Breaking** section. See
   `[manage]` (the wizard-seeded manifest provides neither); and an invariant
   breach was mis-diagnosed by the footer as "a required prerequisite is
   missing". All three now say what actually happens.
+- **The recovery release driver matches the documented tag shape and runs
+  off the author's machine.** `scripts/release.sh` created a lightweight tag
+  where auto-release and the how-to specify an annotated one, and its
+  docs-currency gate hard-failed on `docs-currency-lint`, a maintainer-local
+  tool that is not part of this repository — making the documented recovery
+  path (including `--dry-run`) unrunnable anywhere else. The driver now cuts
+  an annotated tag, and `FERRY_RELEASE_SKIP_DOCS_LINT=1` skips that one gate
+  explicitly and loudly; the default remains fail-closed.
 - **`make release` prints publishing instructions that work.** The target's
   printout prescribed `git tag vX.Y.Z && git push --follow-tags`, which can
   never push the tag it creates (`--follow-tags` pushes only annotated tags,
@@ -75,15 +83,16 @@ called out in a **Breaking** section. See
   past retention — and a fresh `pack` would strand the old directory by
   writing under the new key. All store-touching verbs now key on the same
   located directory.
-- **A containment-refused rollback no longer wedges every future `apply`.**
-  When an interrupted run's recorded path stopped resolving inside `$HOME`
-  (a parent replaced by an escaping symlink after the crash), the automatic
-  rollback aborted with a bare "path escapes $HOME" — naming no path, rolling
-  back none of the other changes, and failing every subsequent `apply` at the
-  same point. The rollback now skips the refused write (never writing through
-  the redirected parent), completes the remaining changes, keeps the run's
-  record, and names the path plus both ways out; snapshot re-application
-  gains the same skip-and-name behaviour.
+- **A containment-refused rollback completes the other changes and names
+  the path.** When an interrupted run's recorded path stopped resolving
+  inside `$HOME` (a parent replaced by an escaping symlink after the crash),
+  the automatic rollback aborted with a bare "path escapes $HOME" — naming
+  no path and rolling back none of the other changes. The rollback now skips
+  the refused write (never writing through the redirected parent), completes
+  the remaining changes, keeps the run's record, and names the path plus
+  both ways out — subsequent `apply` runs still repeat that error until the
+  refusal is cleared; snapshot re-application gains the same skip-and-name
+  behaviour.
 - **A git stderr warning can no longer corrupt what `ferry sync` parses.**
   Every ferry-spawned hardened git call merged stderr into stdout, so a
   warning-emitting configuration (an unreadable config file, a broken ref, a
