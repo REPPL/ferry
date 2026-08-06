@@ -549,8 +549,8 @@ func parseStatusZ(out string) (untracked, ignored []statusZEntry, err error) {
 		if len(entry) < 4 || entry[2] != ' ' || !validStatusByte(entry[0]) || !validStatusByte(entry[1]) {
 			return nil, nil, fmt.Errorf("unparseable `git status` entry %q", entry)
 		}
-		if entry[0] == 'R' || entry[0] == 'C' {
-			i++ // skip the rename/copy origin path field
+		if entry[0] == 'R' || entry[0] == 'C' || entry[1] == 'R' || entry[1] == 'C' {
+			i++ // skip the rename/copy origin path field (either column)
 		}
 		switch entry[:2] {
 		case "??":
