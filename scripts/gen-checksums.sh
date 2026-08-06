@@ -18,7 +18,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BINDIR="$ROOT/bin"
 BINARY="ferry"
-TARGETS="darwin/arm64 darwin/amd64 linux/arm64 linux/amd64"
 OUT="$BINDIR/checksums.txt"
 
 # Pick a SHA256 tool: sha256sum (Linux) or `shasum -a 256` (macOS).
@@ -34,18 +33,23 @@ fi
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
 
-for target in $TARGETS; do
-  goos="${target%/*}"; goarch="${target#*/}"
-  name="$BINARY-$goos-$goarch"
-  bin="$BINDIR/$name"
-  if [ ! -f "$bin" ]; then
-    echo "gen-checksums: missing binary $bin (run 'make build' first)" >&2
-    exit 1
-  fi
+# Enumerate the built binaries by the SAME glob the release workflow uploads
+# and attests (bin/ferry-*), so the manifest covers exactly the shipped asset
+# set by construction — a target added to (or removed from) the Makefile can
+# never produce an unchecksummed release asset or a post-tag manifest failure.
+found=0
+for bin in "$BINDIR/$BINARY"-*; do
+  [ -f "$bin" ] || continue
+  found=1
+  name="$(basename "$bin")"
   # Canonical two-space form: `<sha256>  <asset-name>`, verifiable with
   # `shasum -a 256 -c` / `sha256sum -c` from a directory holding the asset.
   printf '%s  %s\n' "$(sha_of "$bin")" "$name" >> "$tmp"
 done
+if [ "$found" -eq 0 ]; then
+  echo "gen-checksums: no $BINARY-* binaries in $BINDIR (run 'make build' first)" >&2
+  exit 1
+fi
 
 mv "$tmp" "$OUT"
 echo "gen-checksums: wrote $OUT"

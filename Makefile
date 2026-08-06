@@ -35,8 +35,10 @@ gen-docs:
 vet:
 	go vet ./...
 
-# Pre-push gate (invoked by .githooks/pre-push): the same four steps the CI
-# check job runs (build, vet, test, race-enabled internal tests), natively.
+# Pre-push gate (invoked by .githooks/pre-push): the four native compile/test
+# steps of the CI check job (build, vet, test, race-enabled internal tests).
+# The check job's other gates — gofmt, CLI-reference staleness, consistency
+# lint, cross-compile — are not mirrored here; CI remains their gate.
 # Host-native `go build` — not the cross-compiling `build` target — because it
 # mirrors CI, not a release.
 preflight:
