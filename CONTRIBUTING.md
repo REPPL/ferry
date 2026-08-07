@@ -39,8 +39,8 @@ local config (issue #17). Let one finish before starting the other.
   small and atomic — one purpose per commit; a behaviour-preserving refactor and
   a bug fix are separate commits.
 - Write [Conventional Commit](https://www.conventionalcommits.org) subjects with
-  no scope: `feat`, `fix`, `chore`, `refactor`, `docs`, or `test`. The body
-  explains *why*.
+  no scope: `feat`, `fix`, `chore`, `refactor`, `docs`, `ci`, or `test`. The
+  body explains *why*.
 - A PR that closes an issue includes `Closes #N` in its body.
 - Code, identifiers, comments, and commit messages are US English; user-facing
   prose (docs, README) is British English.

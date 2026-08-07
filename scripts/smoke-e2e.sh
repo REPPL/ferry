@@ -11,13 +11,19 @@ fail=0; ok(){ echo "  OK  $*"; }; bad(){ echo "  XX  FAIL: $*"; fail=1; }; step(
 # `stat -f %m` is FILESYSTEM info, not a format string — comparing it tells you
 # nothing about the file, so the branch order matters.
 mtime(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+# Fail CLOSED on a missing hash tool (mirroring gen-checksums.sh): without this,
+# a host lacking shasum made every hash comparison "" = "" and the script
+# printed PASS having verified nothing — including the ~/.ssh tripwire.
+if command -v sha256sum >/dev/null 2>&1; then sha_of(){ sha256sum "$1"|awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then sha_of(){ shasum -a 256 "$1"|awk '{print $1}'; }
+else echo "smoke-e2e: need sha256sum or shasum on PATH" >&2; exit 1; fi
 SRC="$H/src"; mkdir -p "$SRC/dotfiles"
 ( cd "$SRC" && git init -q && git config user.email t@t && git config user.name t )
 printf 'export FERRY_SMOKE=shared\nalias ll="ls -la"\n' > "$SRC/dotfiles/zshrc"
 printf '[manage]\ndotfiles = [".zshrc"]\n' > "$SRC/ferry.toml"
 ( cd "$SRC" && git add -A && git commit -qm seed )
-printf '# original\nexport ORIGINAL=1\n' > "$H/.zshrc"; ORIG="$(shasum "$H/.zshrc"|awk '{print $1}')"
-mkdir -p "$H/.ssh"; echo "TRIPWIRE" > "$H/.ssh/config"; SSH0="$(shasum "$H/.ssh/config"|awk '{print $1}')"
+printf '# original\nexport ORIGINAL=1\n' > "$H/.zshrc"; ORIG="$(sha_of "$H/.zshrc")"
+mkdir -p "$H/.ssh"; echo "TRIPWIRE" > "$H/.ssh/config"; SSH0="$(sha_of "$H/.ssh/config")"
 
 step "1. init (clone file://)"
 "$FERRY" init "file://$SRC" </dev/null >"$H/o1" 2>&1; [ $? -eq 0 ] && ok "init exit 0" || { bad "init nonzero"; sed 's/^/    /' "$H/o1"; }
@@ -27,7 +33,7 @@ REPO="$(sed -n 's/^repo *= *"\(.*\)"/\1/p' "$CFG" 2>/dev/null)"; echo "    repo:
 
 step "2. diff (read-only)"
 "$FERRY" diff </dev/null >"$H/o2" 2>&1
-[ "$(shasum "$H/.zshrc"|awk '{print $1}')" = "$ORIG" ] && ok "diff left ~/.zshrc unchanged" || bad "diff mutated ~/.zshrc"
+[ "$(sha_of "$H/.zshrc")" = "$ORIG" ] && ok "diff left ~/.zshrc unchanged" || bad "diff mutated ~/.zshrc"
 
 step "3. apply"
 # Adopting the pre-existing ~/.zshrc is a risky change the wizard asks about;
@@ -47,10 +53,10 @@ C1="$(cd "$REPO" && git rev-list --count HEAD)"; [ "$C0" = "$C1" ] && ok "no aut
 
 step "6. restore"
 printf 'y\n' | "$FERRY" restore --yes >"$H/o6" 2>&1; rc=$?; [ $rc -eq 0 ] && ok "restore exit 0" || { bad "restore exit $rc"; sed 's/^/    /' "$H/o6"; }
-[ "$(shasum "$H/.zshrc"|awk '{print $1}')" = "$ORIG" ] && ok "restored byte-identical to pre-ferry original" || { bad "restore mismatch"; sed 's/^/      /' "$H/.zshrc"; }
+[ "$(sha_of "$H/.zshrc")" = "$ORIG" ] && ok "restored byte-identical to pre-ferry original" || { bad "restore mismatch"; sed 's/^/      /' "$H/.zshrc"; }
 
 step "7. ~/.ssh untouched"
-[ "$(shasum "$H/.ssh/config"|awk '{print $1}')" = "$SSH0" ] && ok "~/.ssh/config unchanged" || bad "~/.ssh changed"
+[ "$(sha_of "$H/.ssh/config")" = "$SSH0" ] && ok "~/.ssh/config unchanged" || bad "~/.ssh changed"
 
 echo; [ $fail -eq 0 ] && echo "SMOKE VERDICT: PASS" || echo "SMOKE VERDICT: FAIL"
 rm -rf "$H"; exit $fail

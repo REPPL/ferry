@@ -15,7 +15,7 @@ elsewhere. It then SHOWS the apply plan and stops; pass --apply (with --yes to
 skip the prompt) to actually reconcile this machine.
 
 ```
-ferry init [flags]
+ferry init [<source>] [flags]
 ```
 
 ### Options

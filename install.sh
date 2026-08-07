@@ -80,7 +80,7 @@ expected_sha=""
 
 tmp="$(mktemp)"
 sums="$(mktemp)"
-trap 'rm -f "$tmp" "$sums"' EXIT
+trap 'rm -f "$tmp" "$sums" "${BIN_DIR}/ferry.new"' EXIT
 
 # TEST-ONLY explicit artifact override. FERRY_FAKE_BINARY must point at a REAL
 # existing file, which is installed verbatim (place + chmod) instead of a network
@@ -146,10 +146,14 @@ if [ "$from_network" = "1" ]; then
   fi
 fi
 
-# Install: user-owned ~/.local/bin, no sudo.
+# Install: user-owned ~/.local/bin, no sudo. Stage next to the destination and
+# rename into place: an interrupted copy can never leave a truncated ferry, and
+# the same-directory rename is atomic (and immune to ETXTBSY when upgrading a
+# currently-running binary).
 mkdir -p "$BIN_DIR"
-cp "$tmp" "$BIN_DIR/ferry"
-chmod +x "$BIN_DIR/ferry"
+cp "$tmp" "$BIN_DIR/ferry.new"
+chmod +x "$BIN_DIR/ferry.new"
+mv -f "$BIN_DIR/ferry.new" "$BIN_DIR/ferry"
 echo "ferry install: installed to $BIN_DIR/ferry"
 
 # PATH advice — PRINT the line; NEVER edit a shell rc file.

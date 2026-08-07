@@ -257,3 +257,24 @@ func TestRedactSecretPathMasksSecretComponent(t *testing.T) {
 		t.Fatalf("redactSecretPath altered a benign path: %q", got)
 	}
 }
+
+// Round-5: an UNSTAGED modification to a tracked file — porcelain " M path", the
+// normal worktree state after `ferry capture`, which never stages — must have its
+// content scanned. gitSyncOK's TrimSpace used to eat the leading space of a
+// first-sorted entry, corrupting the parsed path and silently skipping the scan.
+func TestScanWorktreeBlocksUnstagedTrackedSecret(t *testing.T) {
+	repo := r3Repo(t)
+	if err := os.WriteFile(filepath.Join(repo, "base.txt"), []byte("env AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, found, err := scanWorktreeForSecret(repo)
+	if err != nil {
+		t.Fatalf("scanWorktreeForSecret errored: %v", err)
+	}
+	if !found {
+		t.Fatalf("secret in an unstaged tracked file (leading-space \" M\" entry) was NOT blocked by the worktree scan")
+	}
+	if path != "base.txt" {
+		t.Errorf("blocked path = %q, want %q", path, "base.txt")
+	}
+}

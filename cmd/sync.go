@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -854,7 +855,13 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 	// backupOne stores its target, no byte backup — and git silently overwrites
 	// an ignored path during checkout. A symlink can never be byte-identical to
 	// the remote's regular blob, so a path collision aborts unconditionally.
+	// Sorted so the abort names the same path on every run.
+	symlinks := make([]string, 0, len(s.symlinks))
 	for rel := range s.symlinks {
+		symlinks = append(symlinks, rel)
+	}
+	sort.Strings(symlinks)
+	for _, rel := range symlinks {
 		if rem, ok := remoteMatch(rel); ok {
 			return untrackedClobberErr(rel, rem)
 		}
@@ -870,7 +877,14 @@ func guardUntrackedClobber(repo string, s *snapshot, upstream string) error {
 		}
 	}
 
-	for rel, c := range local {
+	// Sorted for the same reason: a multi-collision abort is reproducible.
+	locals := make([]string, 0, len(local))
+	for rel := range local {
+		locals = append(locals, rel)
+	}
+	sort.Strings(locals)
+	for _, rel := range locals {
+		c := local[rel]
 		remoteBytes, rok := gitBlobBytes(repo, upstream+":"+c.remote)
 		// If we cannot read either side's bytes, fail SAFE: treat as a clobber rather
 		// than silently overwriting.
@@ -1061,9 +1075,12 @@ func worktreeHasChanges(repo string) bool {
 // committing/pushing an unscanned file. A DELETED file (status `D`) is expected to be
 // absent and is skipped, not treated as a scan failure.
 func scanWorktreeForSecret(repo string) (string, bool, error) {
-	o, ok := gitSyncOK(repo, "status", "--porcelain", "-z")
-	if !ok {
-		return "", false, fmt.Errorf("`git status` failed")
+	// Raw gitSync, not gitSyncOK: an unstaged-only first entry is " M path", and
+	// gitSyncOK's TrimSpace would eat that leading space, shifting every field and
+	// corrupting the first path (whose scan would then be silently skipped).
+	o, err := gitSync(repo, "status", "--porcelain", "-z")
+	if err != nil {
+		return "", false, fmt.Errorf("`git status` failed: %s", ghcli.Redact(strings.TrimSpace(o)))
 	}
 	for _, entry := range strings.Split(o, "\x00") {
 		if len(entry) < 4 {

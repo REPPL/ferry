@@ -14,6 +14,39 @@ machine) and `capture` (machine → repo): respect the same scope.
 
 Effective scope = `ferry.toml` overlaid with `ferry.local.toml` (local wins).
 
+## The wizard answers file
+
+`ferry init --wizard=answers:<file>` drives every wizard decision from a TOML file
+(same gates, preview, backup, and confirm as the interactive wizard, no tty needed).
+Unknown keys, unknown values, and tables that do not apply to the chosen mode are
+refused loudly — nothing is written before the preview gate, so a rejected file
+leaves the machine untouched.
+
+```toml
+mode = "per-block"   # required: keep-as-is | per-block | start-fresh
+confirm = true       # required: false stops at the preview gate (a dry run)
+
+[routes]             # per-block mode only; every block needs an entry
+"0" = "shared"       # shared | local | drop; keys are 0-based block indices
+"1" = "local"
+
+[secret-routes]      # every block carrying a detected secret needs an entry
+"1" = "store"        # store | drop — never shared, never local
+
+[repairs]            # needs --repair; keys index the repairable findings
+"0" = "accept"       # accept | decline
+
+[starter]            # start-fresh mode only; any subset, defaults fill the rest
+prompt = "minimal"          # minimal | informative
+aliases = "common"          # common | none
+editor = "vim"              # vim | nano | none
+plugin_manager = "none"     # none
+```
+
+`[routes]` applies only to `per-block` mode and `[starter]` only to `start-fresh`;
+`start-fresh` rejects `[routes]`, `[secret-routes]`, and `[repairs]` outright. A
+`[repairs]` table without `--repair` is an error.
+
 ## Declaring scope
 
 The manifest declares which domains ferry manages. Anything not declared is invisible
@@ -363,8 +396,9 @@ list — the reviewable, diff-friendly form. ferry validates the source with
 plist (a `bplist00` header, which an editor can save silently), that carries a
 UTF-8 byte-order mark, or that is not valid UTF-8. ferry never runs
 `plutil -convert` on the file (convert would rewrite it to XML or binary and
-destroy the readable diff). A `.gitattributes` entry marks the dict as `text` so
-git normalises and diffs it as text. Do not carry the SIP-protected system
+destroy the readable diff). Add a `.gitattributes` entry marking the dict as
+`text` in your config repo, so git normalises and diffs it as text rather than
+as an opaque blob. Do not carry the SIP-protected system
 template (`StandardKeyBinding.dict` inside AppKit), and do not confuse this with
 per-app `NSUserKeyEquivalents` (a separate, churning `defaults` domain).
 

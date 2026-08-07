@@ -24,7 +24,121 @@ called out in a **Breaking** section. See
   `ferry.local.toml`); nothing else changes, and `--deps` remains the
   explicit opt-in step.
 
+### Added
+
+- **GitHub Releases carry release notes.** Every release published with an
+  empty body; the release workflow now extracts the tag's own dated CHANGELOG
+  section verbatim as the release body, with a link to the full CHANGELOG at
+  that tag. A version whose section cannot be found still publishes (with an
+  empty body) rather than blocking the release.
+
 ### Fixed
+
+- **`ferry sync`'s pre-commit secret gate scans the first unstaged file.** The
+  gate parsed `git status --porcelain -z` through a helper that trims leading
+  whitespace, and an unstaged-only modification — the normal worktree state
+  after `ferry capture`, which never stages — begins with a space. When such
+  an entry sorted first, the trim shifted every field, the corrupted path
+  failed to read, and that file's content was silently never scanned: a
+  secret in it was committed locally (the push-range gate still blocked the
+  push). The gate now reads the raw NUL-delimited output, as the other
+  porcelain consumers already did. The overwrite-guard and clobber aborts
+  also now name a deterministic (sorted-first) path when several files
+  collide, instead of a different one per run.
+- **`~/.config/ferry/config.toml` is written crash-safely.** The machine
+  config was written by truncating the file in place, so a crash or full
+  disk mid-write destroyed it — bricking every verb but `restore` until the
+  file was rebuilt by hand, since a truncated config also derails `ferry
+  init` into creating a fresh `repo-2` instead of repairing the recorded
+  path. The write now goes through the canonical temp-file-and-rename used
+  everywhere else, which also refuses to write through a symlinked
+  `config.toml` leaf.
+- **`ferry work receive`/`work restore` report lock failures like apply.**
+  Both verbs hold the machine-wide apply lock but silently discarded a
+  failed unlock (exiting 0 with the lock left behind to block the next
+  apply, with no hint of the cause) and surfaced a held lock as a raw
+  internal error instead of the "another ferry apply is in progress (pid N)"
+  message every other holder prints. Both now follow the shared contract.
+  `work prune`'s nothing-to-prune message also now reports the number of
+  bundles actually retained instead of a hardcoded zero.
+- **`ferry doctor` reports containment refusals as failures.** A managed
+  target the plan refuses on boundary grounds — a manifest path under
+  `~/.ssh`, or a parent symlinked into forbidden space — was silently
+  dropped from the plan, and doctor then printed `[pass]` for the very
+  invariants being breached (checks that, over the filtered set, could never
+  fail). Doctor now surfaces each plan-time refusal as a `[fail]` with a
+  non-zero exit, matching its documented contract.
+- **Agents drift guidance names `ferry capture`.** A live-edited agents
+  target has been a capture candidate since capture-back landed, but
+  `status` and `apply` still called the domain repo-authoritative and
+  steered users to hand-edit the repo copy or `apply --force` — the latter
+  destroying the live edit that capture would have preserved. The
+  locally-drifted lines now name `ferry capture` first; true conflicts keep
+  the repo-copy remedy (capture refuses a divergence).
+- **The release gate runs macOS unit tests, and a burned tag cannot loop.**
+  The release workflow's macOS leg ran only the eval suite, so a macOS-only
+  vet or unit-test failure — realistic for ferry's case-fold and symlink
+  guards — could publish from a hand-pushed tag that no CI ever tested; the
+  leg now runs vet, the unit suite, and the race leg, mirroring CI. The
+  auto-release workflow now runs the plan-shipped check *before* creating
+  the immutable tag (the one gate with no pre-tag coverage), stops retrying
+  a failed publish after three failed runs instead of re-running
+  the full gate on every push to `main` forever, and the release workflow
+  refuses a tag name that is not a plain semver release tag (hardening: a
+  hostile name could otherwise reach a shell via the build's version stamp).
+  The recovery how-to documents what to do when a tag burns.
+- **`scripts/gen-checksums.sh` enumerates the built binaries by glob.** The
+  release target list lived in three unlinked places (Makefile, checksum
+  script, installer); adding a target to the Makefile alone would have
+  published a release asset absent from `checksums.txt` — which
+  `install.sh` refuses, fail-closed, for every user on that platform — and
+  removing one would have failed the publish job after the immutable tag
+  existed. The manifest now covers exactly the `bin/ferry-*` set the
+  workflow uploads and attests, by construction.
+- **`scripts/smoke-e2e.sh` fails closed without a hash tool.** On a host
+  without `shasum` the script's hash comparisons degenerated to comparing
+  empty strings and it printed `SMOKE VERDICT: PASS` having verified
+  nothing — including its `~/.ssh` tripwire. It now uses `sha256sum` or
+  `shasum` (as gen-checksums does) and aborts if neither exists.
+  `install.sh` also now stages the binary next to the destination and
+  renames it into place, so an interrupted upgrade can never leave a
+  truncated `ferry` (and upgrading a running binary no longer hits
+  `ETXTBSY`).
+- **The quickstart and tutorial reach a working push.** README's quickstart
+  ended in `git push` against a repo that bare `ferry init` gives no remote
+  — and omitted the commit step entirely, so a user who added a remote
+  themselves pushed a repo silently missing their capture; it now shows the
+  supported `init --github` + `sync` route with the manual alternative
+  noted. The tutorial's Fresh path gains the `remote add` step and links the
+  GitHub section; its clone-source section states that a plain local path
+  already containing a git worktree is used in place (not re-cloned); the
+  clone example uses a placeholder URL instead of ferry's own repo; the git
+  prerequisite row lists every verb that needs git; and the installer note
+  documents the `--init` flag instead of claiming the installer never runs
+  `ferry init`.
+- **The wizard answers file has a documented schema.** Three pages advertise
+  `ferry init --wizard=answers:<file>`, but no page stated the keys, so the
+  file could only be authored from the Go source or by replaying error
+  messages; the configuration reference now documents the full schema with
+  a commented example.
+- **`apply --deps` documentation matches the npm-globals domain.** Three
+  sites claimed dependencies install "only when `brew = true` is declared" —
+  wrong since npm globals install under `npm-globals = true` alone, exactly
+  as the configuration reference describes; all three now name both
+  dependency domains. `deps/README.md` also no longer claims ferry runs
+  npm/curl tools "as named, pinned post-install steps" (no such mechanism
+  exists) and points at the real `npm-globals.txt` manifest instead.
+- **The CLI reference shows `--version` and the positional arguments.** The
+  generated root page omitted the `--version` flag (added by cobra only at
+  execute time, never at doc-generation time), and the `init`/`restore`
+  usage lines hid their positional arguments; the doc generator now
+  initialises the version flag and the two `Use` lines declare
+  `[<source>]`/`[<domain>...]`. The keybindings reference states the
+  `.gitattributes` entry is one you add to your config repo (ferry writes
+  none), the pre-push hook and Makefile comments describe the real CI gate
+  set, `make release` documentation passes `VERSION=vX.Y.Z`, and
+  CONTRIBUTING's commit-type list includes the `ci` type the history and
+  auto-merge workflow already use.
 
 - **The configuration reference documents the Apple Terminal domain.** The
   `terminal` key has been implemented end-to-end — apply, capture, restore,

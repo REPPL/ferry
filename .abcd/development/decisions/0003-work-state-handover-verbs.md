@@ -1,7 +1,9 @@
-# Work state is carried by explicit handover verbs, not the reconcile loop
+# 0003 — Work state is carried by explicit handover verbs, not the reconcile loop
 
-- Status: accepted
+- Status: Accepted
+- Owner: REPPL
 - Date: 2026-07-18
+- Superseded-by:
 
 ## Context and problem statement
 

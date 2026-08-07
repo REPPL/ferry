@@ -193,3 +193,30 @@ func writeStub(t *testing.T, path, script string) {
 		t.Fatalf("writeStub chmod %s: %v", path, err)
 	}
 }
+
+// TestDoctorFlagsContainmentRefusal (round 5): a manifest path the plan REFUSES
+// on containment grounds (here `.ssh/config` — ferry never manages ~/.ssh) must
+// surface as a doctor [fail] with non-zero exit. Before this, the refused target
+// was silently dropped from the plan, and doctor printed [pass] for the exact
+// invariant being breached.
+func TestDoctorFlagsContainmentRefusal_AC_doctor_invariants(t *testing.T) {
+	t.Parallel()
+	s := NewSandbox(t)
+	s.SeedSharedManifest(t, `[manage]
+dotfiles = [".zshrc", ".ssh/config"]
+brew = false
+iterm2 = false
+fonts = false
+`)
+	s.WriteRepoFile(t, "dotfiles/.zshrc", "export EDITOR=vim\n")
+
+	out, errOut, code := s.Ferry("doctor")
+	combined := out + errOut
+	if code == 0 {
+		t.Errorf("AC-doctor-invariants: doctor exited 0 despite a manifest target under ~/.ssh (want non-zero)\n%s", combined)
+	}
+	refusalLine := lineContaining(combined, ".ssh")
+	if refusalLine == "" || !strings.Contains(refusalLine, "fail") {
+		t.Errorf("AC-doctor-invariants: doctor did not report the refused ~/.ssh target as a [fail]\n%s", combined)
+	}
+}

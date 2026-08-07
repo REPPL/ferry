@@ -74,9 +74,15 @@ func TestParseStatusZFailsClosedOnMalformedField(t *testing.T) {
 		t.Fatalf("valid porcelain output rejected: %v", err)
 	}
 	// A WORKTREE-side rename ("mv old new && git add -N new") carries the code
-	// in the Y column; its origin field must be consumed the same way.
-	if _, _, err := parseStatusZ(" R new.txt\x00old.txt\x00?? aaa.txt\x00"); err != nil {
-		t.Fatalf("Y-column rename rejected: %v", err)
+	// in the Y column; its origin field must be consumed the same way — and ONLY
+	// that field, so the entry that follows survives (an over-consuming skip
+	// would silently swallow it and still parse clean).
+	ru, _, rerr := parseStatusZ(" R new.txt\x00old.txt\x00?? aaa.txt\x00")
+	if rerr != nil {
+		t.Fatalf("Y-column rename rejected: %v", rerr)
+	}
+	if len(ru) != 1 || ru[0].rel != "aaa.txt" {
+		t.Fatalf("Y-column rename over-consumed the next entry: untracked=%v, want aaa.txt", ru)
 	}
 	if len(u) != 1 || u[0].rel != "aaa.txt" || len(ig) != 1 || ig[0].rel != "bbb.txt" {
 		t.Fatalf("parse = %v / %v, want aaa.txt untracked and bbb.txt ignored", u, ig)

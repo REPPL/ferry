@@ -62,7 +62,10 @@ left un-shipped fails the release even on a hand-pushed tag):
 3. Attests build provenance for the four binaries **and** `checksums.txt` — a signed
    [SLSA build-provenance](https://slsa.dev/) attestation per artefact.
 4. Creates the GitHub Release for the tag and uploads the four `bin/ferry-*` binaries
-   plus `checksums.txt` as release assets.
+   plus `checksums.txt` as release assets. The release body is the tag's own dated
+   CHANGELOG section, extracted verbatim, plus a link to the full CHANGELOG at that
+   tag; a version whose section cannot be found publishes with an empty body rather
+   than blocking the release.
 5. Proves the attestation by downloading a binary fresh from the new Release and running
    `gh attestation verify` against it. A failed attestation or verification fails the
    release.
@@ -110,6 +113,14 @@ the current one already exists.
 
 ## Manual / recovery flow
 
+**A tag whose release gate fails post-tag.** If a version tags but its `verify` run
+goes red (the tag is immutable; `auto-release` retries the publish from the tagged
+commit and stops after three failed runs), the version number is spent: the tagged
+commit fails the gate deterministically and cannot be rebuilt from a fixed `main`.
+Land the fix on `main`, promote the **next** patch version in the CHANGELOG, and let
+the automatic flow ship that instead. Tags are never deleted (see the pruning rules
+above), so the failed tag simply remains, release-less.
+
 When `auto-release` is disabled, or a tag must be cut by hand,
 [`scripts/release.sh`](../../scripts/release.sh) is the blessed driver, run from a
 clean `main` that is up to date with `origin/main`:
@@ -136,19 +147,22 @@ To prepare a release-ready tree locally (e.g. to inspect the manifest before tag
 if you publish by hand):
 
 ```bash
-make release
+make release VERSION=vX.Y.Z
 ```
 
 `make release` builds the binaries and runs `gen-checksums` (`scripts/gen-checksums.sh`),
-which writes `bin/checksums.txt` over the built binaries: idempotent and re-runnable. It
-then points back at the two publishing paths — the promotion push for the automatic
-flow, or `scripts/release.sh` as the recovery driver.
+which writes `bin/checksums.txt` over the built binaries: idempotent and re-runnable.
+Pass `VERSION=vX.Y.Z` whenever the tree is meant to match a release — omit it and the
+binaries carry the in-source dev version, so their checksums cannot match the ones CI
+publishes; omitting it is fine only for a mechanics check of the manifest. It then
+points back at the two publishing paths — the promotion push for the automatic flow, or
+`scripts/release.sh` as the recovery driver.
 
 You can also run the pieces directly:
 
 ```bash
-make build            # cross-compile the four binaries
-make checksums        # write bin/checksums.txt over them
+make build VERSION=vX.Y.Z   # cross-compile the four binaries
+make checksums              # write bin/checksums.txt over them
 ```
 
 To publish by hand, verify a download against the manifest the same way `install.sh`
@@ -171,7 +185,7 @@ ships from the same unauthenticated source as the binary, so a compromised sourc
 serve a matching pair. Treat it as a personal-trust convenience, not a signature — the
 build-provenance attestation above is the real signature.
 
-## Related Documentation
+## Related documentation
 
 - [`.github/workflows/auto-release.yml`](../../.github/workflows/auto-release.yml): tags the newest dated CHANGELOG version on push to `main` and calls the release workflow.
 - [`scripts/release.sh`](../../scripts/release.sh): the manual release driver — gates, rehearses, then tags and pushes.

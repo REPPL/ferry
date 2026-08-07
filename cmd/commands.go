@@ -9,7 +9,7 @@ import (
 // so Wave-2 command workers edit separate files without colliding on this one.
 
 var initCmd = &cobra.Command{
-	Use:   "init",
+	Use:   "init [<source>]",
 	Short: "First-run setup: locate/clone the config repo and write ferry's config",
 	Long: `First-run, once-per-machine setup.
 
@@ -107,7 +107,7 @@ writing anything.`,
 }
 
 var restoreCmd = &cobra.Command{
-	Use:   "restore",
+	Use:   "restore [<domain>...]",
 	Short: "Reverse ferry's changes, returning to the pre-ferry state from backup",
 	Long: `Reverse ferry's changes.
 
@@ -120,7 +120,7 @@ target. --packages additionally uninstalls only the packages ferry installed.`,
 
 func init() {
 	// Documented apply flags (lowercase kebab-case). Behaviour lands later.
-	applyCmd.Flags().Bool("deps", false, "install declared dependencies (separate, explicit step; needs brew = true under [manage])")
+	applyCmd.Flags().Bool("deps", false, "install declared dependencies (separate, explicit step; installs only the dependency domains declared under [manage]: brew, npm-globals)")
 
 	// sync flags: an optional commit message for the captured changes, and the
 	// route-1 override (a route-2 managed repo needs neither).
