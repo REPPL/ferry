@@ -15,7 +15,7 @@ mtime(){ stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
 # a host lacking shasum made every hash comparison "" = "" and the script
 # printed PASS having verified nothing — including the ~/.ssh tripwire.
 if command -v sha256sum >/dev/null 2>&1; then sha_of(){ sha256sum "$1"|awk '{print $1}'; }
-elif command -v shasum >/dev/null 2>&1; then sha_of(){ shasum "$1"|awk '{print $1}'; }
+elif command -v shasum >/dev/null 2>&1; then sha_of(){ shasum -a 256 "$1"|awk '{print $1}'; }
 else echo "smoke-e2e: need sha256sum or shasum on PATH" >&2; exit 1; fi
 SRC="$H/src"; mkdir -p "$SRC/dotfiles"
 ( cd "$SRC" && git init -q && git config user.email t@t && git config user.name t )

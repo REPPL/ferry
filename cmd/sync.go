@@ -1080,7 +1080,7 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 	// corrupting the first path (whose scan would then be silently skipped).
 	o, err := gitSync(repo, "status", "--porcelain", "-z")
 	if err != nil {
-		return "", false, fmt.Errorf("`git status` failed: %s", strings.TrimSpace(o))
+		return "", false, fmt.Errorf("`git status` failed: %s", ghcli.Redact(strings.TrimSpace(o)))
 	}
 	for _, entry := range strings.Split(o, "\x00") {
 		if len(entry) < 4 {

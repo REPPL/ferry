@@ -82,7 +82,7 @@ called out in a **Breaking** section. See
   leg now runs vet, the unit suite, and the race leg, mirroring CI. The
   auto-release workflow now runs the plan-shipped check *before* creating
   the immutable tag (the one gate with no pre-tag coverage), stops retrying
-  a failed publish after three deterministic failures instead of re-running
+  a failed publish after three failed runs instead of re-running
   the full gate on every push to `main` forever, and the release workflow
   refuses a tag name that is not a plain semver release tag (hardening: a
   hostile name could otherwise reach a shell via the build's version stamp).

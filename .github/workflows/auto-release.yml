@@ -103,13 +103,32 @@ jobs:
               # DETERMINISTIC verify failure (as opposed to the transient publish
               # blip this healing exists for) would otherwise re-run the full
               # gate on every later main push, forever, and can never heal
-              # forward. Three failed release.yml runs for the tagged commit =
-              # stop retrying and say so loudly; a fix requires the owner
-              # (deleting the tag or publishing by hand).
-              attempts="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?per_page=100" \
-                --jq "[.workflow_runs[] | select(.head_sha==\"$commit\" and .conclusion==\"failure\")] | length" \
+              # forward. Three failed runs = stop retrying and say so loudly; a
+              # fix requires the owner (deleting the tag or publishing by hand).
+              #
+              # Counting must look where the runs actually live: a CALLED
+              # reusable workflow produces no run under release.yml's own runs
+              # list (its jobs nest in the caller's run), so automated attempts
+              # are counted as FAILED auto-release runs created since the tagged
+              # commit — while this tag is the pending newest version, those are
+              # exactly the failed re-release attempts (a push while healthy
+              # yields a successful no-op run, and once a newer version is
+              # promoted this branch is no longer taken for this tag).
+              # Hand-pushed-tag attempts DO appear as standalone release.yml
+              # runs carrying the tagged commit as head_sha, so both counts are
+              # summed. An API failure counts as zero: fail-open to the healing
+              # behaviour this workflow was built for.
+              tag_time="$(git log -1 --format=%cI "$commit")"
+              ar_fails="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/auto-release.yml/runs" \
+                -f status=failure -f "created=>=$tag_time" -f per_page=100 \
+                --jq '.workflow_runs | length' 2>/dev/null || true)"
+              rl_fails="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs" \
+                -f status=failure -f per_page=100 \
+                --jq "[.workflow_runs[] | select(.head_sha==\"$commit\")] | length" \
                 2>/dev/null || true)"
-              [ -n "$attempts" ] || attempts=0
+              [ -n "$ar_fails" ] || ar_fails=0
+              [ -n "$rl_fails" ] || rl_fails=0
+              attempts=$((ar_fails + rl_fails))
               if [ "$attempts" -ge 3 ]; then
                 echo "::error::$tag is tagged but has no GitHub Release after $attempts failed release runs — NOT retrying again. The tagged commit fails the release gate deterministically; see docs/how-to/cutting-a-release.md (Manual / recovery flow)."
                 echo "need_release=false" >> "$GITHUB_OUTPUT"
