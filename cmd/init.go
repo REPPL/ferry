@@ -520,6 +520,16 @@ func createFreshRepo(out io.Writer, dest string) error {
 	if out2, err := runGitIn(dest, "init"); err != nil {
 		return fmt.Errorf("git init %s failed: %w\n%s", dest, err, out2)
 	}
+	// Pin the branch `ferry sync` integrates and pushes. Bare `git init` honours the
+	// user's `init.defaultBranch` (git's built-in default is `master`), and ferry's
+	// hardened git env deliberately does not neutralise user config — so without
+	// this, a fresh repo on such a machine is created on a branch sync then refuses,
+	// leaving `ferry init --github` to succeed and every later `ferry sync` to fail.
+	// symbolic-ref (not `init -b`) keeps the floor at git 2.23, and is a no-op-safe
+	// rename on the unborn HEAD a just-initialised repo has.
+	if out2, err := runGitIn(dest, "symbolic-ref", "HEAD", "refs/heads/"+syncBranchName); err != nil {
+		return fmt.Errorf("git symbolic-ref HEAD refs/heads/%s in %s failed: %w\n%s", syncBranchName, dest, err, out2)
+	}
 	return nil
 }
 
