@@ -386,7 +386,23 @@ jobs:
           echo "NOTES_FILE=$notes" >> "$GITHUB_ENV"
 
       - name: Create the GitHub Release and upload the binaries + checksums.txt
-        run: gh release create "$TAG" bin/ferry-* bin/checksums.txt --verify-tag --title "$TAG" --notes-file "$NOTES_FILE"
+        # The tag gate above deliberately admits a prerelease suffix, and both
+        # prune-releases.sh and check-plan-shipped.sh skip cleanly so such a run
+        # publishes green. Without --prerelease, though, GitHub marks the result a
+        # full release, which makes it the repo's `latest` — the very URL
+        # install.sh serves to every `curl … | bash` user. Flag it so a rehearsal
+        # tag can never be handed out as the current version. Match on `-` only:
+        # the gate also admits `+build` metadata, which is not a prerelease. A
+        # plain vX.Y.Z tag carries no `-`, so the array stays empty and the
+        # command is byte-identical to a normal release's.
+        run: |
+          set -euo pipefail
+          pre=()
+          case "$TAG" in
+            *-*) pre=(--prerelease) ;;
+          esac
+          gh release create "$TAG" bin/ferry-* bin/checksums.txt \
+            --verify-tag --title "$TAG" --notes-file "$NOTES_FILE" "${pre[@]}"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
