@@ -139,6 +139,10 @@ func runInit(c *cobra.Command, args []string) error {
 	//    c. otherwise initialise a fresh repo (at the neutral default or an explicit dir).
 	var repoPath string
 	var declined bool
+	// Set only when this run REUSES the already-configured repo: `managed` describes
+	// that repo's ferry-owned remote, so it carries forward only then — a fresh or
+	// newly-cloned repo starts unmanaged until `init --github` flips it.
+	var reusedConfiguredRepo bool
 	switch {
 	case source != "" && !fresh:
 		repoPath, err = cloneExisting(out, source)
@@ -153,6 +157,7 @@ func runInit(c *cobra.Command, args []string) error {
 				return err
 			}
 			fmt.Fprintf(out, "using already-configured config repo at %s\n", repoPath)
+			reusedConfiguredRepo = true
 		} else {
 			repoPath, declined, err = initFresh(c, in, out, freshDir)
 		}
@@ -181,7 +186,13 @@ func runInit(c *cobra.Command, args []string) error {
 	if herr != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "unknown"
 	}
-	if err := config.SaveMachineConfig(config.MachineConfig{Hostname: hostname, Repo: repoPath}); err != nil {
+	mc := carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: repoPath})
+	if reusedConfiguredRepo {
+		if prior, ok := priorMachineConfig(); ok {
+			mc.Managed = prior.Managed
+		}
+	}
+	if err := config.SaveMachineConfig(mc); err != nil {
 		return fmt.Errorf("write machine config: %w", err)
 	}
 	cfgPath := filepath.Join(home, ".config", "ferry", "config.toml")
@@ -751,6 +762,53 @@ func hasURLScheme(source string) bool {
 func isGitWorkTree(dir string) bool {
 	out, err := runHardenedGit("-C", dir, "rev-parse", "--is-inside-work-tree")
 	return err == nil && strings.TrimSpace(out) == "true"
+}
+
+// priorMachineConfig loads an already-present ~/.config/ferry/config.toml
+// tolerantly, mirroring loadContext's loader: a hostname-less but repo-bearing
+// config still counts. Returns false when there is no readable config to carry
+// forward. SaveMachineConfig replaces the file wholesale, so every writer that
+// does not re-supply a field silently drops it — callers use this to carry the
+// fields their own run does not own.
+func priorMachineConfig() (config.MachineConfig, bool) {
+	mc, err := config.LoadMachineConfig()
+	if err == nil {
+		return mc, true
+	}
+	path, perr := paths.ConfigFile()
+	if perr != nil {
+		return config.MachineConfig{}, false
+	}
+	// Symlink-harden ~/.config/ferry BEFORE the raw toml.DecodeFile fallback so a
+	// poisoned config dir (e.g. one symlinked into ~/.ssh) cannot be read through.
+	cfgDir, derr := paths.ConfigDir()
+	if derr != nil {
+		return config.MachineConfig{}, false
+	}
+	if herr := paths.HardenStoreDir(cfgDir); herr != nil {
+		return config.MachineConfig{}, false
+	}
+	var raw config.MachineConfig
+	if _, derr := toml.DecodeFile(path, &raw); derr != nil || raw.Repo == "" {
+		return config.MachineConfig{}, false
+	}
+	return raw, true
+}
+
+// carryMachineScoped copies the settings of an existing config.toml that belong to
+// the MACHINE rather than to the configured repo onto a config about to replace it.
+// The [work] table is a cargo-store path and retention for this machine, explicitly
+// documented as never repo-side, so no init/import route may drop it — a wholesale
+// rewrite that omits it silently un-configures every `ferry work` verb.
+func carryMachineScoped(mc config.MachineConfig) config.MachineConfig {
+	prior, ok := priorMachineConfig()
+	if !ok {
+		return mc
+	}
+	if mc.Work == nil {
+		mc.Work = prior.Work
+	}
+	return mc
 }
 
 // existingConfiguredRepo returns the repo path from an already-present config.toml
