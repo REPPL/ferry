@@ -34,6 +34,45 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **A fresh config repo is created on the branch `ferry sync` manages.** `ferry
+  init` ran a bare `git init`, which honours the machine's
+  `init.defaultBranch` — git's own default is `master` — while `ferry sync`
+  integrates and pushes `main` and refuses any other branch. On a machine that
+  had not set `init.defaultBranch`, `ferry init --github` therefore succeeded
+  end to end and every later `ferry sync` failed on the branch name. A fresh
+  repo's HEAD is now pinned to the managed branch, and the refusal names
+  `git branch -M main` for a repo already created on another branch.
+- **Re-running `ferry init` keeps `managed` and the `[work]` table.**
+  `config.toml` is replaced wholesale on every write, and the re-run path
+  supplied only the hostname and repo path — so a second `ferry init` on a
+  configured machine silently dropped `managed` (leaving `ferry sync` to
+  refuse, "this repo is not marked managed") and erased the `[work]` cargo
+  store (leaving every `ferry work` verb to refuse with setup guidance). The
+  `[work]` table is machine state, independent of which config repo is
+  configured, so it now survives every init route and `ferry bundle import`
+  too; `managed` carries over only when the run reuses that same repo.
+- **A staged rename no longer aborts `ferry sync`.** The pre-commit secret
+  gate parsed `git status --porcelain -z` without consuming the origin path
+  that a rename or copy entry emits as a separate field. Any origin path of
+  four bytes or more was then sliced as though it were a status entry, so a
+  staged `git mv src/dotfiles …` produced the path `/dotfiles` — which, in a
+  config repo with a top-level `dotfiles/`, failed to read as a directory and
+  fail-closed the whole sync naming a path the user never touched, or else
+  scanned an unrelated file. The gate now validates and consumes fields
+  exactly as the repo's other porcelain parser does.
+- **`ferry agents scaffold` no longer corrupts a `.git/info/exclude` that ends
+  without a newline.** The ignore pattern was appended with no trailing-newline
+  normalisation, so it fused onto the file's last line: the user's final ignore
+  rule was destroyed and ferry's new one never took effect, while scaffold
+  reported success. A missing terminator is now added first, and a failed close
+  is reported instead of discarded.
+- **A pre-release tag no longer publishes as the `latest` release.** The
+  release workflow's tag gate deliberately admits a prerelease suffix, and both
+  the prune and plan-shipped scripts skip cleanly so such a run goes green — but
+  the publish step passed no `--prerelease`, so GitHub marked a rehearsal tag
+  like `v0.12.0-rc1` a full release. That made it the repo's `latest`, the exact
+  URL `install.sh` serves to every install. Prerelease tags are now flagged as
+  such; a plain `vX.Y.Z` tag is published exactly as before.
 - **`ferry sync`'s pre-commit secret gate scans the first unstaged file.** The
   gate parsed `git status --porcelain -z` through a helper that trims leading
   whitespace, and an unstaged-only modification — the normal worktree state
@@ -251,6 +290,20 @@ called out in a **Breaking** section. See
   path and left every later path unreverted — and the shared rollback
   primitive wedged every subsequent `ferry apply` the same way. Restore now
   recreates the missing parent first, as the apply side always has.
+- **The tutorial's fresh-setup flow stages before committing.** It ran
+  `git commit -am`, which stages only tracked files — but `ferry capture`
+  writes files git has never seen, so the commit and the push that followed
+  published a repo missing exactly the configuration just captured (and, run
+  straight after `ferry init`, reported nothing to commit at all, since init
+  already commits the seeded tree). The flow now stages with `add -A` and says
+  why.
+- **The agents drift guidance no longer promises a reversible `--force`.** The
+  explanation page steered a live-edited agents target to "update the repo
+  copy, or override with `ferry apply --force` (backed up, reversible)". The
+  backup baseline holds the *pre-ferry* file and is written once, so `restore`
+  cannot bring a force-overwritten live edit back. The guidance now names
+  `ferry capture` first, as `status` and `apply` already do, and states plainly
+  what `--force` discards.
 
 ## [0.10.0] - 2026-07-19
 
