@@ -20,6 +20,9 @@ paths = [
   '''internal/plugin/zsh/analyze_test\.go$''',
   # A fake AWS key fixture in the untrusted-git-transport tests.
   '''cmd/sync_round3_test\.go$''',
+  # A fake PEM fixture proving the pre-commit secret gate still scans a file's
+  # content after consuming a rename entry's origin path field.
+  '''cmd/sync_rename_scan_test\.go$''',
   # v0.7.0 config-plugin secret tests: credential-shaped fixtures that exercise
   # the git/tmux/npm token recognisers and prove a literal token never reaches
   # the shared repo. Fake tokens only; every non-test file stays fully scanned.

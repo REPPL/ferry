@@ -18,7 +18,8 @@ import (
 )
 
 // syncBranchName is the branch ferry sync integrates and pushes. ferry manages a
-// single-branch config repo; the default branch is `main` (git init -b main).
+// single-branch config repo; createFreshRepo pins a fresh repo's HEAD to this
+// branch, so the two can never disagree about which branch ferry manages.
 const syncBranchName = "main"
 
 // runSync implements `ferry sync`: publish locally-captured changes and pull
@@ -289,7 +290,7 @@ func refuseInProgressGitOp(repo string) error {
 		return fmt.Errorf("sync: refusing to run on a detached HEAD — check out the `%s` branch first (`git checkout %s`), then re-run `ferry sync`", syncBranchName, syncBranchName)
 	}
 	if branch != syncBranchName {
-		return fmt.Errorf("sync: refusing to run — HEAD is on branch %q, but `ferry sync` integrates and pushes `%s`. Check out `%s` first, then re-run", ghcli.Redact(branch), syncBranchName, syncBranchName)
+		return fmt.Errorf("sync: refusing to run — HEAD is on branch %q, but `ferry sync` integrates and pushes `%s`. Check out `%s` first (or rename this branch with `git -C <repo> branch -M %s`), then re-run", ghcli.Redact(branch), syncBranchName, syncBranchName, syncBranchName)
 	}
 	return nil
 }
@@ -1082,17 +1083,28 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("`git status` failed: %s", ghcli.Redact(strings.TrimSpace(o)))
 	}
-	for _, entry := range strings.Split(o, "\x00") {
-		if len(entry) < 4 {
-			continue
+	fields := strings.Split(o, "\x00")
+	for i := 0; i < len(fields); i++ {
+		entry := fields[i]
+		if entry == "" {
+			continue // the trailing field after the final NUL
+		}
+		// Validate the status shape exactly as parseStatusZ does, and FAIL CLOSED on a
+		// field that is not one: a length test alone cannot tell a status entry from a
+		// bare path, so an unrecognised field must never be sliced as if it were one.
+		if len(entry) < 4 || entry[2] != ' ' || !validStatusByte(entry[0]) || !validStatusByte(entry[1]) {
+			return "", false, fmt.Errorf("unparseable `git status` entry %q", ghcli.Redact(entry))
 		}
 		xy := entry[:2]
 		path := entry[3:]
-		// A rename's `-z` form emits "R  new" then the old path as the NEXT NUL field;
-		// the old field has no XY code, so len<4 (or it starts unlike a status) — the
-		// slice above already scans the new path, and the stray old field is skipped.
-		if path == "" {
-			continue
+		// A rename/copy origin path travels as the NEXT NUL field carrying no status
+		// code, so it must be CONSUMED with its entry (as parseStatusZ does). Leaving
+		// it to the next iteration would slice a bare path as a status line: an origin
+		// of four bytes or more passes any length test, and `src/dotfiles` would be
+		// read as the path `/dotfiles` — scanning an unrelated file, or aborting the
+		// whole sync when that name resolves to a directory.
+		if entry[0] == 'R' || entry[0] == 'C' || entry[1] == 'R' || entry[1] == 'C' {
+			i++
 		}
 		// Gate the PATH itself first: a filename component that is secret-shaped (a token
 		// used as a path) blocks the commit exactly like secret CONTENT, matching export

@@ -201,7 +201,12 @@ func runImport(c *cobra.Command, args []string) error {
 	if herr != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "unknown"
 	}
-	if err := config.SaveMachineConfig(config.MachineConfig{Hostname: hostname, Repo: target}); err != nil {
+	// carryMachineScoped keeps this machine's [work] cargo store: it is machine
+	// state, unrelated to which config repo is configured, and a wholesale rewrite
+	// that omits it would silently un-configure every `ferry work` verb. `managed`
+	// is deliberately NOT carried — import re-points ferry at a new target repo
+	// whose remote ferry does not own.
+	if err := config.SaveMachineConfig(carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: target})); err != nil {
 		_ = os.RemoveAll(target) // roll the just-placed target back so a re-run is clean
 		return fmt.Errorf("write machine config: %w", err)
 	}

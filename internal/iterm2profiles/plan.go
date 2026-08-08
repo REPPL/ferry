@@ -253,9 +253,9 @@ func guardPath(guard func(string) (string, error), candidate string) (string, er
 func refusal(what, name string, err error) string {
 	switch {
 	case errors.Is(err, dotfile.ErrForbiddenSSHPath):
-		return fmt.Sprintf("iterm2-profiles: refusing %s %s: ferry never manages paths under ~/.ssh", what, name)
+		return fmt.Sprintf("iterm2-profiles: refusing %s %s: "+dotfile.RefusalSSHBody, what, name)
 	case errors.Is(err, dotfile.ErrPathEscapesHome):
-		return fmt.Sprintf("iterm2-profiles: refusing %s %s: invalid managed path (escapes $HOME)", what, name)
+		return fmt.Sprintf("iterm2-profiles: refusing %s %s: "+dotfile.RefusalEscapeBody, what, name)
 	default:
 		return fmt.Sprintf("iterm2-profiles: refusing %s %s: %v", what, name, err)
 	}

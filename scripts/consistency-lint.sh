@@ -13,6 +13,10 @@
 #      absent. The developer-record .abcd/development/plans/ and research/ (which
 #      describe past and investigative state) and the changelog are exempt
 #      too (they describe past state), as is this script itself.
+#   4. No Go source outside internal/dotfile/dotfile.go re-inlines either
+#      boundary-refusal message body. doctor recognises a plan-time containment
+#      refusal by these exact strings, so a re-inlined copy can drift and
+#      silently turn a security-invariant [fail] into a [pass].
 #
 # Exit non-zero on the first failing invariant set; print every offending path.
 set -euo pipefail
@@ -52,6 +56,23 @@ if [ -n "$hits" ]; then
   echo "$hits" | sed 's/^/  /' >&2
   fail=1
 fi
+
+# 4. re-inlined boundary-refusal bodies. `ferry doctor` proves its ~/.ssh and
+#    containment invariants by matching a plan's warnings against these exact
+#    strings, so a domain that spells its own copy silently drops out of the
+#    check — its [fail] and non-zero exit become a [pass], with no compile error.
+#    They are defined once in internal/dotfile/dotfile.go; every other Go file
+#    must reference dotfile.RefusalSSHBody / dotfile.RefusalEscapeBody. Test
+#    files are exempt: they legitimately assert the rendered wording.
+for body in 'ferry never manages paths under ~/.ssh' 'invalid managed path (escapes $HOME)'; do
+  hits=$(git ls-files -- '*.go' ':!internal/dotfile/dotfile.go' ':!*_test.go' \
+    | xargs -r grep -nF -- "$body" 2>/dev/null || true)
+  if [ -n "$hits" ]; then
+    echo "consistency-lint: boundary-refusal body re-inlined (use dotfile.RefusalSSHBody / dotfile.RefusalEscapeBody so doctor's invariant check cannot drift):" >&2
+    echo "$hits" | sed 's/^/  /' >&2
+    fail=1
+  fi
+done
 
 if [ "$fail" -ne 0 ]; then
   echo "consistency-lint: FAILED" >&2

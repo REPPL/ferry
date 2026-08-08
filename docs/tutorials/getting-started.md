@@ -67,10 +67,18 @@ names the one for this host: there is no plain `bin/ferry`.
 ```bash
 ferry init                # first-run setup; starts a new config repo at ~/.config/ferry/repo
 ferry capture             # review your config; approve each change, route shared/local
-git -C <your-ferry-repo> commit -am "Initial capture"
+git -C <your-ferry-repo> add -A
+git -C <your-ferry-repo> commit -m "Initial capture"
 git -C <your-ferry-repo> remote add origin <your-empty-repo-url>
 git -C <your-ferry-repo> push -u origin HEAD
 ```
+
+Stage with `add -A` before committing: capture writes files git has never seen —
+a newly declared terminal, agents, or dependency source lands at a fresh path —
+and `commit -a` stages only tracked files, so a bare `commit -am` would push a
+repo missing exactly the configuration just captured. `ferry init` has already
+committed the seeded tree, so `commit` on its own reports nothing to commit until
+capture has written something.
 
 A bare `ferry init` creates the repo at ferry's own default location,
 `~/.config/ferry/repo`: you do not need to pick a path. To place it somewhere

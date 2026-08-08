@@ -140,8 +140,11 @@ templates — ferry carries and deploys them but does not ship them.
 - **Repo-authoritative**: the deployed content is derived from the repo, so
   the repo copy is the place to edit. A live edit to a deployed target is
   reported by `status`/`diff` as drift and **skipped** by `apply` (ferry never
-  silently discards an edit); resolve it by updating the repo copy, or
-  override with `ferry apply --force` (backed up, reversible).
+  silently discards an edit); record it with `ferry capture` (see [Capturing
+  agent edits back](#capturing-agent-edits-back) below), or discard it in
+  favour of the repo copy with `ferry apply --force`. The backup baseline holds
+  the pre-ferry file, not the live edit, so `restore` does not bring a
+  force-overwritten edit back.
 - **Capture**: `ferry capture` flows a live edit to a deployed agent file back
   into the config repo through the same approve and route flow as dotfiles (see
   [Capturing agent edits back](#capturing-agent-edits-back) below). It never

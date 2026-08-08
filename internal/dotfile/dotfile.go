@@ -79,6 +79,19 @@ func DefaultPerm() os.FileMode { return defaultPerm }
 // RepoSubdir is the repo subdirectory that holds dotfile sources.
 const RepoSubdir = "dotfiles"
 
+// RefusalSSHBody and RefusalEscapeBody are the two boundary-refusal message
+// bodies every domain renders for a plan-time containment refusal. `ferry doctor`
+// proves its ~/.ssh and containment invariants by matching a plan's warnings
+// against these EXACT strings, so a domain that spelled its own copy could
+// silently drop out of that check — turning a security-invariant [fail] and its
+// non-zero exit into a [pass] with nothing red anywhere. They live here, beside
+// the sentinels the same refusals are derived from, so every domain and doctor
+// share one definition and a reword is a compile-time single point of change.
+const (
+	RefusalSSHBody    = "ferry never manages paths under ~/.ssh"
+	RefusalEscapeBody = "invalid managed path (escapes $HOME)"
+)
+
 // ErrForbiddenSSHPath is returned by TargetFor when a declared dotfile name
 // resolves to a home target that IS, or is under, ~/.ssh/. ferry's top security
 // invariant is that it never touches ~/.ssh/, and this is the boundary that
