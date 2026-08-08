@@ -8,6 +8,7 @@ package cmd
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,7 @@ func TestCreateFreshRepoPinsManagedBranch(t *testing.T) {
 	gitConfigWithDefaultBranch(t, "master")
 
 	dest := filepath.Join(t.TempDir(), "repo")
-	if err := createFreshRepo(io_Discard{}, dest); err != nil {
+	if err := createFreshRepo(io.Discard, dest); err != nil {
 		t.Fatalf("createFreshRepo: %v", err)
 	}
 
@@ -69,15 +70,10 @@ func TestCreateFreshRepoPinsManagedBranchWithNoUserConfig(t *testing.T) {
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 	dest := filepath.Join(t.TempDir(), "repo")
-	if err := createFreshRepo(io_Discard{}, dest); err != nil {
+	if err := createFreshRepo(io.Discard, dest); err != nil {
 		t.Fatalf("createFreshRepo: %v", err)
 	}
 	if got := headBranch(t, dest); got != syncBranchName {
 		t.Fatalf("fresh repo HEAD is on %q, want %q", got, syncBranchName)
 	}
 }
-
-// io_Discard is a minimal io.Writer sink; createFreshRepo prints progress.
-type io_Discard struct{}
-
-func (io_Discard) Write(p []byte) (int, error) { return len(p), nil }

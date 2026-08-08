@@ -391,14 +391,16 @@ jobs:
         # publishes green. Without --prerelease, though, GitHub marks the result a
         # full release, which makes it the repo's `latest` — the very URL
         # install.sh serves to every `curl … | bash` user. Flag it so a rehearsal
-        # tag can never be handed out as the current version. Match on `-` only:
-        # the gate also admits `+build` metadata, which is not a prerelease. A
-        # plain vX.Y.Z tag carries no `-`, so the array stays empty and the
-        # command is byte-identical to a normal release's.
+        # tag can never be handed out as the current version. Per SemVer the
+        # prerelease is the part after `-` and BEFORE any `+`, so build metadata
+        # is stripped first: the gate admits `+build` metadata, which may itself
+        # contain a hyphen (`v1.2.3+2026-01-01`) and is not a prerelease. A plain
+        # vX.Y.Z tag leaves the array empty, so the command is byte-identical to
+        # a normal release's.
         run: |
           set -euo pipefail
           pre=()
-          case "$TAG" in
+          case "${TAG%%+*}" in
             *-*) pre=(--prerelease) ;;
           esac
           gh release create "$TAG" bin/ferry-* bin/checksums.txt \

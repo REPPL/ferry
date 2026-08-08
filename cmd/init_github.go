@@ -251,7 +251,11 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 	if herr != nil || strings.TrimSpace(hostname) == "" {
 		hostname = "unknown"
 	}
-	if err := config.SaveMachineConfig(config.MachineConfig{Hostname: hostname, Repo: repoPath, Managed: false}); err != nil {
+	// carryMachineScoped keeps this machine's [work] cargo store across the
+	// wholesale config.toml rewrite. It carries ONLY machine-scoped fields, never
+	// `managed`, so the deliberate false-now/true-after-push sequence below is
+	// unaffected and a stale managed=true can never be resurrected here.
+	if err := config.SaveMachineConfig(carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: repoPath, Managed: false})); err != nil {
 		return partialFailure("config write", err)
 	}
 	if err := ensureLocalManifest(out, repoPath); err != nil {
@@ -270,7 +274,7 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 		return partialFailure("push", err)
 	}
 
-	if err := config.SaveMachineConfig(config.MachineConfig{Hostname: hostname, Repo: repoPath, Managed: true}); err != nil {
+	if err := config.SaveMachineConfig(carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: repoPath, Managed: true})); err != nil {
 		return partialFailure("config finalise", err)
 	}
 	fmt.Fprintf(out, "done: %s is a managed private GitHub repo. `ferry capture` pushes changes; `ferry apply` on another machine pulls them.\n", resolved)
