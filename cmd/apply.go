@@ -577,12 +577,12 @@ func effectiveSource(repo, sharedSrc, name string) string {
 	return sharedSrc
 }
 
-// The two boundary-refusal message bodies, shared with doctor's invariant
-// check: doctor recognises a plan-time containment refusal by these exact
-// strings, so they must only ever change together.
+// The two boundary-refusal message bodies, shared with doctor's invariant check
+// AND with every domain that renders its own refusal. They are defined once in
+// internal/dotfile so the five plan packages and doctor cannot drift apart.
 const (
-	refusalSSHBody    = "ferry never manages paths under ~/.ssh"
-	refusalEscapeBody = "invalid managed path (escapes $HOME)"
+	refusalSSHBody    = dotfile.RefusalSSHBody
+	refusalEscapeBody = dotfile.RefusalEscapeBody
 )
 
 // refusalWarning renders a clear, user-facing refusal for a dotfile TargetFor
