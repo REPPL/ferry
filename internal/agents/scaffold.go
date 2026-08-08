@@ -503,7 +503,20 @@ func appendLineOnce(path, line string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	_, err = f.WriteString(line + "\n")
-	return err
+	// Ignore-file parsing is strictly line-based, so appending to a file whose last
+	// line has no terminator FUSES the two: the user's final pattern is destroyed and
+	// ours never takes effect, while the caller reports success. `.git/info/exclude`
+	// is the documented hand-edit surface, and editors that do not insert a final
+	// newline leave exactly that state — so normalise before appending.
+	add := line + "\n"
+	if len(existing) > 0 && !strings.HasSuffix(string(existing), "\n") {
+		add = "\n" + add
+	}
+	if _, err := f.WriteString(add); err != nil {
+		f.Close()
+		return err
+	}
+	// Report a close error: a deferred Close would discard the ENOSPC/EIO that a
+	// buffered write only surfaces here, turning a failed append into a silent pass.
+	return f.Close()
 }
