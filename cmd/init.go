@@ -187,10 +187,13 @@ func runInit(c *cobra.Command, args []string) error {
 		hostname = "unknown"
 	}
 	mc := carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: repoPath})
-	if reusedConfiguredRepo {
-		if prior, ok := priorMachineConfig(); ok {
-			mc.Managed = prior.Managed
-		}
+	// `managed` is keyed to the REPO's identity, not to the route that resolved
+	// it: a positional source naming the already-configured repo (e.g.
+	// `ferry init .` from inside it) reuses that repo just as the no-arg re-run
+	// does, so the flag carries forward for both. A different repo never
+	// inherits it — it has no ferry-owned remote.
+	if prior, ok := priorMachineConfig(); ok && (reusedConfiguredRepo || sameRepoPath(repoPath, prior.Repo)) {
+		mc.Managed = prior.Managed
 	}
 	if err := config.SaveMachineConfig(mc); err != nil {
 		return fmt.Errorf("write machine config: %w", err)
@@ -793,6 +796,21 @@ func priorMachineConfig() (config.MachineConfig, bool) {
 		return config.MachineConfig{}, false
 	}
 	return raw, true
+}
+
+// sameRepoPath reports whether two repo paths name the same directory, resolving
+// symlinks so an aliased spelling (e.g. `ferry init .` through a linked cwd) still
+// counts as the same repo. Resolution failure falls back to a lexical compare.
+func sameRepoPath(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	if errA != nil || errB != nil {
+		return filepath.Clean(a) == filepath.Clean(b)
+	}
+	return ra == rb
 }
 
 // carryMachineScoped copies the settings of an existing config.toml that belong to
