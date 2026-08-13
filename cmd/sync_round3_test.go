@@ -169,6 +169,46 @@ func TestScanWorktreeBlocksRealSecretInTerminals(t *testing.T) {
 	}
 }
 
+// MAJOR: an UNTRACKED directory (git status collapses it to one `?? dir/` entry at
+// the default -unormal) must be walked file-by-file, exactly as backupOutOfBand does:
+// reading the entry as a file EISDIRs, which is neither a deletion nor a not-exist,
+// and the fail-closed abort wedges every `ferry sync` after a capture that creates a
+// new repo subdirectory (agents/, terminals/, ...) — with advice ("re-run once the
+// file is readable") that a directory can never satisfy.
+func TestScanWorktreeWalksUntrackedDirectory(t *testing.T) {
+	repo := r3Repo(t)
+	// A wholly-untracked directory holding a clean file: must scan cleanly, not error.
+	cleanFile := filepath.Join(repo, "agents", "claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(cleanFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cleanFile, []byte("{\"theme\": \"dark\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Deliberately NOT staged: the scan must handle the collapsed `?? agents/` entry.
+	if path, found, err := scanWorktreeForSecret(repo); err != nil {
+		t.Fatalf("scanWorktreeForSecret errored on an untracked directory: %v", err)
+	} else if found {
+		t.Fatalf("clean file inside an untracked directory was wrongly blocked (path %q)", path)
+	}
+
+	// The same collapsed directory hiding a real secret: the walk must still gate it.
+	secretFile := filepath.Join(repo, "agents", "claude", "env.sh")
+	if err := os.WriteFile(secretFile, []byte("export AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, found, err := scanWorktreeForSecret(repo)
+	if err != nil {
+		t.Fatalf("scanWorktreeForSecret errored: %v", err)
+	}
+	if !found {
+		t.Fatalf("a real secret inside an untracked directory was NOT commit-gated")
+	}
+	if filepath.ToSlash(path) != "agents/claude/env.sh" {
+		t.Errorf("blocked path = %q, want agents/claude/env.sh", path)
+	}
+}
+
 // MAJOR: backupOutOfBand must FAIL CLOSED when a file it must back up cannot be read —
 // the snapshot aborts rather than proceeding with an incomplete (un-restorable) backup.
 func TestBackupOutOfBandFailsClosedOnUnreadableFile(t *testing.T) {
