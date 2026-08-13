@@ -109,7 +109,7 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 	// STEP 4 (existing-local-repo guard): if a config repo is already configured,
 	// REFUSE — never push old/unreviewed local content into a new managed remote.
 	if existing, ok := existingConfiguredRepo(); ok {
-		return fmt.Errorf("a ferry config repo already exists at %s — `init --github` sets up a NEW managed repo; remove or rename the existing one first (or use `ferry capture` to push to it)", existing)
+		return fmt.Errorf("a ferry config repo already exists at %s — `init --github` sets up a NEW managed repo; remove or rename the existing one first (or keep it: `ferry capture` records changes into it and `ferry sync` publishes them)", existing)
 	}
 
 	// STEP 5 (check-and-avoid, read-only preflight — runs BEFORE the wizard so
@@ -277,7 +277,7 @@ func initGitHub(c *cobra.Command, in *bufio.Reader, out io.Writer, name string) 
 	if err := config.SaveMachineConfig(carryMachineScoped(config.MachineConfig{Hostname: hostname, Repo: repoPath, Managed: true})); err != nil {
 		return partialFailure("config finalise", err)
 	}
-	fmt.Fprintf(out, "done: %s is a managed private GitHub repo. `ferry capture` pushes changes; `ferry apply` on another machine pulls them.\n", resolved)
+	fmt.Fprintf(out, "done: %s is a managed private GitHub repo. `ferry capture` records changes into the repo, `ferry sync` publishes and pulls them, and `ferry apply` deploys them on another machine.\n", resolved)
 	return nil
 }
 

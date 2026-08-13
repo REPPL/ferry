@@ -1432,12 +1432,56 @@ func TestGitHubConfigManaged_AC_github_config_managed(t *testing.T) {
 			jsonIsPrivate: true, jsonNameWithOwner: ghOwner + "/myrepo",
 			jsonURL: "https://github.com/" + ghOwner + "/myrepo.git",
 		}
-		if _, errOut, code := s.FerryEnv(append(sc.env(), combinedPathEnv(gh, git)), "init", "--github", "myrepo", "--yes"); code != 0 {
+		out, errOut, code := s.FerryEnv(append(sc.env(), combinedPathEnv(gh, git)), "init", "--github", "myrepo", "--yes")
+		if code != 0 {
 			t.Fatalf("AC-github-config-managed: managed init exited %d\n%s", code, errOut)
 		}
 		if !configManaged(t, s) {
 			data, _ := os.ReadFile(s.ConfigTOMLPath())
 			t.Errorf("AC-github-config-managed: config.toml does not record managed=true after a successful managed init\n%s", data)
+		}
+		// The closing next-step line must name the verb that actually publishes
+		// (`ferry sync`) and must not claim capture pushes or apply pulls —
+		// capture never commits or pushes, and apply never touches the network.
+		combined := out + errOut
+		if !strings.Contains(combined, "ferry sync") {
+			t.Errorf("AC-github-config-managed: success output never names `ferry sync` as the publish verb\n%s", combined)
+		}
+		if strings.Contains(combined, "capture` pushes") || strings.Contains(combined, "apply` on another machine pulls") {
+			t.Errorf("AC-github-config-managed: success output still claims capture pushes / apply pulls\n%s", combined)
+		}
+	})
+
+	t.Run("work-table-survives", func(t *testing.T) {
+		t.Parallel()
+		s := NewSandbox(t)
+		seedGoodZshrc(t, s)
+		// A machine with a configured cargo store but no usable config repo (the
+		// recorded path does not exist, so the existing-repo guard does not
+		// refuse): the [work] table is machine state and must survive the
+		// wholesale config.toml rewrites on BOTH sides of the push.
+		store := s.HomePath("cargo")
+		cfg := "hostname = \"prior\"\nrepo = \"" + s.HomePath("gone-repo") + "\"\n\n[work]\nstore = \"" + store + "\"\nkeep = 7\n"
+		if err := os.WriteFile(s.ConfigTOMLPath(), []byte(cfg), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		gh := newGHMock(t)
+		git := newPushRecordingGitStub(t)
+		sc := ghScenario{
+			authOK: true, login: ghOwner, repoViewExists: false,
+			jsonIsPrivate: true, jsonNameWithOwner: ghOwner + "/myrepo",
+			jsonURL: "https://github.com/" + ghOwner + "/myrepo.git",
+		}
+		if _, errOut, code := s.FerryEnv(append(sc.env(), combinedPathEnv(gh, git)), "init", "--github", "myrepo", "--yes"); code != 0 {
+			t.Fatalf("managed init exited %d\n%s", code, errOut)
+		}
+		after, err := os.ReadFile(s.ConfigTOMLPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := string(after)
+		if !strings.Contains(got, "[work]") || !strings.Contains(got, store) || !strings.Contains(got, "keep = 7") {
+			t.Errorf("`init --github` dropped the machine-scoped [work] table:\n%s", got)
 		}
 	})
 
