@@ -6,8 +6,9 @@ Report machine/tool health
 
 Report machine and tool health.
 
-doctor checks that required tools (git, zsh, a package manager) are present and
-reports anything that needs attention, with the recommended next step. It also
+doctor checks the host tools ferry stands on — git (required), zsh and a
+package manager (recommended, reported [warn] when absent) — and reports
+anything that needs attention, with the recommended next step. It also
 reports ~/.ssh permissions (stat only — ferry never reads, writes, or captures
 anything under ~/.ssh; this read-only report is doctor's sanctioned exception)
 and observes the managed-target invariants: deployed targets are regular-file

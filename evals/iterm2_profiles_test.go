@@ -145,4 +145,38 @@ func TestITerm2ProfilesStatusCleanThenDrift(t *testing.T) {
 	if strings.Contains(stdout, "no drift detected") || !strings.Contains(stdout, "drift") {
 		t.Errorf("status did not report drift after a live edit; stdout:\n%s", stdout)
 	}
+	// The domain has no capture pass, so the drift guidance must point at the
+	// repo source / `ferry apply --force`, never at `ferry capture` — a command
+	// that will never offer this file.
+	assertDriftLineNoCapture(t, stdout, "Work.json")
+
+	// `ferry diff` renders the same drift; its guidance must match.
+	stdout, errOut, code = s.Ferry("diff")
+	if code != 0 {
+		t.Fatalf("diff after edit exited %d; stderr:\n%s", code, errOut)
+	}
+	assertDriftLineNoCapture(t, stdout, "Work.json")
+}
+
+// assertDriftLineNoCapture finds the output line naming target and asserts it
+// steers at the repo source / --force, never `ferry capture` (used by the
+// repo-authoritative domains, which capture will never offer).
+func assertDriftLineNoCapture(t *testing.T, stdout, target string) {
+	t.Helper()
+	line := ""
+	for _, l := range strings.Split(stdout, "\n") {
+		if strings.Contains(l, target) {
+			line = l
+			break
+		}
+	}
+	if line == "" {
+		t.Fatalf("no %s line in output:\n%s", target, stdout)
+	}
+	if strings.Contains(line, "ferry capture") {
+		t.Errorf("repo-authoritative target steered at `ferry capture` (no capture pass exists); line:\n%s", line)
+	}
+	if !strings.Contains(line, "ferry apply --force") {
+		t.Errorf("repo-authoritative target should point at `ferry apply --force`; line:\n%s", line)
+	}
 }

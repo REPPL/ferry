@@ -152,7 +152,7 @@ jobs:
             exit 1
           fi
 
-      - name: Consistency lint (ADR numbering, memory split)
+      - name: Consistency lint (ADR numbering, memory split, refusal bodies)
         run: scripts/consistency-lint.sh
 
       - name: Plan-doc shipped check
@@ -328,6 +328,21 @@ jobs:
         # manifest, the published assets, and the reported version are all in sync.
         run: make build VERSION="$TAG"
 
+      - name: The stamped binary reports the tag
+        # Go's linker silently ignores -X for a symbol that no longer exists, so a
+        # rename/move of cmd.version would publish binaries reporting the -dev
+        # version — with valid checksums and provenance over the wrong artifact —
+        # and nothing else in this workflow would go red. Same assertion as the
+        # recovery driver (scripts/release.sh); the runner is x64 Linux, so the
+        # linux-amd64 binary is directly executable.
+        run: |
+          set -euo pipefail
+          reported="$(./bin/ferry-linux-amd64 version)"
+          if ! printf '%s' "$reported" | grep -qF "$TAG"; then
+            echo "release: built binary reports '$reported', not '$TAG' — the version stamp is broken" >&2
+            exit 1
+          fi
+
       - name: Generate checksums.txt over the four binaries
         # Hash the exact binaries built above into a sha256sum-format manifest.
         # It is uploaded as a release asset; install.sh fetches it from the release
@@ -435,6 +450,27 @@ jobs:
           gh attestation verify "$DL/ferry-linux-amd64" \
             --repo "${GITHUB_REPOSITORY}" \
             --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yml"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the published assets against the published checksums.txt
+        # Post-release gate for the pairing install.sh depends on: download the
+        # manifest and every binary FRESH from the just-created Release and run
+        # the same sha256 check install.sh performs. Unlike the attestation step
+        # above this needs no repo-visibility feature, so it runs on private and
+        # public repos alike — on a private repo it is the only post-publish
+        # asset check. Runs before the prune so the release it verifies is
+        # guaranteed still present.
+        run: |
+          set -euo pipefail
+          DL="$RUNNER_TEMP/checksums-verify"
+          mkdir -p "$DL"
+          gh release download "$TAG" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'ferry-*' --pattern 'checksums.txt' \
+            --dir "$DL"
+          cd "$DL"
+          sha256sum -c checksums.txt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

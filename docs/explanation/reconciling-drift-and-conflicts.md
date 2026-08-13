@@ -69,9 +69,10 @@ It prints the remedy for that file's kind:
 
 - **Dotfiles** — the fix is to pick a winner: `ferry capture` to keep your local
   edit, or `ferry apply --force` to take the repo's copy.
-- **Terminal-config targets are repo-authoritative** — there is no capture pass
-  for them. The remedy is to update the repo copy (or source) to match, or
-  `ferry apply --force` to take the repo's version.
+- **Repo-authoritative file targets** — terminal configs, key bindings, Emacs,
+  and iTerm2 Dynamic Profiles — have no capture pass. The remedy is to update
+  the repo copy (or source) to match, or `ferry apply --force` to take the
+  repo's version.
 - **Agents targets** do have a capture pass ([the agents
   domain](agents.md) describes it), but it will not resolve a *conflict*
   either: capture refuses a true divergence and shows the diff rather than

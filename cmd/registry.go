@@ -118,6 +118,21 @@ func fileDomainCaptures(reg domains.Registry, name string) bool {
 	return false
 }
 
+// fileDomainIsRepoAuthoritative reports whether the named FileDomain has no
+// capture pass (Captures() == false): drift/conflict guidance for it must point
+// at the repo source, never `ferry capture`. Keying the wording on the registry
+// flag — not a hand-maintained name list — means a new no-capture domain can
+// never silently inherit the dotfiles capture wording (iterm2-profiles did
+// exactly that when the lists were literal).
+func fileDomainIsRepoAuthoritative(name string) bool {
+	for _, fd := range buildRegistry(nil).FileDomains {
+		if fd.Name() == name {
+			return !fd.Captures()
+		}
+	}
+	return false
+}
+
 // --- dotfiles FileDomain -----------------------------------------------------
 
 // dotfilesFileDomain is the converged dotfiles domain: generic whole-file

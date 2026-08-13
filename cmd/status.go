@@ -82,8 +82,9 @@ func runStatus(c *cobra.Command, _ []string) error {
 		// Converged FileDomain items (fn-5). An agents target edited live is a
 		// capture candidate (capture reviews it hunk by hunk), so its drift line
 		// names `ferry capture` first; a true conflict stays repo-authoritative
-		// (capture refuses a divergence). Dotfiles and config-file terminals
-		// share the three-way status rendering with capture guidance.
+		// (capture refuses a divergence). Dotfiles share the three-way status
+		// rendering with capture guidance; the no-capture domains (Captures()
+		// false) get the repo-source wording instead.
 		if it.kind != kindFile {
 			continue
 		}
@@ -100,6 +101,16 @@ func runStatus(c *cobra.Command, _ []string) error {
 		// blocked (held back), NOT as drift, so it is not a false action item.
 		if it.skip {
 			fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
+			continue
+		}
+
+		// Repo-authoritative domains (Captures() false) never steer at
+		// `ferry capture` — the command will never offer their files. Their
+		// drift/conflict remedy is the repo source or `ferry apply --force`.
+		if fileDomainIsRepoAuthoritative(it.fileDomain) {
+			if reportRepoAuthoritativeStatus(out, colour, it.domain, it.state) {
+				drifted++
+			}
 			continue
 		}
 
@@ -304,6 +315,23 @@ func reportDepsStatus(ctx *cmdContext, out io.Writer, colour func(*color.Color, 
 	}
 
 	return reported, drifted
+}
+
+// reportRepoAuthoritativeStatus is reportStatus for the no-capture domains
+// (Captures() false): the drift/conflict remedy is the repo source or
+// `ferry apply --force` — never `ferry capture`, which will never offer these
+// files. The clean/repo-ahead/missing lines match reportStatus.
+func reportRepoAuthoritativeStatus(out io.Writer, colour func(*color.Color, string) string, name string, state dotfile.State) (isDrift bool) {
+	switch state {
+	case dotfile.StateLocallyDrifted:
+		fmt.Fprintf(out, "  %-22s %s (local edits; update the repo source to match, or `ferry apply --force`)\n", name, colour(colYellow, "drifted"))
+		return true
+	case dotfile.StateConflict:
+		fmt.Fprintf(out, "  %-22s %s (modified locally AND in the repo; update the repo source, or `ferry apply --force`)\n", name, colour(colRed, "conflict"))
+		return true
+	default:
+		return reportStatus(out, colour, name, state)
+	}
 }
 
 // reportStatus prints one git-status-like line for a target and reports whether

@@ -200,6 +200,15 @@ func TestTerminalConfigDriftGuidanceNoCapture(t *testing.T) {
 	if !strings.Contains(line, "ferry apply --force") {
 		t.Errorf("drifted terminal target should point at `ferry apply --force`; line:\n%s", line)
 	}
+
+	// `ferry status` renders the same drift and must carry the same guidance —
+	// its generic drift line used to steer every non-agents file domain at
+	// `ferry capture`, a dead end for the repo-authoritative domains.
+	stdout, errOut, code = s.Ferry("status")
+	if code != 0 {
+		t.Fatalf("status exited %d; stderr:\n%s", code, errOut)
+	}
+	assertDriftLineNoCapture(t, stdout, "wezterm")
 }
 
 func assertFileContains(t *testing.T, path, needle string) {

@@ -36,9 +36,12 @@ vet:
 	go vet ./...
 
 # Pre-push gate (invoked by .githooks/pre-push): the four native compile/test
-# steps of the CI check job (build, vet, test, race-enabled internal tests).
-# The check job's other gates — gofmt, CLI-reference staleness, consistency
-# lint, cross-compile — are not mirrored here; CI remains their gate.
+# steps of the CI check job (build, vet, test, race-enabled internal tests),
+# plus the consistency lint — the one convention gate that must run BEFORE a
+# push, since it catches the private .abcd/.work.local/ tier being tracked and
+# on a public repo the push itself is the disclosure. The check job's other
+# gates — gofmt, CLI-reference staleness, cross-compile — are not mirrored
+# here; CI remains their gate.
 # Host-native `go build` — not the cross-compiling `build` target — because it
 # mirrors CI, not a release.
 preflight:
@@ -46,6 +49,7 @@ preflight:
 	go vet ./...
 	go test ./...
 	go test -race ./internal/...
+	scripts/consistency-lint.sh
 
 clean:
 	rm -rf $(BINDIR)

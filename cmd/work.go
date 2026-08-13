@@ -137,6 +137,14 @@ func loadWorkContext(c *cobra.Command, projectArg string) (*workContext, error) 
 
 then create the directory (world-writable if two accounts share it) and retry`)
 	}
+	// Defense-in-depth, mirroring the configured-repo guard: a hand-edited
+	// config.toml whose store points at (or resolves into) ~/.ssh would make
+	// every work verb read, create, and write under ~/.ssh. Refuse BEFORE
+	// OpenStore stats or resolves the path — the check is pure path arithmetic,
+	// so stores outside $HOME stay unrestricted.
+	if err := rejectIfUnderSSH("configured cargo store", mc.Work.Store); err != nil {
+		return nil, err
+	}
 	allowSync, _ := c.Flags().GetBool("allow-sync-root")
 	st, err := work.OpenStore(mc.Work.Store, mc.Work.AllowSyncRoot || allowSync)
 	if err != nil {

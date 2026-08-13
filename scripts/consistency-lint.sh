@@ -17,6 +17,10 @@
 #      boundary-refusal message body. doctor recognises a plan-time containment
 #      refusal by these exact strings, so a re-inlined copy can drift and
 #      silently turn a security-invariant [fail] into a [pass].
+#   5. Nothing under .abcd/.work.local/ is ever tracked. The private tier is
+#      ignored per-clone via .git/info/exclude (ADR 0002 — never .gitignore), so
+#      a fresh clone has NO ignore rule and `git add -A` happily stages a
+#      session handoff; this is the gate that catches it before it ships.
 #
 # Exit non-zero on the first failing invariant set; print every offending path.
 set -euo pipefail
@@ -73,6 +77,16 @@ for body in 'ferry never manages paths under ~/.ssh' 'invalid managed path (esca
     fail=1
   fi
 done
+
+# 5. the private working-memory tier must never be tracked (ADR 0002): the
+#    .git/info/exclude rule is per-clone and absent in a fresh checkout, so
+#    nothing upstream of this check stops `git add -A` staging the handoff.
+tracked_local=$(git ls-files -- '.abcd/.work.local/' || true)
+if [ -n "$tracked_local" ]; then
+  echo "consistency-lint: .abcd/.work.local/ is the private tier (ADR 0002) and must never be committed — untrack with \`git rm --cached\`:" >&2
+  echo "$tracked_local" | sed 's/^/  /' >&2
+  fail=1
+fi
 
 if [ "$fail" -ne 0 ]; then
   echo "consistency-lint: FAILED" >&2

@@ -861,6 +861,76 @@ func TestImportRoundtrip_AC_import_roundtrip(t *testing.T) {
 	}
 }
 
+// TestImportPreservesWorkTable: the [work] cargo store is machine state, not
+// repo state — `bundle import` re-points ferry at a new repo but must carry the
+// table across its wholesale config.toml rewrite (dropping it silently
+// un-configures every `ferry work` verb).
+func TestImportPreservesWorkTable(t *testing.T) {
+	t.Parallel()
+	a := NewSandbox(t)
+	seedExportRepo(t, a, map[string]string{"shared.txt": "ok\n"})
+	out := exportOK(t, a)
+
+	b := NewSandbox(t)
+	store := b.HomePath("cargo")
+	cfg := "hostname = \"prior\"\nrepo = \"" + b.HomePath("gone-repo") + "\"\n\n[work]\nstore = \"" + store + "\"\nkeep = 7\n"
+	if err := os.WriteFile(b.ConfigTOMLPath(), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, errOut, code := b.Ferry("bundle", "import", out); code != 0 {
+		t.Fatalf("import exited %d\n%s", code, errOut)
+	}
+	after, err := os.ReadFile(b.ConfigTOMLPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(after)
+	if !strings.Contains(got, "[work]") || !strings.Contains(got, store) || !strings.Contains(got, "keep = 7") {
+		t.Errorf("`bundle import` dropped the machine-scoped [work] table:\n%s", got)
+	}
+	if strings.Contains(got, "managed = true") {
+		t.Errorf("`bundle import` carried `managed` onto a repo ferry does not own:\n%s", got)
+	}
+}
+
+// TestImportPinsManagedBranch: the repo `bundle import` creates must land on the
+// branch `ferry sync` manages, even when the machine's git is configured to init
+// on another branch — the same pin `ferry init` applies to a fresh repo.
+func TestImportPinsManagedBranch(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	a := NewSandbox(t)
+	seedExportRepo(t, a, map[string]string{"shared.txt": "ok\n"})
+	out := exportOK(t, a)
+
+	b := NewSandbox(t)
+	gitCfg := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(gitCfg, []byte("[init]\n\tdefaultBranch = master\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	env := []string{"GIT_CONFIG_GLOBAL=" + gitCfg, "GIT_CONFIG_NOSYSTEM=1"}
+	if _, errOut, code := b.FerryEnv(env, "bundle", "import", out); code != 0 {
+		t.Fatalf("import exited %d\n%s", code, errOut)
+	}
+	cfg, err := os.ReadFile(b.ConfigTOMLPath())
+	if err != nil {
+		t.Fatalf("config.toml not written by import: %v", err)
+	}
+	repoPath := extractRepoPath(string(cfg))
+	if repoPath == "" {
+		t.Fatalf("config.toml records no repo path\n%s", cfg)
+	}
+	head, err := exec.Command("git", "-C", repoPath, "symbolic-ref", "--short", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("symbolic-ref HEAD in imported repo: %v", err)
+	}
+	if got := strings.TrimSpace(string(head)); got != "main" {
+		t.Errorf("imported repo HEAD is on %q, want %q — `ferry sync` refuses any other branch", got, "main")
+	}
+}
+
 // TestImportWritesConfig covers AC-import-writes-config (M4): after import,
 // ~/.config/ferry/config.toml exists and records the newly created repo path.
 func TestImportWritesConfig_AC_import_writes_config(t *testing.T) {

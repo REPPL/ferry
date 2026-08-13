@@ -96,8 +96,10 @@ The documentation follows [Diátaxis](https://diataxis.fr/); the map is in
   additionally removes that store (irreversible). A fresh `ferry init` adopts your
   existing `~/.zshrc`, and `apply` refuses to replace a substantial file with an empty or
   blank one without `--force`, so your config is never silently erased.
-- **No admin assumed**: ferry installs to `~/.local/bin` and never requires `sudo` or
-  root, so it works on any account, including locked-down or managed machines. It never
+- **No admin assumed**: ferry installs to `~/.local/bin` and needs no `sudo` or root
+  for its own operation, so it works on any account, including locked-down or managed
+  machines. The one exception is the opt-in `apply --deps` step on apt-based Linux,
+  which delegates to your package manager and must itself run under `sudo`. ferry never
   edits your shell on its own.
 - **Safe with secrets**: ferry never touches `~/.ssh/`. SSH keys and other secrets are
   handled out-of-band and never committed. See [SSH](docs/explanation/ssh.md).

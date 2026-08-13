@@ -17,7 +17,9 @@ the work it deliberately does **not** reimplement:
 | **A package manager** (Homebrew on macOS) | Only for installing declared dependencies via `ferry apply --deps`. ferry never installs the package manager for you: it uses whatever is present and tells you if none is. | `apply --deps` only |
 
 You do **not** need admin/root, and you do not need to pre-install anything ferry
-manages: that's ferry's job. The above are the host tools ferry stands on.
+manages: that's ferry's job. The above are the host tools ferry stands on. (The
+one privileged step is `apply --deps` on apt-based Linux, which delegates to
+`apt-get` and must itself run under `sudo`; Homebrew needs none.)
 
 > **Linux scope.** The core (dotfiles, dependencies, backup/restore) is cross-platform
 > and CI-tested on Linux, as are the config-file terminal emulators (Alacritty, kitty,

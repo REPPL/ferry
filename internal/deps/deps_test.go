@@ -262,6 +262,9 @@ func TestInstallBrew_FailedBeforeSnapshot_RecordsNothing(t *testing.T) {
 	if got := res.RecordedInstalledSet(); len(got) != 0 {
 		t.Errorf("failed before-snapshot must record nothing, got %v", got)
 	}
+	if !res.SnapshotUnreliable {
+		t.Errorf("failed before-snapshot must be flagged SnapshotUnreliable so the caller can tell the user the record was suppressed")
+	}
 }
 
 // snapshotRunner serves a different `brew list` reply before vs after the

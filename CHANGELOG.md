@@ -31,9 +31,74 @@ called out in a **Breaking** section. See
   section verbatim as the release body, with a link to the full CHANGELOG at
   that tag. A version whose section cannot be found still publishes (with an
   empty body) rather than blocking the release.
+- **The release gate proves the version stamp and the published checksums.**
+  The release workflow now runs the built binary and asserts it reports the
+  tag (Go's linker silently drops the `-ldflags` stamp if the version symbol
+  moves, and nothing else would go red), and, after publishing, downloads the
+  release's own assets and verifies every binary against the published
+  `checksums.txt` — the exact pairing `install.sh` depends on, checked on
+  private and public repos alike.
+- **The consistency lint keeps the private working-memory tier untracked.**
+  The `.abcd/.work.local/` ignore rule lives in per-clone git configuration,
+  so a fresh clone has none and `git add -A` would stage a session handoff;
+  the lint (now also run by `make preflight`, so the pre-push hook catches it
+  before anything is published) fails if the tier is ever tracked.
 
 ### Fixed
 
+- **A cargo store under `~/.ssh` is refused.** The `[work] store` path is
+  hand-configured, and every other configurable path ferry writes through — the
+  repo path, `bundle import --out` — is guarded against resolving into `~/.ssh`
+  even when hand-edited. The store was the one exception: `ferry work pack`
+  would create a world-writable directory inside `~/.ssh` and write bundles
+  there. Every work verb now refuses a store that is (or resolves into)
+  `~/.ssh` before reading or writing anything on that path.
+- **`ferry sync` no longer wedges after a capture creates a new repo
+  directory.** `git status` reports a wholly-untracked directory as a single
+  collapsed entry, which the pre-commit secret gate tried to read as a file;
+  the resulting fail-closed abort ("could not read a changed file … is a
+  directory") recurred on every run, with advice a directory can never
+  satisfy, until the user staged the files by hand. The gate now walks a
+  collapsed directory and scans every file inside, exactly as the sync backup
+  pass already did.
+- **`ferry init <path>` naming the configured repo keeps `managed`.** The
+  carry-forward shipped earlier keyed on the no-argument re-run route, so
+  passing the already-configured repo's path positionally (`ferry init .` from
+  inside it) still rewrote `config.toml` without `managed`, leaving
+  `ferry sync` to refuse with no supported way back. The flag now carries when
+  a run wires the same pre-existing repo — and only then: a repo this run
+  clones or seeds starts unmanaged even when it lands on the recorded path, so
+  path equality alone can never mark a repo ferry does not own.
+- **`bundle import` creates the repo on the branch `ferry sync` manages.** The
+  import path ran the same unpinned `git init` that `ferry init` fixed one
+  release earlier, so an imported repo landed on the machine's
+  `init.defaultBranch` (git's own default is `master`) and a later
+  `ferry sync` refused on the branch name. Import now pins HEAD to the managed
+  branch before its initial commit.
+- **`init --github` names the verb that publishes.** The success banner —
+  the flow's final next-step instruction — claimed "`ferry capture` pushes
+  changes; `ferry apply` on another machine pulls them", but capture never
+  commits or pushes and apply never touches the network; a user following it
+  published nothing. It now names `ferry sync` as the publish/pull verb, as
+  does the existing-repo refusal hint.
+- **Drift guidance never points a repo-authoritative domain at `ferry
+  capture`.** `ferry status` steered live-edited terminal-config, key-binding,
+  Emacs, and iTerm2-profile targets at `ferry capture`, which has no pass for
+  any of them (and `apply`/`diff` did the same for iTerm2 profiles — the
+  wording was keyed on a hand-maintained domain list that the newest domain
+  fell out of). The remedy wording is now keyed on the registry's own
+  captures flag, so every no-capture domain gets the repo-source guidance and
+  a future domain cannot fall through.
+- **A suppressed dependency record is reported.** When a `brew list`/`dpkg`
+  snapshot fails, `apply --deps` deliberately records nothing for
+  `restore --packages` (recording a package ferry did not install could
+  uninstall something you already had) — but it printed the same
+  "installed 0 package(s)" as a benign re-run, so the lost record was
+  invisible. The suppression is now stated explicitly.
+- **`ferry doctor`'s synopsis matches its behaviour.** The help text called
+  git, zsh, and a package manager "required tools"; only git is required —
+  zsh and a package manager are recommended and reported `[warn]`, and doctor
+  exits zero without them. The synopsis now says so.
 - **A fresh config repo is created on the branch `ferry sync` manages.** `ferry
   init` ran a bare `git init`, which honours the machine's
   `init.defaultBranch` — git's own default is `master` — while `ferry sync`

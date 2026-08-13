@@ -1117,6 +1117,58 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 		if xy == "D " || xy == " D" || xy == "DD" || xy == "AD" {
 			continue
 		}
+		// A wholly-untracked directory is collapsed to a single `?? dir/` entry at
+		// the default -unormal (the same shape backupOutOfBand walks for backup).
+		// Reading it as a file EISDIRs — which is neither a deletion nor a
+		// not-exist — so without this branch the fail-closed abort below wedges
+		// every sync after a capture creates a new repo subdirectory. Walk it and
+		// gate every regular file inside; symlinks are committed as link targets,
+		// not content, and stay covered by the push-range scan. FAIL CLOSED on a
+		// walk error: a file we cannot enumerate is a file we cannot scan.
+		if strings.HasSuffix(path, "/") {
+			var hit string
+			werr := filepath.Walk(filepath.Join(repo, path), func(p string, info os.FileInfo, werr error) error {
+				if werr != nil {
+					// A path that vanished mid-walk is the same rename/delete
+					// race the single-file branch below tolerates; anything
+					// else stays fail-closed.
+					if os.IsNotExist(werr) {
+						return nil
+					}
+					return werr
+				}
+				if hit != "" || !info.Mode().IsRegular() {
+					return nil
+				}
+				rel, rerr := filepath.Rel(repo, p)
+				if rerr != nil {
+					return rerr
+				}
+				rel = filepath.ToSlash(rel)
+				if secretInPath(rel) {
+					hit = rel
+					return nil
+				}
+				data, rerr := os.ReadFile(p)
+				if rerr != nil {
+					if os.IsNotExist(rerr) {
+						return nil
+					}
+					return rerr
+				}
+				if secret.IsBlockedFromRepo(string(data)) {
+					hit = rel
+				}
+				return nil
+			})
+			if werr != nil {
+				return "", false, fmt.Errorf("could not scan the untracked directory %q: %s", ghcli.Redact(path), ghcli.Redact(werr.Error()))
+			}
+			if hit != "" {
+				return hit, true, nil
+			}
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(repo, path))
 		if err != nil {
 			if os.IsNotExist(err) {

@@ -166,6 +166,13 @@ func runImport(c *cobra.Command, args []string) error {
 	if outStr, gerr := runGitIn(staging, "init"); gerr != nil {
 		return fmt.Errorf("git init failed: %w\n%s", gerr, outStr)
 	}
+	// Pin the branch `ferry sync` manages, exactly as createFreshRepo does: bare
+	// `git init` honours the user's `init.defaultBranch` (git's own default is
+	// `master`), and an imported repo left on another branch makes every later
+	// `ferry sync` refuse on the branch name.
+	if outStr, gerr := runGitIn(staging, "symbolic-ref", "HEAD", "refs/heads/"+syncBranchName); gerr != nil {
+		return fmt.Errorf("git symbolic-ref HEAD refs/heads/%s failed: %w\n%s", syncBranchName, gerr, outStr)
+	}
 	for _, gargs := range [][]string{
 		{"add", "-A"},
 		{"-c", "user.name=ferry", "-c", "user.email=ferry@localhost", "commit", "-m", "ferry import: ingest bundle"},
