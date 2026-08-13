@@ -103,6 +103,42 @@ func TestWorkRoundTrip_AC_work_pack_receive_roundtrip(t *testing.T) {
 	alice.sb.AssertSSHUntouched(t)
 }
 
+// A cargo store under ~/.ssh must be refused before any read or write on that
+// path: `~/.ssh` is untouchable everywhere in ferry, and the store is a
+// configurable, ferry-written directory exactly like the guarded repo path.
+// Covers the direct spelling and a store symlinked into ~/.ssh.
+func TestWorkStoreRefusesSSHStore(t *testing.T) {
+	requireBin(t)
+	placeholder := t.TempDir()
+	alice := newWorkFixture(t, placeholder, "alicebox")
+
+	alice.sb.SSHTripwire(t)
+	sshStore := filepath.Join(alice.sb.Home, ".ssh", "cargo")
+	link := filepath.Join(alice.sb.Home, "cargo-link")
+	if err := os.Symlink(filepath.Join(alice.sb.Home, ".ssh"), link); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, store := range map[string]string{
+		"direct":    sshStore,
+		"symlinked": filepath.Join(link, "cargo"),
+	} {
+		writeWorkConfig(t, alice.sb, store, "alicebox")
+		stdout, stderr, code := alice.sb.Ferry("work", "pack", alice.project)
+		if code == 0 {
+			t.Fatalf("%s: `work pack` with a store under ~/.ssh exited 0 (must refuse)\n%s", name, stdout)
+		}
+		combined := stdout + stderr
+		if !strings.Contains(combined, "never operates under ~/.ssh") {
+			t.Errorf("%s: refusal does not name the ~/.ssh boundary\n%s", name, combined)
+		}
+		if _, err := os.Stat(sshStore); !os.IsNotExist(err) {
+			t.Errorf("%s: `work pack` created the store under ~/.ssh despite refusing (stat err: %v)", name, err)
+		}
+	}
+	alice.sb.AssertSSHUntouched(t)
+}
+
 func TestWorkRestore_AC_work_restore_reverts_receive(t *testing.T) {
 	requireBin(t)
 	store := t.TempDir()
