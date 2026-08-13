@@ -35,6 +35,13 @@ type InstallResult struct {
 	// before/after snapshots — i.e. packages ferry's run installed. Empty when
 	// the diff was unavailable or nothing changed.
 	Installed []string
+	// SnapshotUnreliable is true when a before/after installed-set snapshot
+	// failed, so Installed was deliberately left empty (fail closed: recording
+	// a package ferry did not install would let restore --packages uninstall
+	// something the user already had). The install itself still ran — callers
+	// must tell the user nothing was recorded for restore --packages, since an
+	// empty record is otherwise indistinguishable from a benign no-op re-run.
+	SnapshotUnreliable bool
 }
 
 // RecordedInstalledSet exposes the packages ferry installed this run, sorted.
@@ -129,6 +136,8 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 	// snapshot would otherwise make pre-existing packages look newly installed.
 	if beforeOK && afterOK {
 		res.Installed = diffSets(before, after)
+	} else {
+		res.SnapshotUnreliable = true
 	}
 	return res, nil
 }
@@ -219,6 +228,8 @@ func installApt(m Manifest, runner CommandRunner) (InstallResult, error) {
 	after, afterOK := aptInstalledSet(runner, pkgs)
 	if beforeOK && afterOK {
 		res.Installed = diffSets(before, after)
+	} else {
+		res.SnapshotUnreliable = true
 	}
 	return res, nil
 }

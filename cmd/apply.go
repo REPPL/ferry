@@ -956,10 +956,10 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 // agents and config-file terminals resolve a true divergence at the repo copy
 // (capture refuses a conflict), so they point at updating the repo copy/source.
 func fileConflictMessage(fileDomain string) string {
-	switch fileDomain {
-	case "agents":
+	switch {
+	case fileDomain == "agents":
 		return "CONFLICT: edited live AND in the repo; not overwritten (agents targets are repo-authoritative — update the repo copy, or `ferry apply --force`)"
-	case "terminals", "keybindings", "emacs":
+	case fileDomainIsRepoAuthoritative(fileDomain):
 		return "CONFLICT: local edits AND repo change; not overwritten (update the repo source to match, or `ferry apply --force`)"
 	default:
 		return "CONFLICT: uncaptured local edits; not overwritten (run `ferry capture`, or `ferry apply --force`)"
@@ -973,10 +973,10 @@ func fileConflictMessage(fileDomain string) string {
 // locally-drifted dotfile is a capture candidate that falls through to the
 // generic action line — so this returns "" for them.
 func fileSkippedMessage(fileDomain string) string {
-	switch fileDomain {
-	case "agents":
+	switch {
+	case fileDomain == "agents":
 		return "skipped (edited live; run `ferry capture` to bring it into the repo, or `ferry apply --force` to overwrite)"
-	case "terminals", "keybindings", "emacs":
+	case fileDomainIsRepoAuthoritative(fileDomain):
 		return "skipped (local edits; update the repo source to match, or `ferry apply --force`)"
 	default:
 		return ""
@@ -1007,7 +1007,14 @@ func applyDeps(ctx *cmdContext, out io.Writer) error {
 		if err := persistInstalledSet(installed); err != nil {
 			return fmt.Errorf("record installed packages: %w", err)
 		}
-		fmt.Fprintf(out, "deps: installed %d package(s)\n", len(installed))
+		if result.SnapshotUnreliable {
+			// The suppressed record is fail-closed and deliberate; the silence
+			// would not be — an empty count here reads exactly like a benign
+			// idempotent re-run while `restore --packages` lost this run's record.
+			fmt.Fprintln(out, "deps: install ran, but the installed-set snapshot was unavailable — nothing was recorded for `restore --packages` this run")
+		} else {
+			fmt.Fprintf(out, "deps: installed %d package(s)\n", len(installed))
+		}
 	}
 
 	// npm globals: a SEPARATE, coexisting manager beside brew/apt (NOT another
@@ -1103,8 +1110,8 @@ func printPlan(out io.Writer, plan []planItem) {
 			// locally-drifted / conflict guidance that used to be keyed on the kind —
 			// dotfiles and agents point at `ferry capture` for a plain drift, while
 			// config-file terminals are repo-authoritative (no capture pass).
-			switch it.fileDomain {
-			case "agents":
+			switch {
+			case it.fileDomain == "agents":
 				// A live-edited agents target is a capture candidate; a true conflict
 				// is resolved at the repo copy (capture refuses a divergence).
 				switch it.state {
@@ -1124,7 +1131,7 @@ func printPlan(out io.Writer, plan []planItem) {
 				default:
 					fmt.Fprintf(out, "  %-22s %s\n", it.domain, it.state)
 				}
-			case "terminals", "keybindings", "emacs":
+			case fileDomainIsRepoAuthoritative(it.fileDomain):
 				// A missing referenced secret blocks this terminal target (render-or-SKIP);
 				// surface it, exactly like a blocked dotfile, rather than a state line.
 				// (keybindings carries no secrets, so it.skip is always false there.)
@@ -1132,10 +1139,10 @@ func printPlan(out io.Writer, plan []planItem) {
 					fmt.Fprintf(out, "  %-22s %s (missing secret: %s)\n", it.domain, colour(colYellow, "blocked"), strings.Join(it.missing, ", "))
 					continue
 				}
-				// Config-file terminal targets share the dotfile states but, unlike
-				// dotfiles, capture has NO config-file terminal pass, so a drift/conflict
-				// is NOT a capture candidate: the guidance points at updating the repo
-				// source or `ferry apply --force`, never `ferry capture`.
+				// Repo-authoritative targets (Captures() false) share the dotfile
+				// states but a drift/conflict is NOT a capture candidate: the
+				// guidance points at updating the repo source or
+				// `ferry apply --force`, never `ferry capture`.
 				switch it.state {
 				case dotfile.StateClean:
 					fmt.Fprintf(out, "  %-22s %s (already in sync)\n", it.domain, colour(colGreen, "clean"))

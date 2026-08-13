@@ -107,6 +107,37 @@ func TestNpmGlobalsCaptureWritesSortedNames(t *testing.T) {
 	}
 }
 
+// TestDepsSnapshotFailureIsReported: when a `brew list` snapshot fails, the
+// restore-record is deliberately suppressed (fail closed) — but the user must be
+// TOLD, not shown a misleading "installed 0 package(s)" that is byte-identical
+// to a benign idempotent re-run while `restore --packages` silently lost its
+// record of the run.
+func TestDepsSnapshotFailureIsReported(t *testing.T) {
+	t.Parallel()
+	requireBin(t)
+	s := NewSandbox(t)
+	s.InitGitRepo(t)
+	s.SeedSharedManifest(t, "[manage]\nbrew = true\n")
+	s.WriteRepoFile(t, filepath.Join("deps", brewfileName()), "brew \"a\"\n")
+
+	stub := t.TempDir()
+	// brew: `list` (the snapshot) fails; everything else (bundle) succeeds.
+	writeStub(t, filepath.Join(stub, "brew"),
+		"#!/bin/sh\ncase \"$1\" in list) exit 1 ;; esac\nexit 0\n")
+
+	out, errOut, code := s.FerryEnv([]string{stubPathEnv(stub)}, "apply", "--deps")
+	combined := out + errOut
+	if code != 0 {
+		t.Fatalf("apply --deps exited %d\n%s", code, combined)
+	}
+	if !strings.Contains(combined, "restore --packages") {
+		t.Errorf("failed installed-set snapshot was not surfaced (no `restore --packages` note):\n%s", combined)
+	}
+	if strings.Contains(combined, "installed 0 package(s)") {
+		t.Errorf("misleading `installed 0 package(s)` printed while the record was suppressed:\n%s", combined)
+	}
+}
+
 // TestNpmGlobalsApplyInstallsAlongsideBrew: `apply --deps` reconciles npm globals
 // via `npm i -g` from the committed list AND, because npm globals COEXIST with the
 // OS package manager, brew is driven in the same run (both managers invoked).
