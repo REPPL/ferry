@@ -1129,6 +1129,12 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 			var hit string
 			werr := filepath.Walk(filepath.Join(repo, path), func(p string, info os.FileInfo, werr error) error {
 				if werr != nil {
+					// A path that vanished mid-walk is the same rename/delete
+					// race the single-file branch below tolerates; anything
+					// else stays fail-closed.
+					if os.IsNotExist(werr) {
+						return nil
+					}
 					return werr
 				}
 				if hit != "" || !info.Mode().IsRegular() {
@@ -1145,6 +1151,9 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 				}
 				data, rerr := os.ReadFile(p)
 				if rerr != nil {
+					if os.IsNotExist(rerr) {
+						return nil
+					}
 					return rerr
 				}
 				if secret.IsBlockedFromRepo(string(data)) {

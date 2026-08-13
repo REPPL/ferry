@@ -134,9 +134,12 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 	after, afterOK := brewInstalledSet(runner)
 	// Only record a diff when BOTH snapshots are trustworthy. A failed before
 	// snapshot would otherwise make pre-existing packages look newly installed.
+	// The unreliable-snapshot flag is only meaningful when a bundle actually
+	// ran: with no Brewfile present nothing was installed, so there is no lost
+	// record to warn about.
 	if beforeOK && afterOK {
 		res.Installed = diffSets(before, after)
-	} else {
+	} else if len(bundleFiles) > 0 {
 		res.SnapshotUnreliable = true
 	}
 	return res, nil

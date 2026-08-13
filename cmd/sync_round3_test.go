@@ -176,6 +176,10 @@ func TestScanWorktreeBlocksRealSecretInTerminals(t *testing.T) {
 // new repo subdirectory (agents/, terminals/, ...) — with advice ("re-run once the
 // file is readable") that a directory can never satisfy.
 func TestScanWorktreeWalksUntrackedDirectory(t *testing.T) {
+	// Neutralise user git config: a developer's status.showUntrackedFiles=all
+	// would list per-file entries, never the collapsed `?? dir/` this test pins.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	repo := r3Repo(t)
 	// A wholly-untracked directory holding a clean file: must scan cleanly, not error.
 	cleanFile := filepath.Join(repo, "agents", "claude", "settings.json")

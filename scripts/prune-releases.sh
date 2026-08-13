@@ -57,16 +57,23 @@ ALL="$(gh release list --limit 200 --json tagName,isDraft,isPrerelease \
   | grep -E "$semver_re" || true)"
 
 if [ -z "$ALL" ]; then
+  if [ "$DRY_RUN" -eq 0 ]; then
+    # On a real (post-publish) run the just-created release must be listable, so
+    # an empty listing means the `gh release list` above failed (its non-zero
+    # exit is swallowed by the `|| true` guarding the empty-grep case) — fail
+    # loudly rather than silently skip retention.
+    echo "prune-releases: no semver releases listed, but $CURRENT was just published — the gh listing failed; refusing to treat this as nothing-to-do." >&2
+    exit 1
+  fi
   echo "prune-releases: no semver releases found; nothing to do."
   exit 0
 fi
 
 # Sanity (real prune only): the just-published current release must be IN the
-# listing. If it is not, the `gh release list` above failed or returned a partial
-# page (its non-zero exit is swallowed by the `|| true` guarding the empty-grep
-# case), and pruning against a listing we cannot trust would silently skip
-# retention — fail loudly instead. A --dry-run legitimately runs BEFORE the
-# current release is published (the pre-push rehearsal), so it is exempt.
+# listing. If it is not, the listing is stale or partial, and pruning against a
+# listing we cannot trust would silently skip retention — fail loudly instead.
+# A --dry-run legitimately runs BEFORE the current release is published (the
+# pre-push rehearsal), so it is exempt.
 if [ "$DRY_RUN" -eq 0 ] && ! printf '%s\n' "$ALL" | grep -qxF "$CURRENT"; then
   echo "prune-releases: the current release $CURRENT is missing from the release listing — the listing is stale or the gh call failed; refusing to prune against it." >&2
   exit 1
