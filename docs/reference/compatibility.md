@@ -54,7 +54,8 @@ The versioned files are:
 | `agents-targets.json` | Every `$HOME` destination the agents domain has applied on this machine, so `ferry restore agents` reverts what was actually applied. |
 | `journal/<run>/manifest.json` | One apply run's record of prior states and actions, used to roll back an interrupted run. |
 | `work/<key>.json` | Per-project work-domain state on this machine: the last pack and receive this account performed. |
-| Cargo-store files: `manifest.json`, `claim.*.json`, the handover marker | Written by `ferry work pack` into the configured cargo store and read by `ferry work receive` — often by a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
+| The cargo bundle's `ferry-work.json` manifest and the store's `claim.<account>.json` files | Written by `ferry work pack` into the configured cargo store (the manifest as a member of each `.ferrywork` bundle) and read by `ferry work receive` — often by a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
+| `.abcd/.work.local/.ferry-handover.json` | The project-side handover marker pack records (never a cargo-store file); receive consumes and removes it. |
 
 The immutable **baseline** (ferry's record of true pre-ferry state, which
 `restore` reverses to) is a separate, content-addressed store and is read
@@ -92,7 +93,7 @@ place. An older *complete* run stays in its original form (it is inert — resto
 reverses through the baseline, not the journal), and an older *interrupted* run
 is rolled back and cleared as usual.
 
-Ferry applies **no retention policy** to this state: complete journal runs and
+ferry applies **no retention policy** to this state: complete journal runs and
 restore snapshots accumulate — one directory per mutating run — and nothing
 prunes them. Snapshots back `restore --undo <id>` at any later time, so they are
 deliberately kept; complete journal runs are inert. The all-or-nothing

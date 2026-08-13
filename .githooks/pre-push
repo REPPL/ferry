@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Pre-push gate, run on every clone via the global ~/.githooks dispatcher
-# (core.hooksPath): the CI check job's native steps (build/vet/test/race) must
-# pass before a push leaves this machine. The Linux and macOS behavioural-eval
-# lanes, the security lanes, and the check job's formatting/docs gates stay in
-# Actions (public repo, free runners).
+# (core.hooksPath): the CI check job's native steps (build/vet/test/race) plus
+# the consistency lint must pass before a push leaves this machine — the lint's
+# tracked-private-tier invariant only helps if it runs before publication. The
+# Linux and macOS behavioural-eval lanes, the security lanes, and the check
+# job's formatting/docs gates stay in Actions (public repo, free runners).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 exec make preflight
