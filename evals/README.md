@@ -131,6 +131,7 @@ The remaining eval files, by feature area:
 |---|---|
 | Bundle export/import | `bundle_test.go`, `compat_test.go` (AC-export-*, AC-import-*) |
 | GitHub onboarding (`init --github`) | `github_test.go` (AC-github-*) |
+| Machine-config preservation | `init_preserve_test.go` (`managed` and `[work]` survive init re-runs) |
 | Sync | `sync_test.go`, `sync_hardening_test.go`, `git_test.go`, `git_isolation_test.go` |
 | Work-state ferrying | `work_test.go` (AC-work-*) |
 | Wizard | `wizard_test.go`, `wizard_capture_test.go` |

@@ -12,7 +12,7 @@ ferry has three surfaces a user or an automation depends on:
 |---|---|
 | **CLI** | The commands, subcommands, flags, exit codes, and the machine-relevant wording of their output. |
 | **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](configuration.md) and [the agents domain](../explanation/agents.md) — `[manage]`, `[agents]`, `[terminals]`, and their tables. |
-| **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`): the last-applied store, the agents target record, the backup journal, and the immutable baseline. |
+| **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`) — the last-applied store, the agents target record, the backup journal, the immutable baseline, and the work-domain state — plus the files `ferry work` writes into the configured cargo store, which cross account and machine boundaries. |
 
 ## The pre-1.0 rule
 
@@ -53,6 +53,8 @@ The versioned files are:
 | `dotfile-last-applied.json` | Per managed target, the content hash ferry last wrote — the middle term of the three-way apply comparison — and, from schema version 2, the exact bytes it last deployed (the *last-deployed baseline*), content-addressed by that hash so ferry can reconstruct and diff what it last wrote. |
 | `agents-targets.json` | Every `$HOME` destination the agents domain has applied on this machine, so `ferry restore agents` reverts what was actually applied. |
 | `journal/<run>/manifest.json` | One apply run's record of prior states and actions, used to roll back an interrupted run. |
+| `work/<key>.json` | Per-project work-domain state on this machine: the last pack and receive this account performed. |
+| Cargo-store files: `manifest.json`, `claim.*.json`, the handover marker | Written by `ferry work pack` into the configured cargo store and read by `ferry work receive` — often by a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
 
 The immutable **baseline** (ferry's record of true pre-ferry state, which
 `restore` reverses to) is a separate, content-addressed store and is read
@@ -61,7 +63,11 @@ version-independently; it is not part of this envelope scheme.
 ### Reading an older file
 
 A file with **no `version` field** is the original form that predates versioning
-and reads as **version 1**. A file at a **versioned-but-older** version (for
+and reads as **version 1**. This applies only to the files that ever had a
+pre-versioning form — the last-applied store, the agents target record, and the
+journal manifest. The work-domain files shipped versioned from the start, so for
+them an unversioned or unrecognisable payload is **refused as corrupt, never
+guessed at**. A file at a **versioned-but-older** version (for
 example the last-applied store at version 1, once its current schema is version
 2) is recognised the same way. Migration is **forward-only** and happens **on
 read**, on a mutating command (`apply`, `capture`) — a read-only command
@@ -85,6 +91,12 @@ run is per-apply and short-lived, so an older manifest is never rewritten in
 place. An older *complete* run stays in its original form (it is inert — restore
 reverses through the baseline, not the journal), and an older *interrupted* run
 is rolled back and cleared as usual.
+
+Ferry applies **no retention policy** to this state: complete journal runs and
+restore snapshots accumulate — one directory per mutating run — and nothing
+prunes them. Snapshots back `restore --undo <id>` at any later time, so they are
+deliberately kept; complete journal runs are inert. The all-or-nothing
+`restore --purge-without-recovery` is the one command that clears the store.
 
 ### Reading a newer file
 

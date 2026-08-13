@@ -9,6 +9,14 @@
 # Flags:
 #   --init       after installing, chain `ferry init` (default: do NOT)
 #
+# FERRY_VERSION=vX.Y.Z — install that release instead of the latest. NOTE the
+# placement when piping: the variable must reach bash, not curl —
+#
+#   curl -fsSL https://raw.githubusercontent.com/REPPL/ferry/main/install.sh | FERRY_VERSION=v0.10.0 bash
+#
+# (`FERRY_VERSION=v0.10.0 curl ... | bash` exports it to curl only, and the
+# installer silently installs latest.)
+#
 # INTEGRITY — honest wording: the installer fetches `checksums.txt` from the SAME
 # release it downloads the binary from, looks up this target's SHA256 in it, and
 # verifies the download against that hash. The network path is FAIL-CLOSED — an
