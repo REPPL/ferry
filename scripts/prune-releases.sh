@@ -61,6 +61,17 @@ if [ -z "$ALL" ]; then
   exit 0
 fi
 
+# Sanity (real prune only): the just-published current release must be IN the
+# listing. If it is not, the `gh release list` above failed or returned a partial
+# page (its non-zero exit is swallowed by the `|| true` guarding the empty-grep
+# case), and pruning against a listing we cannot trust would silently skip
+# retention — fail loudly instead. A --dry-run legitimately runs BEFORE the
+# current release is published (the pre-push rehearsal), so it is exempt.
+if [ "$DRY_RUN" -eq 0 ] && ! printf '%s\n' "$ALL" | grep -qxF "$CURRENT"; then
+  echo "prune-releases: the current release $CURRENT is missing from the release listing — the listing is stale or the gh call failed; refusing to prune against it." >&2
+  exit 1
+fi
+
 # keeper_patch <major.minor> — highest patch published in that line (the release to
 # keep). Computed by scanning ALL each time; the release set is tiny (one per line in
 # steady state), so the O(n^2) scan is irrelevant and keeps us array-free/portable.
