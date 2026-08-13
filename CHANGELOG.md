@@ -65,8 +65,10 @@ called out in a **Breaking** section. See
   carry-forward shipped earlier keyed on the no-argument re-run route, so
   passing the already-configured repo's path positionally (`ferry init .` from
   inside it) still rewrote `config.toml` without `managed`, leaving
-  `ferry sync` to refuse with no supported way back. The flag now carries
-  whenever the resolved repo is the same repo, whatever route resolved it.
+  `ferry sync` to refuse with no supported way back. The flag now carries when
+  a run wires the same pre-existing repo — and only then: a repo this run
+  clones or seeds starts unmanaged even when it lands on the recorded path, so
+  path equality alone can never mark a repo ferry does not own.
 - **`bundle import` creates the repo on the branch `ferry sync` manages.** The
   import path ran the same unpinned `git init` that `ferry init` fixed one
   release earlier, so an imported repo landed on the machine's
@@ -93,6 +95,10 @@ called out in a **Breaking** section. See
   uninstall something you already had) — but it printed the same
   "installed 0 package(s)" as a benign re-run, so the lost record was
   invisible. The suppression is now stated explicitly.
+- **`ferry doctor`'s synopsis matches its behaviour.** The help text called
+  git, zsh, and a package manager "required tools"; only git is required —
+  zsh and a package manager are recommended and reported `[warn]`, and doctor
+  exits zero without them. The synopsis now says so.
 - **A fresh config repo is created on the branch `ferry sync` manages.** `ferry
   init` ran a bare `git init`, which honours the machine's
   `init.defaultBranch` — git's own default is `master` — while `ferry sync`

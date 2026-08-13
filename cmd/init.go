@@ -143,9 +143,16 @@ func runInit(c *cobra.Command, args []string) error {
 	// that repo's ferry-owned remote, so it carries forward only then — a fresh or
 	// newly-cloned repo starts unmanaged until `init --github` flips it.
 	var reusedConfiguredRepo bool
+	// Set only when a positional source WIRED a repo that existed before this
+	// run (cloneExisting's existing-worktree branch): the one other route that
+	// can legitimately re-declare the managed repo. A clone or fresh seed
+	// CREATES its repo, so whatever path it lands on — including the recorded
+	// default after the old repo was deleted — it is a different repo and must
+	// start unmanaged.
+	var wiredExisting bool
 	switch {
 	case source != "" && !fresh:
-		repoPath, err = cloneExisting(out, source)
+		repoPath, wiredExisting, err = cloneExisting(out, source)
 	case !fresh:
 		if existing, ok := existingConfiguredRepo(); ok {
 			// Guard the configured repo path BEFORE runInit reads/writes it via
@@ -190,9 +197,11 @@ func runInit(c *cobra.Command, args []string) error {
 	// `managed` is keyed to the REPO's identity, not to the route that resolved
 	// it: a positional source naming the already-configured repo (e.g.
 	// `ferry init .` from inside it) reuses that repo just as the no-arg re-run
-	// does, so the flag carries forward for both. A different repo never
-	// inherits it — it has no ferry-owned remote.
-	if prior, ok := priorMachineConfig(); ok && (reusedConfiguredRepo || sameRepoPath(repoPath, prior.Repo)) {
+	// does, so the flag carries forward for both. The wiredExisting gate is
+	// load-bearing: a clone or fresh seed can land on the recorded PATH (the
+	// default repo dir, after the old repo was deleted) while being a different
+	// repo — path equality alone must never resurrect `managed` there.
+	if prior, ok := priorMachineConfig(); ok && (reusedConfiguredRepo || (wiredExisting && sameRepoPath(repoPath, prior.Repo))) {
 		mc.Managed = prior.Managed
 	}
 	if err := config.SaveMachineConfig(mc); err != nil {
@@ -230,26 +239,30 @@ func runInit(c *cobra.Command, args []string) error {
 //
 // Cloning a remote uses whatever scheme git is handed (HTTPS for a public repo), so
 // no SSH key is read or required for an HTTPS/file source.
-func cloneExisting(out io.Writer, source string) (string, error) {
+func cloneExisting(out io.Writer, source string) (path string, wiredExisting bool, err error) {
 	// Enforce the clone contract BEFORE the clone-vs-wire decision so git never
 	// receives a remote outside it: ferry clones over HTTPS only (plus a local
 	// path / file:// for the offline-fresh path) and is hands-off ~/.ssh. An
 	// ssh:// URL or an scp-style git@host:repo remote would have git read SSH key
 	// material; git:// is insecure; http:// is not HTTPS — all out of scope.
 	if err := checkCloneSource(source); err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if !hasURLScheme(source) {
 		// Guard the local SOURCE path BEFORE isGitWorkTree runs git -C on it, so a
 		// local repo/clone path under ~/.ssh is rejected without any read there.
 		if err := rejectIfUnderSSH("clone source", source); err != nil {
-			return "", err
+			return "", false, err
 		}
-		if abs, err := filepath.Abs(source); err == nil {
+		if abs, aerr := filepath.Abs(source); aerr == nil {
 			if isGitWorkTree(abs) {
+				// The ONLY route that wires a repo which existed before this
+				// run: eligible to keep a prior `managed` when it is the same
+				// repo. A clone or seed below CREATES the repo, so it can
+				// never be the managed one, whatever path it lands on.
 				fmt.Fprintf(out, "using existing config repo at %s\n", abs)
-				return abs, nil
+				return abs, true, nil
 			}
 		}
 	}
@@ -258,14 +271,14 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	// $HOME folder taxonomy.
 	dest, err := defaultRepoDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	// Harden the config dir chain (mirrors HardenStoreDir on the rest of ~/.config/ferry):
 	// a symlinked ~/.config component must refuse before any MkdirAll/git clone writes
 	// a tree through it.
 	if err := hardenConfigDirForRepo(dest); err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	// Guard the clone DESTINATION BEFORE freeCloneDest (which ReadDirs dest and
@@ -273,7 +286,7 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	// any ReadDir reads through it. Even with an https:// source, git clone must
 	// never write a tree under ~/.ssh.
 	if _, err := guardRepoPath("clone destination", dest); err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	// If the default destination is already a non-empty directory, fall back to a
@@ -283,11 +296,11 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	// Re-guard the final chosen path: freeCloneDest may pick a "-N" sibling, so
 	// the symlink-aware check must clear the exact path git clone will write to.
 	if _, err := guardRepoPath("clone destination", dest); err != nil {
-		return "", err
+		return "", false, err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-		return "", fmt.Errorf("prepare clone destination: %w", err)
+		return "", false, fmt.Errorf("prepare clone destination: %w", err)
 	}
 
 	fmt.Fprintf(out, "cloning %s -> %s\n", source, dest)
@@ -298,9 +311,9 @@ func cloneExisting(out io.Writer, source string) (string, error) {
 	// front). The resulting working tree (NOT bare) is what we record. We
 	// deliberately do not touch ~/.ssh: an HTTPS/file clone needs no SSH material.
 	if cloneOut, err := runHardenedGit("clone", "--", source, dest); err != nil {
-		return "", fmt.Errorf("could not clone the config repo from %s: %w — check the URL is correct and reachable over HTTPS (ferry does not use SSH)\n%s", source, err, ghcli.Redact(strings.TrimSpace(cloneOut)))
+		return "", false, fmt.Errorf("could not clone the config repo from %s: %w — check the URL is correct and reachable over HTTPS (ferry does not use SSH)\n%s", source, err, ghcli.Redact(strings.TrimSpace(cloneOut)))
 	}
-	return dest, nil
+	return dest, false, nil
 }
 
 // initFresh sets up a NEW config repo on the fresh path. It builds ONE

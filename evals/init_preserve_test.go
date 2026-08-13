@@ -126,6 +126,45 @@ func TestInitSameRepoPositionalPreservesManaged(t *testing.T) {
 	}
 }
 
+// MAJOR (security direction): `managed` must never be resurrected onto a repo
+// CREATED this run, even when it lands on the recorded path. After the managed
+// repo is deleted — the exact step `init --github`'s refusal hint instructs — a
+// re-init recreates a repo at the same default path; carrying `managed` there
+// would let `ferry sync` push to a remote ferry never created, skipping the
+// gate that otherwise requires --allow-unmanaged.
+func TestInitRecreatedRepoDoesNotResurrectManaged(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH: fresh init needs git")
+	}
+	s := NewSandbox(t)
+	if _, errOut, code := s.FerryWithInput("", "init"); code != 0 {
+		t.Fatalf("first init exited %d\n%s", code, errOut)
+	}
+	store := s.HomePath("cargo")
+	seedManagedAndWork(t, s, store)
+
+	repo := s.HomePath(".config/ferry/repo")
+	if err := os.RemoveAll(repo); err != nil {
+		t.Fatal(err)
+	}
+	// The fresh route re-seeds a brand-new repo at the same recorded path.
+	if _, errOut, code := s.FerryWithInput("", "init"); code != 0 {
+		t.Fatalf("re-init after repo removal exited %d\n%s", code, errOut)
+	}
+	after, err := os.ReadFile(s.ConfigTOMLPath())
+	if err != nil {
+		t.Fatalf("config.toml missing after re-init: %v", err)
+	}
+	got := string(after)
+	if strings.Contains(got, "managed = true") {
+		t.Errorf("a repo CREATED by this run inherited `managed` by path equality — `ferry sync` would push unmanaged content without --allow-unmanaged:\n%s", got)
+	}
+	if !strings.Contains(got, "[work]") || !strings.Contains(got, store) {
+		t.Errorf("re-init dropped the machine-scoped [work] cargo store:\n%s", got)
+	}
+}
+
 // A fresh init on a machine that has a cargo store but NO configured repo still
 // keeps [work]: the table is machine state, independent of which repo is set up.
 func TestInitFreshPreservesWorkTable(t *testing.T) {
