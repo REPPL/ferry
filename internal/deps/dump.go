@@ -58,17 +58,20 @@ func reDump(m Manifest, runner CommandRunner) (string, bool, error) {
 			return "", false, fmt.Errorf("deps: create deps dir for %s: %w", m.Shared, err)
 		}
 		// brew writes the file itself, so change detection is a before/after byte
-		// compare. Either read tolerates a missing file as nil bytes: a fresh dump
-		// over no manifest compares nil-vs-content (changed), and an unreadable
-		// after-file compares equal (unchanged) rather than failing a dump brew
-		// itself reported as successful. The symlink guard above already refused a
-		// non-regular target.
+		// compare plus an existence check: a dump that CREATES the manifest is a
+		// change even when both reads yield empty bytes (a machine with zero
+		// formulae dumps an empty file, and nil-vs-empty compares equal). Reads
+		// tolerate errors as nil bytes — a dump brew itself reported successful is
+		// never failed here, at worst it is miscounted for the summary. The
+		// symlink guard above already refused a non-regular target.
+		_, statErr := os.Lstat(m.Shared)
+		existedBefore := statErr == nil
 		before, _ := os.ReadFile(m.Shared)
 		if out, err := runner.Run(brewBin, "bundle", "dump", "--force", "--file="+m.Shared); err != nil {
 			return "", false, fmt.Errorf("deps: brew bundle dump --file=%s: %w (%s)", m.Shared, err, strings.TrimSpace(out))
 		}
 		after, _ := os.ReadFile(m.Shared)
-		return m.Shared, !bytes.Equal(before, after), nil
+		return m.Shared, !existedBefore || !bytes.Equal(before, after), nil
 	case platform.ManagerApt:
 		return "", false, fmt.Errorf("deps: apt has no clean installed-set dump; %s stays hand-curated (capture is brew-only)", m.Shared)
 	default:

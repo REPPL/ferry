@@ -745,6 +745,17 @@ func TestReDump_Brew_ChangeDetection(t *testing.T) {
 	} else if !changed {
 		t.Errorf("drifted dump must report changed=true")
 	}
+
+	// A dump that CREATES an empty manifest (zero formulae installed) is still a
+	// change — nil-vs-empty byte compares equal, so the existence check must
+	// carry it.
+	m2 := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin",
+		Shared: filepath.Join(dir, "deps2", "Brewfile.darwin")}
+	if _, changed, err := reDump(m2, &brewWritingRunner{body: ""}); err != nil {
+		t.Fatalf("reDump empty-fresh: %v", err)
+	} else if !changed {
+		t.Errorf("creating an empty manifest must report changed=true")
+	}
 }
 
 func TestReDump_NoManager_Reports(t *testing.T) {

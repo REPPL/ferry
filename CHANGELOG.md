@@ -383,7 +383,8 @@ called out in a **Breaking** section. See
   empty `git status`, and "nothing has drifted" was unreachable on any machine
   managing either domain. Both re-dumps now compare bytes and count only real
   changes; the npm list is also written crash-safely (temp + rename) instead
-  of truncate-in-place, and is left untouched when it already matches.
+  of truncate-in-place — normalising its mode to 0644 — and is left untouched
+  when it already matches.
 - **A captured-to-local terminal domain reads as clean.** Capture compared the
   live iTerm2/Apple Terminal export only against the shared repo plist, while
   `apply`, `status`, and `diff` all resolve the per-machine local overlay
@@ -393,16 +394,19 @@ called out in a **Breaking** section. See
   `status` reported it clean. Capture now compares against the same
   local-wins source the other commands use.
 - **Failed dependency installs name the failure.** The brew/apt/npm install
-  and dump rails discarded the package manager's combined output on error, so
-  a failed `apply --deps` aborted with a bare `exit status 1` and no way to
-  tell which package or tap failed. The manager's own diagnostics now ride the
-  error, as the uninstall rail's errors already did.
+  and dump rails — including the read-only drift dump behind `ferry status` —
+  discarded the package manager's combined output on error, so a failed
+  `apply --deps` aborted with a bare `exit status 1` and no way to tell which
+  package or tap failed. The manager's own diagnostics now ride the error, as
+  the uninstall rail's errors already did.
 - **Pre-receive snapshots are containment-guarded.** The work domain's
   per-receive snapshot read its target paths before any guard ran, so a parent
   directory symlinked out of `$HOME` let the snapshot read and persist
   out-of-home content into ferry's snapshot store — content the write boundary
   downstream refuses to touch. The snapshot now runs the same resolved-parent
-  containment guard as restore, refusing before anything is read or written.
+  containment guard as restore, refusing before anything is read or written —
+  so a refused `work receive` now aborts up front, where it previously aborted
+  at the write boundary after earlier items had already landed.
 - **The release version-stamp gate is an exact compare.** Both the release
   workflow and `scripts/release.sh` checked the built binary's reported
   version with a substring match; the development line is the next release

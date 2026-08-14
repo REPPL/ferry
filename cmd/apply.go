@@ -55,8 +55,9 @@ const (
 // resolved, secret-rendered content so diff and apply share identical planning.
 type planItem struct {
 	kind planKind
-	// fileDomain is the owning FileDomain's scope name ("dotfiles", "agents",
-	// "terminals") for a kindFile item. It selects the per-domain report wording
+	// fileDomain is the owning FileDomain's scope name (a registry name:
+	// "dotfiles", "agents", "terminals", "keybindings", "emacs",
+	// "iterm2-profiles") for a kindFile item. It selects the per-domain report wording
 	// (capture guidance vs repo-authoritative vs repo-source) and the
 	// agents-target recording that used to be keyed on the collapsed kinds. Empty
 	// for kindPreference.
@@ -221,8 +222,8 @@ func buildPlanWithEngine(ctx *cmdContext, eng *backup.Engine) (items []planItem,
 
 	// FileDomain fan-out (fn-5): plan each in-scope FileDomain through the
 	// converged registry, in the registry's LOAD-BEARING order (dotfiles, agents,
-	// terminals), so item AND warning ORDERING matches the pre-fn-5 dispatch
-	// byte-for-byte. Each managed domain's rich planItems — secrets rendered,
+	// terminals, keybindings, emacs, iterm2-profiles), so item AND warning
+	// ORDERING matches the pre-fn-5 dispatch byte-for-byte. Each managed domain's rich planItems — secrets rendered,
 	// three-way state classified, risk assessed — is produced by its per-domain
 	// planner via the filePlanner upcast (the frozen domains.FileItem cannot carry
 	// state/skip/risk). An out-of-scope domain emits its own de-scope warnings

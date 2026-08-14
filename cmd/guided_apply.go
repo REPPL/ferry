@@ -280,9 +280,11 @@ func groupRisky(risky []planItem) []riskyGroup {
 	for _, it := range risky {
 		name := it.fileDomain
 		if name == "" {
+			// Non-FileDomain items (terminal preference domains) carry no
+			// fileDomain; they keep their pre-existing dotfiles-bucket home.
 			name = "dotfiles"
 		}
-		if _, seen := byDomain[name]; !seen && !slices.Contains(order, name) {
+		if !slices.Contains(order, name) {
 			order = append(order, name)
 		}
 		byDomain[name] = append(byDomain[name], it)

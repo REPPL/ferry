@@ -1069,11 +1069,13 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 
 	// Only offer when the live export actually DIFFERS from the bytes apply would
 	// deploy (don't offer a no-op). Compare against the LOCAL-WINS source exactly
-	// as apply and status resolve it (terminalRepoStatusSource): a domain captured
-	// to the [l]ocal overlay must read as clean on the next run — comparing only
-	// the shared copy re-offered an already-captured domain forever, while status
-	// reported it clean. An absent repo copy is itself a difference (capture would
-	// create it).
+	// as status resolves it (terminalRepoStatusSource, which closely mirrors
+	// apply's terminalExportBlob — apply additionally accepts an extensionless
+	// overlay and fails closed on a poisoned one): a domain captured to the
+	// [l]ocal overlay must read as clean on the next run — comparing only the
+	// shared copy re-offered an already-captured domain forever, while status
+	// reported it clean. An absent repo copy is itself a difference (capture
+	// would create it).
 	compareSrc := terminalRepoStatusSource(cc.repoPath, domain, prefID)
 	if _, err := safeRepoPath(cc.repoPath, compareSrc); err != nil {
 		return false, false, err

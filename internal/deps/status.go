@@ -74,7 +74,7 @@ func brewDrift(m Manifest, runner CommandRunner) (Drift, bool, error) {
 	// rather than through the fail-closed install allow-list.
 	out, err := runner.Run(brewBin, "bundle", "dump", "--file=-")
 	if err != nil {
-		return Drift{}, true, fmt.Errorf("deps: brew bundle dump --file=-: %w", err)
+		return Drift{}, true, fmt.Errorf("deps: brew bundle dump --file=-: %w (%s)", err, strings.TrimSpace(out))
 	}
 	liveKeys := brewKeySetLenient(out)
 
