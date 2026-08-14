@@ -369,6 +369,60 @@ called out in a **Breaking** section. See
   cannot bring a force-overwritten live edit back. The guidance now names
   `ferry capture` first, as `status` and `apply` already do, and states plainly
   what `--force` discards.
+- **Guided apply names the domain it asks consent for.** The interactive
+  walkthrough grouped risky changes by a hand-maintained two-name list, so
+  keybindings, emacs, and iTerm2 Dynamic Profile changes fell into the
+  `dotfiles` bucket: the group header and the bulk "Apply all N change(s) in
+  dotfiles?" prompt named a domain the user was not reviewing, and one "yes"
+  covered the mixed bucket. Every domain now gets its own group under its own
+  name, in registry order.
+- **`ferry capture` reports deps drift truthfully.** The Homebrew and npm
+  manifest re-dumps counted every successful dump as a captured change —
+  `brew bundle dump --force` rewrites unconditionally — so a clean re-run
+  printed "wrote 1 change(s) into the repo. Review with `git status`…" over an
+  empty `git status`, and "nothing has drifted" was unreachable on any machine
+  managing either domain. Both re-dumps now compare bytes and count only real
+  changes; the npm list is also written crash-safely (temp + rename) instead
+  of truncate-in-place — normalising its mode to 0644 — and is left untouched
+  when it already matches.
+- **A captured-to-local terminal domain reads as clean.** Capture compared the
+  live iTerm2/Apple Terminal export only against the shared repo plist, while
+  `apply`, `status`, and `diff` all resolve the per-machine local overlay
+  first. After routing a terminal capture to `[l]ocal`, every later capture
+  re-offered the identical domain as drifted (and re-accepting it as shared
+  would promote machine-divergent settings into the shared repo) while
+  `status` reported it clean. Capture now compares against the same
+  local-wins source the other commands use.
+- **Failed dependency installs name the failure.** The brew/apt/npm install
+  and dump rails — including the read-only drift dump behind `ferry status` —
+  discarded the package manager's combined output on error, so a failed
+  `apply --deps` aborted with a bare `exit status 1` and no way to tell which
+  package or tap failed. The manager's own diagnostics now ride the error, as
+  the uninstall rail's errors already did.
+- **Pre-receive snapshots are containment-guarded.** The work domain's
+  per-receive snapshot read its target paths before any guard ran, so a parent
+  directory symlinked out of `$HOME` let the snapshot read and persist
+  out-of-home content into ferry's snapshot store — content the write boundary
+  downstream refuses to touch. The snapshot now runs the same resolved-parent
+  containment guard as restore, refusing before anything is read or written —
+  so a refused `work receive` now aborts up front, where it previously aborted
+  at the write boundary after earlier items had already landed.
+- **The release version-stamp gate is an exact compare.** Both the release
+  workflow and `scripts/release.sh` checked the built binary's reported
+  version with a substring match; the development line is the next release
+  plus `-dev` (`v0.11.0-dev` contains `v0.11.0`), so an unstamped binary
+  passed the gate on exactly the modal release it guards. Both now require
+  the output to equal `ferry <tag>` verbatim.
+- **Docs corrections.** The "one privileged step" claim in the README and
+  tutorial now covers both halves of the apt rail — `restore --packages`
+  uninstalls as root exactly as `apply --deps` installs — and the apt
+  reference section says so; the compatibility contract states that claim
+  files are written by pack, receive, and take-back alike (each account only
+  its own), not by pack alone; the commands reference gains the missing
+  `agents` parent-noun row; `make preflight` appears in the build-and-check
+  lists; and the consistency lint's private-tier advice now says committed
+  history must be amended, since `git rm --cached` alone greens the gate
+  while the push still publishes the file.
 
 ## [0.10.0] - 2026-07-19
 

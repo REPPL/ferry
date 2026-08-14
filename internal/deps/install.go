@@ -126,8 +126,8 @@ func installBrew(m Manifest, runner CommandRunner) (InstallResult, error) {
 	// layered after shared). brew bundle is idempotent: already-present formulae
 	// are left alone, so re-running is safe.
 	for _, file := range bundleFiles {
-		if _, err := runner.Run(brewBin, "bundle", "--file="+file); err != nil {
-			return res, fmt.Errorf("deps: brew bundle --file=%s: %w", file, err)
+		if out, err := runner.Run(brewBin, "bundle", "--file="+file); err != nil {
+			return res, fmt.Errorf("deps: brew bundle --file=%s: %w (%s)", file, err, strings.TrimSpace(out))
 		}
 	}
 
@@ -224,8 +224,8 @@ func installApt(m Manifest, runner CommandRunner) (InstallResult, error) {
 	// `-oDPkg::Pre-Invoke::=touch /tmp/x` from being read as an apt option and
 	// executed as root under `sudo ferry apply --deps`.
 	args := append([]string{aptGetBin, "install", "-y", "--"}, pkgs...)
-	if _, err := runner.Run(args...); err != nil {
-		return res, fmt.Errorf("deps: %s: %w", joinArgs(args), err)
+	if out, err := runner.Run(args...); err != nil {
+		return res, fmt.Errorf("deps: %s: %w (%s)", joinArgs(args), err, strings.TrimSpace(out))
 	}
 
 	after, afterOK := aptInstalledSet(runner, pkgs)

@@ -1,6 +1,7 @@
 package deps
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/REPPL/ferry/internal/backup"
 )
 
 // npmBin is the npm executable name, resolved through PATH by the runner (npm is
@@ -75,26 +78,32 @@ func DumpNpmGlobals(runner CommandRunner) ([]string, error) {
 // npm analogue of ReDumpManifest for brew: capture calls it. The target is
 // symlink-guarded BEFORE the write (ferry only writes regular files under deps/,
 // so a symlinked npm-globals.txt or a symlinked deps/ directory is refused, never
-// written through). Returns the absolute path written.
-func ReDumpNpmGlobals(depsDir string, runner CommandRunner) (string, error) {
+// written through). Returns the absolute path plus whether the list's bytes
+// changed; an already-matching manifest is left untouched so capture's summary
+// never counts a clean re-dump as a captured change.
+func ReDumpNpmGlobals(depsDir string, runner CommandRunner) (string, bool, error) {
 	if depsDir == "" {
-		return "", fmt.Errorf("deps: empty deps directory")
+		return "", false, fmt.Errorf("deps: empty deps directory")
 	}
 	names, err := DumpNpmGlobals(runner)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	target := NpmGlobalsFile(depsDir)
 	if err := refuseSymlinkTarget(target); err != nil {
-		return "", err
+		return "", false, err
+	}
+	rendered := []byte(renderNpmGlobals(names))
+	if existing, err := os.ReadFile(target); err == nil && bytes.Equal(existing, rendered) {
+		return target, false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", fmt.Errorf("deps: create deps dir for %s: %w", target, err)
+		return "", false, fmt.Errorf("deps: create deps dir for %s: %w", target, err)
 	}
-	if err := os.WriteFile(target, []byte(renderNpmGlobals(names)), 0o644); err != nil {
-		return "", fmt.Errorf("deps: write %s: %w", target, err)
+	if err := backup.AtomicWrite(target, rendered, 0o644); err != nil {
+		return "", false, fmt.Errorf("deps: write %s: %w", target, err)
 	}
-	return target, nil
+	return target, true, nil
 }
 
 // renderNpmGlobals renders names as a deterministic file body: one name per line,
@@ -178,8 +187,8 @@ func InstallNpmGlobals(depsDir string, runner CommandRunner) ([]string, error) {
 		return nil, nil
 	}
 	args := append([]string{npmBin, "i", "-g", "--"}, names...)
-	if _, err := runner.Run(args...); err != nil {
-		return nil, fmt.Errorf("deps: %s: %w", joinArgs(args), err)
+	if out, err := runner.Run(args...); err != nil {
+		return nil, fmt.Errorf("deps: %s: %w (%s)", joinArgs(args), err, strings.TrimSpace(out))
 	}
 	return names, nil
 }

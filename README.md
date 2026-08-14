@@ -98,8 +98,9 @@ The documentation follows [Diátaxis](https://diataxis.fr/); the map is in
   blank one without `--force`, so your config is never silently erased.
 - **No admin assumed**: ferry installs to `~/.local/bin` and needs no `sudo` or root
   for its own operation, so it works on any account, including locked-down or managed
-  machines. The one exception is the opt-in `apply --deps` step on apt-based Linux,
-  which delegates to your package manager and must itself run under `sudo`. ferry never
-  edits your shell on its own.
+  machines. The one exception is the opt-in apt rail on Debian-style Linux — `apply
+  --deps` (installs) and `restore --packages` (uninstalls what `--deps` recorded) —
+  which delegates to your package manager and must itself run under `sudo`. ferry
+  never edits your shell on its own.
 - **Safe with secrets**: ferry never touches `~/.ssh/`. SSH keys and other secrets are
   handled out-of-band and never committed. See [SSH](docs/explanation/ssh.md).

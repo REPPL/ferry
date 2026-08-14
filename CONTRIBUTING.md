@@ -13,6 +13,7 @@ make build          # cross-compiles bin/ferry-<goos>-<arch> (there is no plain 
 gofmt -l .          # format gate: any output names a file needing `gofmt -w`
 go vet ./...        # static checks
 go test ./...       # full unit + eval suite (evals skip when FERRY_BIN is unset)
+make preflight      # the pre-push gate: build, vet, unit + race tests, consistency lint
 ```
 
 The eval suite drives the real binary, so it needs `FERRY_BIN` pointing at this

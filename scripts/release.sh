@@ -154,8 +154,11 @@ main() {
   [ -x "$bin" ] || die "expected built binary $bin is missing"
   local reported
   reported="$("$bin" version)"
-  if ! printf '%s' "$reported" | grep -qF "$VERSION"; then
-    die "built binary reports '$reported', not '$VERSION'"
+  # Exact compare: the dev line is the next release plus -dev, so an unstamped
+  # binary's "ferry vX.Y.Z-dev" CONTAINS vX.Y.Z and a substring match would pass
+  # on exactly the stamp failure this gate exists to catch.
+  if [ "$reported" != "ferry $VERSION" ]; then
+    die "built binary reports '$reported', not 'ferry $VERSION'"
   fi
   echo "release: rehearsal — $bin reports: $reported"
 

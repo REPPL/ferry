@@ -18,6 +18,7 @@ go vet ./...        # static checks
 go test ./...       # full unit + eval suite (evals skip when FERRY_BIN is unset)
 go test ./internal/agents/                     # a single package
 go test -run TestResolve ./internal/agents/    # a single test
+make preflight      # the pre-push gate: build, vet, unit + race tests, consistency lint
 ```
 
 The evals drive the real binary, so they need `FERRY_BIN` pointing at this

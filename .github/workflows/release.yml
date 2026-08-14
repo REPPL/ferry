@@ -334,12 +334,15 @@ jobs:
         # version — with valid checksums and provenance over the wrong artifact —
         # and nothing else in this workflow would go red. Same assertion as the
         # recovery driver (scripts/release.sh); the runner is x64 Linux, so the
-        # linux-amd64 binary is directly executable.
+        # linux-amd64 binary is directly executable. The compare is EXACT, not a
+        # substring: the dev line is the next release plus -dev (v0.11.0-dev), so
+        # an unstamped binary's output CONTAINS the very tag being released and a
+        # substring match would green on exactly the failure this step guards.
         run: |
           set -euo pipefail
           reported="$(./bin/ferry-linux-amd64 version)"
-          if ! printf '%s' "$reported" | grep -qF "$TAG"; then
-            echo "release: built binary reports '$reported', not '$TAG' — the version stamp is broken" >&2
+          if [ "$reported" != "ferry $TAG" ]; then
+            echo "release: built binary reports '$reported', not 'ferry $TAG' — the version stamp is broken" >&2
             exit 1
           fi
 

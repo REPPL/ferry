@@ -214,7 +214,10 @@ func runCapture(c *cobra.Command, _ []string) error {
 	// ran only after a non-deps change was accepted, so a deps-only machine reported
 	// "nothing has drifted" and never re-dumped.) reDumpDeps reports the file it
 	// wrote and counts as both an offered AND a captured change so the summary below
-	// reflects it. A missing/out-of-scope manager is a clean skip (no offer).
+	// reflects it — but ONLY when the dump actually changed the manifest's bytes:
+	// `brew bundle dump --force` rewrites unconditionally, so counting every
+	// successful dump made a clean re-run claim "wrote 1 change(s)" over an empty
+	// `git status`. A missing/out-of-scope manager is a clean skip (no offer).
 	if reDumpDeps(ctx, out) {
 		offered++
 		captured++
@@ -1064,10 +1067,20 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 		return false, false, err
 	}
 
-	// Only offer when the live export actually DIFFERS from the committed repo copy
-	// (don't offer a no-op). An absent repo copy is itself a difference (capture
+	// Only offer when the live export actually DIFFERS from the bytes apply would
+	// deploy (don't offer a no-op). Compare against the LOCAL-WINS source exactly
+	// as status resolves it (terminalRepoStatusSource, which closely mirrors
+	// apply's terminalExportBlob — apply additionally accepts an extensionless
+	// overlay and fails closed on a poisoned one): a domain captured to the
+	// [l]ocal overlay must read as clean on the next run — comparing only the
+	// shared copy re-offered an already-captured domain forever, while status
+	// reported it clean. An absent repo copy is itself a difference (capture
 	// would create it).
-	repoBytes, _ := os.ReadFile(repoDest)
+	compareSrc := terminalRepoStatusSource(cc.repoPath, domain, prefID)
+	if _, err := safeRepoPath(cc.repoPath, compareSrc); err != nil {
+		return false, false, err
+	}
+	repoBytes, _ := os.ReadFile(compareSrc)
 	if domain == "iterm2" {
 		// Compare LIKE-FOR-LIKE: filter the repo side to the same allowlist so a repo
 		// plist that happens to carry stale volatile keys never registers as drift.
@@ -1516,10 +1529,15 @@ func reDumpDeps(ctx *cmdContext, out io.Writer) bool {
 		fmt.Fprintf(out, "deps: skipped manifest re-dump (%v)\n", err)
 		return false
 	}
-	path, err := deps.ReDumpManifest(depsDir, deps.ExecRunner{})
+	path, changed, err := deps.ReDumpManifest(depsDir, deps.ExecRunner{})
 	if err != nil {
 		// No manager / unsupported dump: report briefly, never fail capture.
 		fmt.Fprintf(out, "deps: skipped manifest re-dump (%v)\n", err)
+		return false
+	}
+	if !changed {
+		// The dump ran but produced the bytes already committed: no drift, so
+		// nothing is counted and the summary can truthfully say nothing changed.
 		return false
 	}
 	fmt.Fprintf(out, "deps: re-dumped manifest %s\n", relTo(ctx.RepoPath, path))
@@ -1550,9 +1568,13 @@ func reDumpNpmGlobals(ctx *cmdContext, out io.Writer) bool {
 		fmt.Fprintf(out, "npm-globals: skipped manifest re-dump (%v)\n", err)
 		return false
 	}
-	path, err := deps.ReDumpNpmGlobals(depsDir, deps.ExecRunner{})
+	path, changed, err := deps.ReDumpNpmGlobals(depsDir, deps.ExecRunner{})
 	if err != nil {
 		fmt.Fprintf(out, "npm-globals: skipped manifest re-dump (%v)\n", err)
+		return false
+	}
+	if !changed {
+		// Committed list already matches this machine: no drift, nothing counted.
 		return false
 	}
 	fmt.Fprintf(out, "npm-globals: re-dumped %s\n", relTo(ctx.RepoPath, path))

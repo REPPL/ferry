@@ -1,9 +1,11 @@
 package deps
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/REPPL/ferry/internal/platform"
 )
@@ -19,11 +21,15 @@ import (
 //     unsupported rather than guessing — the shared apt.txt stays hand-curated.
 //   - none: ErrNoPackageManager (the caller reports it; never bootstraps a PM).
 //
-// Returns the absolute path of the file that was (re)written.
-func ReDumpManifest(depsDir string, runner CommandRunner) (string, error) {
+// Returns the absolute path of the file that was (re)written, plus whether the
+// dump actually CHANGED its bytes — `brew bundle dump --force` truncates and
+// rewrites unconditionally, so without the before/after compare a clean
+// re-dump would be indistinguishable from real drift and capture's summary
+// would claim a change it never made.
+func ReDumpManifest(depsDir string, runner CommandRunner) (string, bool, error) {
 	m, err := SelectManifest(depsDir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	return reDump(m, runner)
 }
@@ -31,9 +37,9 @@ func ReDumpManifest(depsDir string, runner CommandRunner) (string, error) {
 // reDump is the testable core: the manifest is pre-selected, so a test asserts
 // the dump targets ONLY the detected manager's file (Brewfile.<goos>) and never
 // another OS's.
-func reDump(m Manifest, runner CommandRunner) (string, error) {
+func reDump(m Manifest, runner CommandRunner) (string, bool, error) {
 	if runner == nil {
-		return "", fmt.Errorf("deps: nil CommandRunner")
+		return "", false, fmt.Errorf("deps: nil CommandRunner")
 	}
 	switch m.Manager {
 	case platform.ManagerBrew:
@@ -45,20 +51,31 @@ func reDump(m Manifest, runner CommandRunner) (string, error) {
 		// files here, so a symlink component is always illegitimate. This Lstats the
 		// deps-side path only; it never reads ~/.ssh.
 		if err := refuseSymlinkTarget(m.Shared); err != nil {
-			return "", err
+			return "", false, err
 		}
 		// Ensure the deps/ directory exists so brew bundle dump can write into it.
 		if err := os.MkdirAll(filepath.Dir(m.Shared), 0o755); err != nil {
-			return "", fmt.Errorf("deps: create deps dir for %s: %w", m.Shared, err)
+			return "", false, fmt.Errorf("deps: create deps dir for %s: %w", m.Shared, err)
 		}
-		if _, err := runner.Run(brewBin, "bundle", "dump", "--force", "--file="+m.Shared); err != nil {
-			return "", fmt.Errorf("deps: brew bundle dump --file=%s: %w", m.Shared, err)
+		// brew writes the file itself, so change detection is a before/after byte
+		// compare plus an existence check: a dump that CREATES the manifest is a
+		// change even when both reads yield empty bytes (a machine with zero
+		// formulae dumps an empty file, and nil-vs-empty compares equal). Reads
+		// tolerate errors as nil bytes — a dump brew itself reported successful is
+		// never failed here, at worst it is miscounted for the summary. The
+		// symlink guard above already refused a non-regular target.
+		_, statErr := os.Lstat(m.Shared)
+		existedBefore := statErr == nil
+		before, _ := os.ReadFile(m.Shared)
+		if out, err := runner.Run(brewBin, "bundle", "dump", "--force", "--file="+m.Shared); err != nil {
+			return "", false, fmt.Errorf("deps: brew bundle dump --file=%s: %w (%s)", m.Shared, err, strings.TrimSpace(out))
 		}
-		return m.Shared, nil
+		after, _ := os.ReadFile(m.Shared)
+		return m.Shared, !existedBefore || !bytes.Equal(before, after), nil
 	case platform.ManagerApt:
-		return "", fmt.Errorf("deps: apt has no clean installed-set dump; %s stays hand-curated (capture is brew-only)", m.Shared)
+		return "", false, fmt.Errorf("deps: apt has no clean installed-set dump; %s stays hand-curated (capture is brew-only)", m.Shared)
 	default:
-		return "", ErrNoPackageManager
+		return "", false, ErrNoPackageManager
 	}
 }
 
