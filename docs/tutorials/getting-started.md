@@ -18,8 +18,9 @@ the work it deliberately does **not** reimplement:
 
 You do **not** need admin/root, and you do not need to pre-install anything ferry
 manages: that's ferry's job. The above are the host tools ferry stands on. (The
-one privileged step is `apply --deps` on apt-based Linux, which delegates to
-`apt-get` and must itself run under `sudo`; Homebrew needs none.)
+one privileged surface is the apt rail on apt-based Linux — `apply --deps` to
+install, and `restore --packages` to uninstall what `--deps` recorded — which
+delegates to `apt-get` and must itself run under `sudo`; Homebrew needs none.)
 
 > **Linux scope.** The core (dotfiles, dependencies, backup/restore) is cross-platform
 > and CI-tested on Linux, as are the config-file terminal emulators (Alacritty, kitty,

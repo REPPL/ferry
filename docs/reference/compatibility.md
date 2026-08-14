@@ -54,7 +54,7 @@ The versioned files are:
 | `agents-targets.json` | Every `$HOME` destination the agents domain has applied on this machine, so `ferry restore agents` reverts what was actually applied. |
 | `journal/<run>/manifest.json` | One apply run's record of prior states and actions, used to roll back an interrupted run. |
 | `work/<key>.json` | Per-project work-domain state on this machine: the last pack and receive this account performed. |
-| The cargo bundle's `ferry-work.json` manifest and the store's `claim.<account>.json` files | Written by `ferry work pack` into the configured cargo store (the manifest as a member of each `.ferrywork` bundle) and read by `ferry work receive` — often by a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
+| The cargo bundle's `ferry-work.json` manifest and the store's `claim.<account>.json` files | The manifest is written by `ferry work pack` (as a member of each `.ferrywork` bundle) and read by `ferry work receive`; the claim files are written by pack, receive, *and* take-back alike — each account appends only to its own `claim.<account>.json`, merged on read by receive and `work status`. These files routinely cross to a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
 | `.abcd/.work.local/.ferry-handover.json` | The project-side handover marker pack records (never a cargo-store file); receive consumes and removes it. |
 
 The immutable **baseline** (ferry's record of true pre-ferry state, which

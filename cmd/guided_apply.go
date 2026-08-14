@@ -33,6 +33,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -264,29 +265,33 @@ type riskyGroup struct {
 	items []planItem
 }
 
-// groupRisky buckets risky items by domain (dotfiles, then agents, then
-// terminals) so the walkthrough confirms a domain wholesale or drills into it.
+// groupRisky buckets risky items by FileDomain, in registry order, so the
+// walkthrough confirms a domain wholesale or drills into it. Every domain gets
+// its own group under its own name: a hand-maintained name list here once let
+// keybindings, emacs, and iterm2-profiles fall into the "dotfiles" bucket, so
+// the group header and the bulk "yes" consent named a domain the user was not
+// reviewing.
 func groupRisky(risky []planItem) []riskyGroup {
-	var dot, ag, term []planItem
+	byDomain := make(map[string][]planItem)
+	var order []string
+	for _, fd := range buildRegistry(nil).FileDomains {
+		order = append(order, fd.Name())
+	}
 	for _, it := range risky {
-		switch it.fileDomain {
-		case "agents":
-			ag = append(ag, it)
-		case "terminals":
-			term = append(term, it)
-		default:
-			dot = append(dot, it)
+		name := it.fileDomain
+		if name == "" {
+			name = "dotfiles"
 		}
+		if _, seen := byDomain[name]; !seen && !slices.Contains(order, name) {
+			order = append(order, name)
+		}
+		byDomain[name] = append(byDomain[name], it)
 	}
 	var groups []riskyGroup
-	if len(dot) > 0 {
-		groups = append(groups, riskyGroup{"dotfiles", dot})
-	}
-	if len(ag) > 0 {
-		groups = append(groups, riskyGroup{"agents", ag})
-	}
-	if len(term) > 0 {
-		groups = append(groups, riskyGroup{"terminals", term})
+	for _, name := range order {
+		if items := byDomain[name]; len(items) > 0 {
+			groups = append(groups, riskyGroup{name, items})
+		}
 	}
 	return groups
 }

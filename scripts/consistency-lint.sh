@@ -83,7 +83,7 @@ done
 #    nothing upstream of this check stops `git add -A` staging the handoff.
 tracked_local=$(git ls-files -- '.abcd/.work.local/' || true)
 if [ -n "$tracked_local" ]; then
-  echo "consistency-lint: .abcd/.work.local/ is the private tier (ADR 0002) and must never be committed — untrack with \`git rm --cached\`:" >&2
+  echo "consistency-lint: .abcd/.work.local/ is the private tier (ADR 0002) and must never be committed — remove it from the INDEX AND from every unpushed commit that carries it (\`git rm --cached\` plus an amend/rebase of those commits; \`git rm --cached\` alone greens this gate while the pushed history still publishes the file):" >&2
   echo "$tracked_local" | sed 's/^/  /' >&2
   fail=1
 fi

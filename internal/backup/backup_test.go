@@ -1211,6 +1211,44 @@ func asErrLockHeld(err error, target **ErrLockHeld) bool {
 	return false
 }
 
+// TestSnapshotRefusesParentSymlinkEscapingHome: the exported Snapshot entry
+// point (used by `ferry work receive`) must run the same resolved-containment
+// guard restorePaths applies BEFORE the snapshot reads anything. A parent
+// symlink under $HOME that resolves outside it would otherwise let the
+// snapshot read and persist out-of-home content into the snapshot store —
+// content the downstream write-boundary guard refuses to touch.
+func TestSnapshotRefusesParentSymlinkEscapingHome(t *testing.T) {
+	e, home := homeEngine(t)
+	outside := t.TempDir()
+
+	// ~/synced -> <outside>, with a real file behind the link.
+	if err := os.MkdirAll(filepath.Join(outside, "proj"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(outside, "proj", "memory.json")
+	mustWrite(t, secret, []byte("OUT-OF-HOME"), 0o600)
+	if err := os.Symlink(outside, filepath.Join(home, "synced")); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(home, "synced", "proj", "memory.json")
+	if _, err := e.Snapshot([]string{target}); err == nil {
+		t.Fatal("Snapshot through a home-escaping parent symlink: want refusal, got nil")
+	}
+
+	// Nothing may have been persisted: the snapshot store must hold no blobs.
+	var blobs []string
+	_ = filepath.WalkDir(e.snapshotDir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			blobs = append(blobs, p)
+		}
+		return nil
+	})
+	if len(blobs) != 0 {
+		t.Errorf("refused snapshot persisted files: %v", blobs)
+	}
+}
+
 func TestSnapshotIsDirectlyReversible(t *testing.T) {
 	e, home := newEngine(t)
 	present := filepath.Join(home, "present")

@@ -504,7 +504,9 @@ a plain Debian package name before anything runs: letters, digits and `+ - . :
 ~` only, starting with a letter or digit, and a trailing `-` is refused (apt
 reads it as the remove modifier). Like Homebrew, this is
 install/reconcile-only — `apply --deps` never uninstalls a package the manifest
-omits.
+omits. The apt uninstall rail, `restore --packages`, removes only the packages
+ferry recorded as self-installed and, like the install, runs `apt-get` as root —
+invoke it under `sudo` on apt machines.
 
 ### npm globals
 

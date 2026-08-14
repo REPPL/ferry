@@ -220,6 +220,40 @@ func TestInstallBrew_RecordsInstalledSet(t *testing.T) {
 	}
 }
 
+// diagRunner fails any call whose joined args contain failOn, returning the
+// manager's diagnostic output ALONGSIDE the error — the shape CombinedOutput
+// produces for a real failed brew/apt/npm run.
+type diagRunner struct {
+	failOn string
+	diag   string
+}
+
+func (d *diagRunner) Run(args ...string) (string, error) {
+	if strings.Contains(strings.Join(args, " "), d.failOn) {
+		return d.diag, errors.New("exit status 1")
+	}
+	return "", nil
+}
+
+// TestInstallBrew_FailureSurfacesManagerOutput: when the bundle fails, the
+// returned error must carry brew's own diagnostics — a bare "exit status 1"
+// leaves the user with no way to know which package or tap failed.
+func TestInstallBrew_FailureSurfacesManagerOutput(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "Brewfile.darwin")
+	writeFile(t, shared, "brew \"nonexistent-formula\"\n")
+	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: shared}
+
+	const diag = "Error: No available formula with the name \"nonexistent-formula\""
+	_, err := install(m, &diagRunner{failOn: "bundle", diag: diag + "\n"})
+	if err == nil {
+		t.Fatal("install with failing bundle: want error")
+	}
+	if !strings.Contains(err.Error(), diag) {
+		t.Errorf("install error must surface brew's diagnostics, got: %v", err)
+	}
+}
+
 // growingRunner returns `before` for brew list until a bundle runs, then `after`.
 type growingRunner struct {
 	before, after string
@@ -584,7 +618,7 @@ func TestReDump_Brew_TargetsOnlyDetectedFile(t *testing.T) {
 		Local:   filepath.Join(depsDir, "Brewfile.darwin.local"),
 	}
 	r := newFakeRunner()
-	got, err := reDump(m, r)
+	got, _, err := reDump(m, r)
 	if err != nil {
 		t.Fatalf("reDump brew: %v", err)
 	}
@@ -625,7 +659,7 @@ func TestReDump_Brew_RefusesSymlinkTarget(t *testing.T) {
 
 	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: target}
 	r := newFakeRunner()
-	if _, err := reDump(m, r); err == nil {
+	if _, _, err := reDump(m, r); err == nil {
 		t.Fatal("reDump with symlink target: want refusal error, got nil")
 	}
 	if r.invoked("bundle dump") || r.invoked("dump") {
@@ -649,7 +683,7 @@ func TestReDump_Brew_AbsentTargetDumps(t *testing.T) {
 	target := filepath.Join(depsDir, "Brewfile.darwin")
 	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: target}
 	r := newFakeRunner()
-	got, err := reDump(m, r)
+	got, _, err := reDump(m, r)
 	if err != nil {
 		t.Fatalf("reDump absent target: %v", err)
 	}
@@ -661,10 +695,62 @@ func TestReDump_Brew_AbsentTargetDumps(t *testing.T) {
 	}
 }
 
+// brewWritingRunner fakes `brew bundle dump` by writing body to the --file=
+// target, so the before/after change detection sees what brew would produce.
+type brewWritingRunner struct {
+	body  string
+	calls [][]string
+}
+
+func (r *brewWritingRunner) Run(args ...string) (string, error) {
+	r.calls = append(r.calls, args)
+	for _, a := range args {
+		if strings.HasPrefix(a, "--file=") {
+			if err := os.WriteFile(strings.TrimPrefix(a, "--file="), []byte(r.body), 0o644); err != nil {
+				return "", err
+			}
+		}
+	}
+	return "", nil
+}
+
+// TestReDump_Brew_ChangeDetection: a dump whose bytes differ from the committed
+// manifest reports changed=true; a dump that reproduces the committed bytes
+// reports changed=false, so capture never counts a clean re-dump as a change.
+func TestReDump_Brew_ChangeDetection(t *testing.T) {
+	dir := t.TempDir()
+	depsDir := filepath.Join(dir, "deps")
+	target := filepath.Join(depsDir, "Brewfile.darwin")
+	m := Manifest{Manager: platform.ManagerBrew, GOOS: "darwin", Shared: target}
+
+	// Fresh dump over no manifest: changed.
+	r := &brewWritingRunner{body: "brew \"jq\"\n"}
+	if _, changed, err := reDump(m, r); err != nil {
+		t.Fatalf("reDump fresh: %v", err)
+	} else if !changed {
+		t.Errorf("fresh dump over no manifest must report changed=true")
+	}
+
+	// Identical re-dump: unchanged.
+	if _, changed, err := reDump(m, r); err != nil {
+		t.Fatalf("reDump identical: %v", err)
+	} else if changed {
+		t.Errorf("identical re-dump must report changed=false")
+	}
+
+	// A dump with different bytes (a new package appeared): changed.
+	r.body = "brew \"jq\"\nbrew \"ripgrep\"\n"
+	if _, changed, err := reDump(m, r); err != nil {
+		t.Fatalf("reDump drifted: %v", err)
+	} else if !changed {
+		t.Errorf("drifted dump must report changed=true")
+	}
+}
+
 func TestReDump_NoManager_Reports(t *testing.T) {
 	m := Manifest{Manager: platform.ManagerNone}
 	r := newFakeRunner()
-	if _, err := reDump(m, r); !errors.Is(err, ErrNoPackageManager) {
+	if _, _, err := reDump(m, r); !errors.Is(err, ErrNoPackageManager) {
 		t.Errorf("reDump no manager: err=%v want ErrNoPackageManager", err)
 	}
 	if len(r.calls) != 0 {
@@ -675,7 +761,7 @@ func TestReDump_NoManager_Reports(t *testing.T) {
 func TestReDump_AptUnsupported(t *testing.T) {
 	m := Manifest{Manager: platform.ManagerApt, GOOS: "linux", Shared: "/repo/deps/apt.txt"}
 	r := newFakeRunner()
-	_, err := reDump(m, r)
+	_, _, err := reDump(m, r)
 	if err == nil {
 		t.Fatal("reDump apt: want unsupported error, got nil")
 	}

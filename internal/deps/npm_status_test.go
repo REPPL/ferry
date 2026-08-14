@@ -155,9 +155,12 @@ func TestReDumpNpmGlobals_WritesSortedList(t *testing.T) {
 	r := newFakeRunner()
 	r.replies["ls -g"] = `{"dependencies":{"zed":{"version":"1"},"apple":{"version":"2"},"npm":{"version":"3"}}}`
 
-	path, err := ReDumpNpmGlobals(depsDir, r)
+	path, changed, err := ReDumpNpmGlobals(depsDir, r)
 	if err != nil {
 		t.Fatalf("ReDumpNpmGlobals: %v", err)
+	}
+	if !changed {
+		t.Errorf("first dump into an empty deps dir must report changed=true")
 	}
 	got, err := os.ReadFile(path)
 	if err != nil {
@@ -165,6 +168,14 @@ func TestReDumpNpmGlobals_WritesSortedList(t *testing.T) {
 	}
 	if want := "apple\nzed\n"; string(got) != want {
 		t.Errorf("npm-globals.txt = %q, want %q", got, want)
+	}
+
+	// A second identical dump must be a no-op: same bytes, changed=false, so
+	// capture never counts a clean re-dump as a captured change.
+	if _, changed, err := ReDumpNpmGlobals(depsDir, r); err != nil {
+		t.Fatalf("ReDumpNpmGlobals (re-run): %v", err)
+	} else if changed {
+		t.Errorf("identical re-dump must report changed=false")
 	}
 }
 
@@ -177,7 +188,7 @@ func TestReDumpNpmGlobals_RefusesSymlinkTarget(t *testing.T) {
 	}
 	r := newFakeRunner()
 	r.replies["ls -g"] = `{"dependencies":{"a":{"version":"1"}}}`
-	if _, err := ReDumpNpmGlobals(depsDir, r); err == nil {
+	if _, _, err := ReDumpNpmGlobals(depsDir, r); err == nil {
 		t.Errorf("ReDumpNpmGlobals wrote through a symlink target — must refuse")
 	}
 }

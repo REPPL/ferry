@@ -25,7 +25,26 @@ type snapshot struct {
 // snapshotCurrent captures the current state of each path into a new snapshot
 // and returns its ID. Empty input yields an (empty) snapshot — restore always
 // produces a recoverable point even when there is nothing to revert.
+//
+// Every REAL path's resolved parent chain is containment-guarded BEFORE
+// anything is read or created: captureForSnapshot -> captureState uses
+// os.Lstat+os.ReadFile, which FOLLOW intermediate parent symlinks, so an
+// unguarded snapshot would read and persist content from outside $HOME (or
+// under ~/.ssh) that the write-boundary guard downstream would refuse to
+// touch. Guarding HERE covers both entry points identically — restorePaths
+// (which pre-filters refusals into its skip list, so its paths re-pass) and
+// the exported Snapshot used by `ferry work receive`, which previously reached
+// this read with no guard at all. Resource paths are synthetic (no filesystem
+// chain) and are captured via their hooks.
 func (e *Engine) snapshotCurrent(absPaths []string) (string, error) {
+	for _, p := range absPaths {
+		if isResourcePath(p) {
+			continue
+		}
+		if err := guardResolvedContainment(p); err != nil {
+			return "", fmt.Errorf("snapshot refused for %s: %w", p, err)
+		}
+	}
 	id := newRunID()
 	dir := filepath.Join(e.snapshotDir, id)
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
