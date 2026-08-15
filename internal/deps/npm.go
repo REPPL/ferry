@@ -50,14 +50,25 @@ type npmLsOutput struct {
 // the global tree has peer-dependency warnings while still emitting valid JSON, so
 // a parseable body is used even when the runner reports an error; only an
 // unparseable body is a hard failure.
+//
+// That tolerance only holds because the JSON is parsed from STDOUT ALONE: npm
+// writes `npm ERR!` lines to STDERR on every non-zero exit, so a combined buffer
+// is never a single parseable JSON value and the tolerated branch would be dead
+// code. The query therefore runs through SeparateRunner when the runner offers it
+// (ExecRunner does). On the hard-failure path npm's own stderr is spliced into the
+// error, matching the sibling manager error paths.
 func DumpNpmGlobals(runner CommandRunner) ([]string, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("deps: nil CommandRunner")
 	}
-	out, runErr := runner.Run(append([]string{npmBin}, npmGlobalsQuery...)...)
+	args := append([]string{npmBin}, npmGlobalsQuery...)
+	stdout, stderr, runErr := runQuery(runner, args)
 	var parsed npmLsOutput
-	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		if runErr != nil {
+			if diag := strings.TrimSpace(stderr); diag != "" {
+				return nil, fmt.Errorf("deps: npm ls -g: %w (%s)", runErr, diag)
+			}
 			return nil, fmt.Errorf("deps: npm ls -g: %w", runErr)
 		}
 		return nil, fmt.Errorf("deps: parse npm ls -g output: %w", err)
