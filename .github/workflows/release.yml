@@ -415,14 +415,40 @@ jobs:
         # contain a hyphen (`v1.2.3+2026-01-01`) and is not a prerelease. A plain
         # vX.Y.Z tag leaves the array empty, so the command is byte-identical to
         # a normal release's.
+        #
+        # IDEMPOTENT by branch, because three gates run AFTER this step
+        # (attestation verify, fresh-download checksum verify, prune) and any of
+        # them can go red on a transient blip. Recovery is "re-run failed jobs",
+        # which replays this step against a release that already exists — a bare
+        # `gh release create` answers that with a 422 and the run stays wedged
+        # red forever. So: if the Release is already there, re-upload the assets
+        # (--clobber, since the rebuilt binaries are byte-identical only if the
+        # build is reproducible) and re-assert its title, notes, draft state and
+        # prerelease flag, leaving the post-publish gates free to run again. The
+        # create arm keeps --verify-tag; the upload arm cannot use it, but that
+        # arm only ever touches a Release GitHub already bound to this tag.
         run: |
           set -euo pipefail
           pre=()
           case "${TAG%%+*}" in
             *-*) pre=(--prerelease) ;;
           esac
-          gh release create "$TAG" bin/ferry-* bin/checksums.txt \
-            --verify-tag --title "$TAG" --notes-file "$NOTES_FILE" "${pre[@]}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "release $TAG already exists — re-uploading assets and re-asserting its metadata (re-run of a failed post-publish step)."
+            gh release upload "$TAG" bin/ferry-* bin/checksums.txt --clobber
+            # `gh release edit` spells the prerelease flag as --prerelease=BOOL,
+            # so translate the create arm's presence/absence array into an
+            # explicit true/false — an existing release must never silently keep
+            # a stale flag.
+            prerelease=false
+            [ "${#pre[@]}" -eq 0 ] || prerelease=true
+            gh release edit "$TAG" \
+              --draft=false --title "$TAG" --notes-file "$NOTES_FILE" \
+              --prerelease="$prerelease"
+          else
+            gh release create "$TAG" bin/ferry-* bin/checksums.txt \
+              --verify-tag --title "$TAG" --notes-file "$NOTES_FILE" "${pre[@]}"
+          fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

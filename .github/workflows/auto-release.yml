@@ -11,12 +11,13 @@ name: auto-release
 # Only the NEWEST dated version is ever tagged: older CHANGELOG versions are left
 # alone, because tagging them at the current HEAD would mis-point an immutable
 # tag at the wrong code. Idempotent: when the newest version is already tagged AND
-# its GitHub Release exists, `detect` reports need_tag=need_release=false and
-# nothing runs, so an ordinary (non-release) push to main does nothing. If the tag
-# exists but its Release is MISSING (e.g. a transient publish failure), `detect`
-# sets need_release=true and re-invokes `release` ALONE — built from the tagged
-# commit (release_ref), never the moved-on HEAD — so a flaky publish never
-# permanently wedges the version.
+# its GitHub Release is published and complete, `detect` reports
+# need_tag=need_release=false and nothing runs, so an ordinary (non-release) push
+# to main does nothing. If the tag exists but its Release is MISSING OR
+# INCOMPLETE — absent, still a draft, or short of its five assets, as a transient
+# publish failure leaves it — `detect` sets need_release=true and re-invokes
+# `release` ALONE — built from the tagged commit (release_ref), never the
+# moved-on HEAD — so a flaky publish never permanently wedges the version.
 on:
   push:
     branches: [main]
@@ -81,21 +82,37 @@ jobs:
           tag="v$version"
           if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
             # The tag already exists, so it is NEVER moved (immutable). Re-release
-            # ONLY when its GitHub Release is missing: a transient publish failure
-            # must not permanently wedge the version. Build the re-release FROM the
+            # ONLY when its GitHub Release is missing or incomplete: a transient
+            # publish failure must not permanently wedge the version, and a
+            # half-published one must not pass for done. Build the re-release FROM the
             # tagged commit, not the current (moved-on) main HEAD — resolve the tag
             # to its immutable commit SHA and hand it to release.yml as `ref`.
             echo "need_tag=false" >> "$GITHUB_OUTPUT"
+            # "Released" means released AND complete, not merely present. A run
+            # that dies part-way through publishing leaves a Release that EXISTS
+            # — draft, or missing some of its assets — and a bare existence check
+            # calls that done, so the version stays half-published while every
+            # post-publish gate in release.yml is silently skipped. Require
+            # isDraft=false and the full asset set: the four cross-compiled
+            # binaries plus checksums.txt. The comparison is >= 5, not == 5, so
+            # an asset attached by hand cannot make a complete release look
+            # incomplete and re-release it on every subsequent push to main.
+            #
             # Deliberate fail-open: ANY non-zero from `gh release view` (a true 404
-            # or a transient rate-limit/auth blip) counts as "Release missing" and
-            # re-releases. Safe — `gh release create` (release.yml) has no --clobber,
-            # so a false positive just errors on the existing release and the
-            # success-gated prune never runs: one red run, no data loss. Parsing the
-            # error to isolate a real 404 was rejected — it would hinge on gh's
-            # wording and could misclassify a genuine missing-Release, re-wedging the
-            # very failure this heals.
-            if gh release view "$tag" >/dev/null 2>&1; then
-              echo "$tag is tagged and released; nothing to do."
+            # or a transient rate-limit/auth blip), and any output that is not a
+            # literal "true", counts as "Release missing or incomplete" and
+            # re-releases. Safe — release.yml's publish step is idempotent: it
+            # re-uploads the assets with --clobber and re-asserts the title,
+            # notes, draft state and prerelease flag when the Release already
+            # exists, so a false positive republishes the same bytes and re-runs
+            # the post-publish gates instead of erroring. Parsing the error to
+            # isolate a real 404 was rejected — it would hinge on gh's wording and
+            # could misclassify a genuine missing-Release, re-wedging the very
+            # failure this heals.
+            released="$(gh release view "$tag" --json isDraft,assets \
+              --jq '((.isDraft | not) and ((.assets | length) >= 5))' 2>/dev/null || true)"
+            if [ "$released" = "true" ]; then
+              echo "$tag is tagged and fully released; nothing to do."
               echo "need_release=false" >> "$GITHUB_OUTPUT"
             else
               commit="$(git rev-parse --verify "$tag^{commit}")"
@@ -130,10 +147,10 @@ jobs:
               [ -n "$rl_fails" ] || rl_fails=0
               attempts=$((ar_fails + rl_fails))
               if [ "$attempts" -ge 3 ]; then
-                echo "::error::$tag is tagged but has no GitHub Release after $attempts failed release runs — NOT retrying again. The tagged commit fails the release gate deterministically; see docs/how-to/cutting-a-release.md (Manual / recovery flow)."
+                echo "::error::$tag is tagged but has no complete GitHub Release after $attempts failed release runs — NOT retrying again. The tagged commit fails the release gate deterministically; see docs/how-to/cutting-a-release.md (Manual / recovery flow)."
                 echo "need_release=false" >> "$GITHUB_OUTPUT"
               else
-                echo "$tag is tagged but has NO GitHub Release ($attempts prior failed attempt(s)); re-releasing from $commit."
+                echo "$tag is tagged but has no complete GitHub Release ($attempts prior failed attempt(s)); re-releasing from $commit."
                 echo "need_release=true" >> "$GITHUB_OUTPUT"
                 echo "release_ref=$commit" >> "$GITHUB_OUTPUT"
               fi
