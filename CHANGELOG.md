@@ -46,6 +46,111 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **The pre-commit secret scan never reads through a repo symlink.**
+  `ferry sync`'s changed-file scan opened paths with a symlink-following
+  read, so an untracked or modified symlink in the config repo — for
+  example one pointing at `~/.ssh/id_ed25519` — was read in full,
+  breaching the `~/.ssh` boundary and false-blocking the sync. Changed
+  paths are now Lstat-gated and non-regular entries are skipped: git
+  commits a symlink as its link text, which the push-range blob scan
+  already covers.
+- **`ferry sync` no longer wedges on directory-shaped status entries.**
+  A dirty submodule or an untracked symlink-to-directory arrives without
+  the trailing slash the scan used to spot directories, so the fail-closed
+  read aborted every sync with advice ("re-run once the file is readable")
+  a directory can never satisfy. Such entries are skipped — a gitlink's
+  content never enters the push range.
+- **The untracked-directory secret scan matches what `git add -A`
+  stages.** The walk over a collapsed untracked directory read every file
+  beneath it, including gitignored files and nested repositories' `.git`
+  internals, so a token in a file git would never commit blocked the sync
+  with no way forward. The directory is now enumerated with
+  `git ls-files --others --exclude-standard`, scanning exactly the
+  stageable set; a failed enumeration still aborts.
+- **A shared terminal capture behind a local overlay converges.**
+  Accepting a terminal preference domain to shared wrote the shared
+  plist, but the per-machine overlay from an earlier local capture kept
+  winning both the drift comparison and `apply`, so the domain was
+  re-offered forever and the shared bytes did nothing. A shared accept
+  now removes the superseded overlay and says so; a symlinked overlay is
+  left untouched.
+- **A secret-routed terminal capture stops reporting permanent drift.**
+  Capture writes a `{{ferry.secret …}}` placeholder into the repo plist,
+  but `status` and `capture` compared the raw placeholder bytes against
+  the live export, so the domain read as drifted forever — and re-prompted
+  the secret gate on every capture — while `apply`, which renders
+  placeholders, considered it in sync. Both now render the repo side
+  through the secret store before comparing (falling back to the raw
+  compare when the store or ref is unavailable), and the placeholder file
+  round-trips byte-exactly.
+- **Peer-dependency warnings no longer disable the npm-globals domain.**
+  `npm ls -g` writes diagnostics to stderr while still emitting the full
+  JSON tree on stdout; the dump parsed the two streams fused, so any
+  non-zero exit was a hard error despite the documented tolerance. The
+  listing is parsed from stdout alone, and a genuine failure carries
+  npm's own stderr in the error instead of a bare exit status.
+- **`ferry diff` predicts the empty-over-substantial refusal.** The
+  data-loss guard that aborts `apply` when a near-empty repo file would
+  replace a substantial live file was invisible to the preview, which
+  showed a plain "would update". The plan renders such items as "would
+  refuse" and counts them in the summary, and when the guard does abort
+  an apply, a closing notice states that the changes reported earlier in
+  the run were rolled back.
+- **Repos ferry creates gitignore the per-machine dependency overlay.**
+  `deps/Brewfile.<os>.local` is documented as belonging to one machine
+  only, but the generated `.gitignore` covered only `ferry.local.toml`
+  and `local/`, so `ferry sync` committed the overlay, every other
+  machine installed it via `apply --deps`, and `bundle export` carried
+  it. The ignore list covers the overlay on every init route, with the
+  `init --github` pre-create gate model rendered from the same pattern
+  set. An overlay committed before the rule existed stays tracked until
+  `git rm --cached` untracks it — documented, alongside the deliberate
+  `git add -f` escape, in the configuration reference.
+- **A red release run after publishing is recoverable.** The publish
+  step errored on re-run once the Release existed, so a failed
+  post-publish check (asset verification, retention prune) left the run
+  permanently red — while re-running the whole auto-release run saw the
+  release as done and quietly skipped the bypassed checks. Publishing is
+  idempotent (a re-run re-uploads the assets and re-asserts the release
+  metadata), and auto-release treats a version as released only when its
+  Release is published and carries the full asset set. The release
+  how-to documents post-publish recovery and corrects the claim that a
+  failed check fails the release.
+- **The by-hand checksum recipe stamps the version.** The documented
+  `make build VERSION=…` + `make checksums` pair silently rebuilt the
+  binaries without the version stamp before hashing (the `checksums`
+  target's build prerequisite is phony and always re-runs), so a
+  hand-published release shipped dev-stamped binaries under a
+  self-consistent manifest. The recipe is the single
+  `make checksums VERSION=vX.Y.Z` invocation, and the Makefile comment
+  states the rebuild behaviour.
+- **`install.sh` reports a failed binary download.** The download ran
+  silenced under `set -e`, so a missing release asset ended the install
+  with no output after the "downloading…" line; it fails with a message
+  naming the asset.
+- **CI's workflow audit passes on fork pull requests.** The SARIF
+  upload needs a writable token, which a fork PR never gets; the upload
+  is skipped there while the audit itself still runs and gates.
+- **Guided apply is truthful about conflicts and skip-always targets.**
+  The walkthrough prompted "yes to apply" for conflict items it never
+  overwrites; the listing and details view now state that confirming
+  does not overwrite a conflict (`ferry capture` or `apply --force`
+  resolves it), and the commands reference lists the conflict as the
+  fourth risky class. A clean skip-always target no longer prints a
+  skip line on every run and is counted as in sync.
+- **Docs corrected against the code.** The compatibility contract names
+  restore snapshots as the second version-independent store (the
+  refuse-a-newer-file rule does not gate `restore --undo`); the
+  configuration reference states the iTerm2 global allowlist is compiled
+  into ferry, lists all eight kept categories, and gives the committed-
+  plist route for carrying extra keys; the single-branch `main`
+  constraint on `ferry sync` is stated in the reference, the tutorial,
+  and the command help; "route-1/route-2" jargon is replaced with plain
+  language; ssh.md states the `~/.ssh` invariant universally including
+  the cargo-store guard; the scaffold help names exactly what it
+  creates; AGENTS.md's CI list names the gitleaks and zizmor gates; the
+  tutorial distinguishes local drift from a conflict.
+
 - **A cargo store under `~/.ssh` is refused.** The `[work] store` path is
   hand-configured, and every other configurable path ferry writes through — the
   repo path, `bundle import --out` — is guarded against resolving into `~/.ssh`
