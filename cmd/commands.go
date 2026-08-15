@@ -59,13 +59,15 @@ var syncCmd = &cobra.Command{
 	Short: "Publish captured changes and pull remote ones for a managed repo",
 	Long: `Publish local changes and pull remote ones in one command.
 
-sync is the everyday update for a managed (route-2) repo: it pulls remote work,
-commits your locally-captured changes, and pushes them — WITHOUT ever losing
-local work or force-pushing. It integrates the remote first from a clean
-baseline, gates the whole push range for secrets, and pushes a single explicit
-ref. On a conflict it leaves your machine byte-for-byte unchanged and asks you
-to resolve with git. It never runs apply — run "ferry apply" afterwards to
-deploy the pulled changes.`,
+sync is the everyday update for a managed repo (one set up by
+"ferry init --github"): it pulls remote work, commits your locally-captured
+changes, and pushes them — WITHOUT ever losing local work or force-pushing. It
+integrates the remote first from a clean baseline, gates the whole push range
+for secrets, and pushes a single explicit ref. ferry manages a single-branch
+config repo, so sync integrates and pushes "main" and refuses to run on a
+detached HEAD or with any other branch checked out. On a conflict it leaves
+your machine byte-for-byte unchanged and asks you to resolve with git. It never
+runs apply — run "ferry apply" afterwards to deploy the pulled changes.`,
 	RunE: runSync,
 }
 

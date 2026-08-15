@@ -66,9 +66,12 @@ left un-shipped fails the release even on a hand-pushed tag):
    CHANGELOG section, extracted verbatim, plus a link to the full CHANGELOG at that
    tag; a version whose section cannot be found publishes with an empty body rather
    than blocking the release.
-5. Proves the attestation by downloading a binary fresh from the new Release and running
-   `gh attestation verify` against it. A failed attestation or verification fails the
-   release.
+5. Proves the published assets by downloading them fresh from the new Release: `gh
+   attestation verify` against a binary, then `sha256sum -c checksums.txt` across the
+   lot — the same pairing `install.sh` relies on. These checks run **after** the
+   Release is public, so a failure fails the workflow *run*, not the release: the
+   assets stay published and the red run is the signal to inspect them. See
+   [post-publish recovery](#manual--recovery-flow) below.
 
 The workflow pushes nothing to any branch. It records the remote default-branch tip at
 the start of the release job and asserts it is unchanged at the end, so a step that ever
@@ -121,6 +124,20 @@ Land the fix on `main`, promote the **next** patch version in the CHANGELOG, and
 the automatic flow ship that instead. Tags are never deleted (see the pruning rules
 above), so the failed tag simply remains, release-less.
 
+**A run that goes red after the Release is published.** The three post-publish steps —
+the attestation verification, the fresh-download `sha256sum -c`, and the prune — run
+once the Release is already public, so a failure there reddens the run without
+unpublishing anything. Re-run the failed jobs: the publish step is idempotent (given an
+existing Release it re-uploads the assets and re-asserts the title, notes, draft state
+and prerelease flag), so the post-publish steps get another attempt against the same
+release. The by-hand equivalents are the checksum check, from a directory holding the
+assets downloaded fresh from the Release, and the prune, from the repository:
+
+```bash
+sha256sum -c checksums.txt                   # or: shasum -a 256 -c checksums.txt
+scripts/prune-releases.sh --current vX.Y.Z   # add --dry-run to preview
+```
+
 When `auto-release` is disabled, or a tag must be cut by hand,
 [`scripts/release.sh`](../../scripts/release.sh) is the blessed driver, run from a
 clean `main` that is up to date with `origin/main`:
@@ -158,11 +175,13 @@ publishes; omitting it is fine only for a mechanics check of the manifest. It th
 points back at the two publishing paths — the promotion push for the automatic flow, or
 `scripts/release.sh` as the recovery driver.
 
-You can also run the pieces directly:
+Or run the manifest step on its own. `checksums` rebuilds the four binaries first, so
+it takes the same `VERSION` in the same invocation: a stamped build from an earlier,
+separate `make build VERSION=vX.Y.Z` does not survive, because the rebuild replaces
+those binaries with dev-stamped ones before hashing them.
 
 ```bash
-make build VERSION=vX.Y.Z   # cross-compile the four binaries
-make checksums              # write bin/checksums.txt over them
+make checksums VERSION=vX.Y.Z   # cross-compile the four binaries, then hash them
 ```
 
 To publish by hand, verify a download against the manifest the same way `install.sh`

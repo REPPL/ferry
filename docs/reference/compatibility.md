@@ -12,7 +12,7 @@ ferry has three surfaces a user or an automation depends on:
 |---|---|
 | **CLI** | The commands, subcommands, flags, exit codes, and the machine-relevant wording of their output. |
 | **`ferry.toml` schema** | The manifest keys and value shapes documented in [configuration](configuration.md) and [the agents domain](../explanation/agents.md) — `[manage]`, `[agents]`, `[terminals]`, and their tables. |
-| **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`) — the last-applied store, the agents target record, the backup journal, the immutable baseline, and the work-domain state — plus the files `ferry work` writes into the configured cargo store, which cross account and machine boundaries. |
+| **On-disk state** | The files ferry keeps under its state directory (`~/.local/state/ferry`) — the last-applied store, the agents target record, the backup journal, the immutable baseline, the restore and receive snapshots, and the work-domain state — plus the files `ferry work` writes into the configured cargo store, which cross account and machine boundaries. |
 
 ## The pre-1.0 rule
 
@@ -42,9 +42,9 @@ From v1.0.0, a CLI or `ferry.toml` surface is removed only through deprecation:
 
 ## On-disk state versioning
 
-Every state file ferry's domain machinery owns carries an integer `version` field
-at the top level of its JSON. This lets a newer ferry recognise an older file and
-a downgraded ferry recognise a file it cannot safely read.
+Each state file in the envelope scheme carries an integer `version` field at the
+top level of its JSON. This lets a newer ferry recognise an older file and a
+downgraded ferry recognise a file it cannot safely read.
 
 The versioned files are:
 
@@ -57,9 +57,18 @@ The versioned files are:
 | The cargo bundle's `ferry-work.json` manifest and the store's `claim.<account>.json` files | The manifest is written by `ferry work pack` (as a member of each `.ferrywork` bundle) and read by `ferry work receive`; the claim files are written by pack, receive, *and* take-back alike — each account appends only to its own `claim.<account>.json`, merged on read by receive and `work status`. These files routinely cross to a *different* account or machine, which makes their version envelope the most compatibility-relevant in ferry. |
 | `.abcd/.work.local/.ferry-handover.json` | The project-side handover marker pack records (never a cargo-store file); receive consumes and removes it. |
 
-The immutable **baseline** (ferry's record of true pre-ferry state, which
-`restore` reverses to) is a separate, content-addressed store and is read
-version-independently; it is not part of this envelope scheme.
+Two stores sit outside this envelope scheme and are read version-independently:
+
+- The immutable **baseline** — ferry's record of true pre-ferry state, which
+  `restore` reverses to — a separate, content-addressed store.
+- The **snapshot store** (`snapshots/<id>/manifest.json`, plus one blob per
+  affected path), written before a `restore` mutates anything and by every
+  `ferry work receive`.
+
+Neither carries a `version` field, so the refuse-a-newer-file rule below does not
+apply to snapshots: `restore --undo <id>` replays a snapshot without a version
+gate, whichever version of ferry wrote it. That is why the snapshot manifest's
+shape is treated as frozen.
 
 ### Reading an older file
 
