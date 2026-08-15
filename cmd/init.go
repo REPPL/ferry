@@ -891,10 +891,33 @@ func existingConfiguredRepo() (string, bool) {
 	return mc.Repo, true
 }
 
+// localLayerIgnorePatterns is the FULL set of .gitignore entries every repo ferry
+// creates or adopts must carry — the per-machine layer that belongs to ONE machine
+// and must never be committed:
+//
+//   - ferry.local.toml (config.LocalManifestName) — per-machine scope overrides
+//   - local/                                      — the per-machine file layer
+//   - deps/Brewfile.*.local                       — the per-machine deps overlay
+//
+// The deps overlay glob is root-anchored by its embedded slash, so it matches
+// deps/Brewfile.darwin.local and deps/Brewfile.linux.local (and only those) at the
+// repo root. Without it `ferry sync`'s `git add -A` would commit a machine's
+// private overlay, every other machine would clone and install it via
+// `apply --deps`, and `bundle export` (tracked-set driven) would ship it — the
+// opposite of the documented per-machine promise.
+var localLayerIgnorePatterns = []string{config.LocalManifestName, "local/", "deps/Brewfile.*.local"}
+
+// plannedGitignoreBody is the .gitignore body a FRESH repo receives — the same
+// bytes ensureLocalLayerIgnored appends to an empty/absent file. init --github's
+// pre-create secret gate models the initial commit with it, so the gate scans what
+// is actually written (lockstep with the writer).
+var plannedGitignoreBody = strings.Join(localLayerIgnorePatterns, "\n") + "\n"
+
 // ensureLocalLayerIgnored makes sure the repo's .gitignore excludes the per-machine
-// .local layer (ferry.local.toml and local/). It is idempotent: existing entries
-// are kept and only the missing ones are appended, so it never disturbs a repo that
-// already ignores them.
+// layer (localLayerIgnorePatterns: ferry.local.toml, local/ and the
+// deps/Brewfile.*.local overlay). It is idempotent: existing entries are kept and
+// only the missing ones are appended, so it never disturbs a repo that already
+// ignores them.
 func ensureLocalLayerIgnored(repo string) error {
 	gitignore := filepath.Join(repo, ".gitignore")
 	// Guard the FULL .gitignore path BEFORE any read or write: a repo
@@ -915,7 +938,7 @@ func ensureLocalLayerIgnored(repo string) error {
 	}
 
 	var add []string
-	for _, want := range []string{config.LocalManifestName, "local/"} {
+	for _, want := range localLayerIgnorePatterns {
 		if !have[want] {
 			add = append(add, want)
 		}
