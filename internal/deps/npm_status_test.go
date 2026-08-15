@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -139,14 +140,63 @@ func TestDumpNpmGlobals_NamesOnlySortedExcludesNpm(t *testing.T) {
 }
 
 func TestDumpNpmGlobals_ToleratesNonZeroExitWithJSON(t *testing.T) {
-	// `npm ls` exits non-zero on peer-dep warnings while still emitting valid JSON.
-	r := &jsonErrRunner{body: `{"dependencies":{"typescript":{"version":"5.4.0"}}}`}
+	// `npm ls` exits non-zero on peer-dep warnings while still emitting valid JSON
+	// on STDOUT and its `npm ERR!` diagnostics on STDERR. jsonErrRunner models that
+	// REAL two-stream shape (its Run fuses the streams the way CombinedOutput does,
+	// exactly as production npm would look through the plain CommandRunner seam), so
+	// the tolerated branch is exercised against the contract the runner really has —
+	// not against a pre-split, JSON-only body that could never occur.
+	r := &jsonErrRunner{
+		stdout: `{"dependencies":{"typescript":{"version":"5.4.0"}}}`,
+		stderr: "npm ERR! code ELSPROBLEMS\nnpm ERR! peer dep missing\n",
+	}
 	names, err := DumpNpmGlobals(r)
 	if err != nil {
 		t.Fatalf("DumpNpmGlobals with non-zero exit + valid JSON: %v", err)
 	}
 	if want := []string{"typescript"}; !reflect.DeepEqual(names, want) {
 		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+// TestDumpNpmGlobals_RealExecToleratesNpmErrNoiseOnStderr is the regression for
+// the fused-stream defect: driven through the REAL ExecRunner against a stub
+// `npm` on PATH, a peer-dep run (valid JSON on stdout, `npm ERR!` lines on
+// stderr, exit 1) must still parse. A fake that hands back pre-split streams
+// cannot detect this — only a real subprocess can.
+func TestDumpNpmGlobals_RealExecToleratesNpmErrNoiseOnStderr(t *testing.T) {
+	stubNpm(t, "#!/bin/sh\n"+
+		"printf '{\"dependencies\":{\"typescript\":{\"version\":\"5.4.0\"},\"npm\":{\"version\":\"11.0.0\"}}}\\n'\n"+
+		"printf 'npm ERR! code ELSPROBLEMS\\nnpm ERR! missing: pyright@1.1.0, required by lib\\n' >&2\n"+
+		"exit 1\n")
+
+	names, err := DumpNpmGlobals(ExecRunner{})
+	if err != nil {
+		t.Fatalf("DumpNpmGlobals against a peer-dep npm (valid JSON on stdout, npm ERR! on stderr, exit 1): %v", err)
+	}
+	if want := []string{"typescript"}; !reflect.DeepEqual(names, want) {
+		t.Errorf("names = %v, want %v", names, want)
+	}
+}
+
+// TestDumpNpmGlobals_RealExecHardFailureKeepsNpmDiagnostics: when stdout is NOT
+// parseable and npm exits non-zero, the failure is hard — and the returned error
+// must splice in npm's own stderr diagnostics (matching install.go / status.go /
+// dump.go), not swallow them behind a bare "exit status 1".
+func TestDumpNpmGlobals_RealExecHardFailureKeepsNpmDiagnostics(t *testing.T) {
+	stubNpm(t, "#!/bin/sh\n"+
+		"printf 'not json at all\\n'\n"+
+		"printf 'npm ERR! code ENOENT\\nnpm ERR! enoent ENOENT: no such file or directory\\n' >&2\n"+
+		"exit 1\n")
+
+	_, err := DumpNpmGlobals(ExecRunner{})
+	if err == nil {
+		t.Fatalf("DumpNpmGlobals with unparseable output + non-zero exit: want error, got nil")
+	}
+	for _, want := range []string{"npm ls -g", "npm ERR! code ENOENT", "no such file or directory"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not carry npm's diagnostics (%q)", err, want)
+		}
 	}
 }
 
@@ -317,10 +367,40 @@ func TestValidateBrewfileDirective_StillRefusesNpm(t *testing.T) {
 
 // --- helpers ----------------------------------------------------------------
 
-// jsonErrRunner returns a fixed body together with a non-nil error, modelling
-// `npm ls` exiting non-zero (peer-dep warnings) while still emitting valid JSON.
-type jsonErrRunner struct{ body string }
+// jsonErrRunner models `npm ls` exiting non-zero (peer-dep warnings) while still
+// emitting valid JSON: the JSON goes to STDOUT and the `npm ERR!` diagnostics to
+// STDERR — the real two-stream shape. Run fuses them the way CombinedOutput does
+// (so a caller on the plain CommandRunner seam sees exactly what production would),
+// while RunSeparate serves them apart, as ExecRunner now does.
+type jsonErrRunner struct{ stdout, stderr string }
 
 func (j *jsonErrRunner) Run(_ ...string) (string, error) {
-	return j.body, errors.New("npm ls: exit status 1")
+	return j.stdout + j.stderr, errors.New("npm ls: exit status 1")
+}
+
+func (j *jsonErrRunner) RunSeparate(_ ...string) (string, string, error) {
+	return j.stdout, j.stderr, errors.New("npm ls: exit status 1")
+}
+
+// stubNpm puts an executable `npm` stub running script first on PATH for the
+// duration of the test, so ExecRunner (which resolves npm through PATH) spawns a
+// REAL subprocess with fully separate streams. Skipped where a POSIX shell stub
+// cannot run.
+func stubNpm(t *testing.T, script string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell stub on PATH is POSIX-only")
+	}
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("/bin/sh not available for the npm stub")
+	}
+	dir := t.TempDir()
+	stub := filepath.Join(dir, npmBin)
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatalf("write npm stub: %v", err)
+	}
+	if err := os.Chmod(stub, 0o755); err != nil {
+		t.Fatalf("chmod npm stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }

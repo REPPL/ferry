@@ -8,9 +8,10 @@
 #   2. Every ADR is named sequentially as NNNN-title.md, never <date>--<slug>.
 #   3. No prose or config file points session handoff at .abcd/work/NEXT.md — the
 #      handoff lives in the private .abcd/.work.local/ layer (ADR 0002). Scope is the
-#      human/agent-facing surface (docs, scripts, hooks, templates); Go sources
-#      are exempt because their tests legitimately assert the OLD path is now
-#      absent. The developer-record .abcd/development/plans/ and research/ (which
+#      human/agent-facing surface (docs, scripts, hooks, templates) and Go
+#      sources; only Go TEST files are exempt, because they legitimately assert
+#      the OLD path is now absent (the same test-file carve-out invariant 4
+#      makes). The developer-record .abcd/development/plans/ and research/ (which
 #      describe past and investigative state) and the changelog are exempt
 #      too (they describe past state), as is this script itself.
 #   4. No Go source outside internal/dotfile/dotfile.go re-inlines either
@@ -53,7 +54,7 @@ if [ -d "$decisions" ]; then
 fi
 
 # 3. stale .abcd/work/NEXT.md handoff references (must be .abcd/.work.local/NEXT.md)
-hits=$(git ls-files -- ':!.abcd/development/plans/' ':!.abcd/development/research/' ':!CHANGELOG.md' ':!scripts/consistency-lint.sh' ':!*.go' \
+hits=$(git ls-files -- ':!.abcd/development/plans/' ':!.abcd/development/research/' ':!CHANGELOG.md' ':!scripts/consistency-lint.sh' ':!*_test.go' \
   | xargs -r grep -nF '.abcd/work/NEXT.md' 2>/dev/null || true)
 if [ -n "$hits" ]; then
   echo "consistency-lint: session handoff is .abcd/.work.local/NEXT.md, not .abcd/work/NEXT.md:" >&2

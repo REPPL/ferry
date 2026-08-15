@@ -727,8 +727,10 @@ func applyPlan(ctx *cmdContext, force bool, gopts guidedOpts, in *bufio.Reader, 
 	// we must roll THIS run back INLINE before returning — not wait for the next
 	// apply's RollbackIncomplete (that net is only for a real crash, where no
 	// in-process handler can run). mutate performs the whole per-target apply and
-	// returns its error; on a non-nil error we roll the in-progress run back here.
-	if err := mutate(eng, b, backupResource, commitRun, dec.toApply, force, out); err != nil {
+	// returns its error plus the number of changes it already REPORTED to the user
+	// before failing — those lines are undone by the rollback below, so they must
+	// be retracted in words.
+	if applied, err := mutate(eng, b, backupResource, commitRun, dec.toApply, force, out); err != nil {
 		// Roll back the current run's recorded changes immediately so a failed apply
 		// leaves the machine in its pre-apply state (files restored, terminal
 		// resources re-imported/deleted to their captured baseline) rather than half
@@ -739,6 +741,13 @@ func applyPlan(ctx *cmdContext, force bool, gopts guidedOpts, in *bufio.Reader, 
 			// The genuinely-bad case: the apply failed AND we could not undo it, so the
 			// machine may be left partially mutated. Surface BOTH errors loudly.
 			return fmt.Errorf("apply failed (%v); inline rollback also failed (machine may be partially applied): %w", err, rbErr)
+		}
+		// The rollback SUCCEEDED, so every "created"/"updated" line printed above is
+		// now a lie about the machine's state. Retract them explicitly — scrollback
+		// must never be left asserting writes this run reverted (the data-loss guard
+		// aborting mid-plan is the common way to get here).
+		if notice := rolledBackNotice(applied); notice != "" {
+			fmt.Fprintln(out, notice)
 		}
 		return err
 	}
@@ -761,10 +770,16 @@ func applyPlan(ctx *cmdContext, force bool, gopts guidedOpts, in *bufio.Reader, 
 // commit. It returns the first in-process error; the caller rolls the open run back
 // inline on any such error, so mutate itself just returns — it never leaves the run
 // committed on failure. The happy path commits normally and is idempotent.
-func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain string) error, commitRun func() error, plan []planItem, force bool, out io.Writer) error {
+//
+// applied counts the changes mutate has REPORTED as written so far (a created or
+// updated file, an applied preference domain) — not noops, skips, or conflicts,
+// which assert no change. It is returned on the error path too, so the caller can
+// retract exactly those lines once the inline rollback has reverted them
+// (rolledBackNotice).
+func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain string) error, commitRun func() error, plan []planItem, force bool, out io.Writer) (applied int, err error) {
 	lastApplied, err := dotfile.OpenStore()
 	if err != nil {
-		return fmt.Errorf("open last-applied store: %w", err)
+		return applied, fmt.Errorf("open last-applied store: %w", err)
 	}
 
 	var conflicts []string
@@ -795,7 +810,7 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			// is what an apply failure rolls back to via d.Restore.
 			eng.Register(d)
 			if err := backupResource(d.Domain()); err != nil {
-				return fmt.Errorf("back up %s preference domain: %w", it.domain, err)
+				return applied, fmt.Errorf("back up %s preference domain: %w", it.domain, err)
 			}
 			// Secure the inline-rollback state BEFORE mutating, and FAIL CLOSED: we
 			// never run terminal.Apply (the mutation) without a valid pre-mutation
@@ -812,7 +827,7 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 					fmt.Fprintf(out, "  %-22s skipped (macOS only)\n", it.domain)
 					continue
 				}
-				return fmt.Errorf("capture %s preference domain before mutating: %w", it.domain, blobErr)
+				return applied, fmt.Errorf("capture %s preference domain before mutating: %w", it.domain, blobErr)
 			}
 			res := terminal.Apply(d)
 			if res.Skipped && errors.Is(res.Err, terminal.ErrNotDarwin) {
@@ -839,10 +854,11 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				// other target this run touched too); RollbackIncomplete remains a third
 				// line of defence for a real crash.
 				if rbErr := d.Restore(capturedBlob, capturedAbsent); rbErr != nil {
-					return fmt.Errorf("apply %s preference domain failed (%v); inline rollback also failed: %w", it.domain, res.Err, rbErr)
+					return applied, fmt.Errorf("apply %s preference domain failed (%v); inline rollback also failed: %w", it.domain, res.Err, rbErr)
 				}
-				return fmt.Errorf("apply %s preference domain: %w", it.domain, res.Err)
+				return applied, fmt.Errorf("apply %s preference domain: %w", it.domain, res.Err)
 			}
+			applied++
 			fmt.Fprintf(out, "  %-22s preference domain applied\n", it.domain)
 			if res.Note != "" {
 				fmt.Fprintf(out, "  %-22s note: %s\n", "", res.Note)
@@ -895,7 +911,7 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 				}
 				// The empty-over-substantial data-loss guard aborts the run (rolled
 				// back inline by the caller); a conflict is reported and skipped above.
-				return err
+				return applied, err
 			}
 			// --force pushed an empty/near-empty repo source OVER a substantial live
 			// file. The overwrite proceeded (documented force semantics), but WARN,
@@ -918,19 +934,24 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 			// hash, never the plaintext bytes.
 			deferred = append(deferred, res)
 			it.action = string(res.Action)
+			// Only a REAL write counts toward the rollback retraction: a noop/skipped
+			// line asserts no change an abort would have to take back.
+			if res.Action == dotfile.ActionCreated || res.Action == dotfile.ActionUpdated {
+				applied++
+			}
 			fmt.Fprintf(out, "  %-22s %s\n", it.domain, res.Action)
 		}
 	}
 
 	if err := commitRun(); err != nil {
-		return fmt.Errorf("commit apply run: %w", err)
+		return applied, fmt.Errorf("commit apply run: %w", err)
 	}
 	// Persist deferred last-applied ONLY after the journal commit succeeds, so a
 	// crash/commit-error between the file write and here can never leave
 	// last-applied ahead of a rolled-back file (Codex#3). CommitLastApplied
 	// ignores results with no PendingHash (noop/skipped), so passing all is safe.
 	if err := dotfile.CommitLastApplied(deferred, lastApplied); err != nil {
-		return fmt.Errorf("commit last-applied: %w", err)
+		return applied, fmt.Errorf("commit last-applied: %w", err)
 	}
 	// Union this plan's agents targets into the persisted record (cumulative —
 	// entries are never removed) so `ferry restore agents` can resolve the
@@ -939,16 +960,28 @@ func mutate(eng *backup.Engine, b dotfile.Backuper, backupResource func(domain s
 	if len(agentsTargets) > 0 {
 		stateDir, err := paths.StateDir()
 		if err != nil {
-			return fmt.Errorf("record agents targets: %w", err)
+			return applied, fmt.Errorf("record agents targets: %w", err)
 		}
 		if err := agents.RecordTargets(stateDir, agentsTargets); err != nil {
-			return fmt.Errorf("record agents targets: %w", err)
+			return applied, fmt.Errorf("record agents targets: %w", err)
 		}
 	}
 	if len(conflicts) > 0 {
 		fmt.Fprintf(out, "%d conflict(s) left unchanged: %s\n", len(conflicts), strings.Join(conflicts, ", "))
 	}
-	return nil
+	return applied, nil
+}
+
+// rolledBackNotice renders the retraction an aborted apply owes the user: mutate
+// printed a "created"/"updated" line for each change it made before the failure,
+// and the caller's inline rollback then reverted every one of them, so those lines
+// no longer describe the machine. Returns "" when nothing had been reported yet
+// (there is nothing to take back).
+func rolledBackNotice(applied int) string {
+	if applied <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("apply aborted: the %d change(s) reported above were rolled back — this machine is unchanged", applied)
 }
 
 // fileConflictMessage renders the per-domain CONFLICT report line body for a
@@ -1076,7 +1109,7 @@ func printPlan(out io.Writer, plan []planItem) {
 	}
 
 	colour := stateColourer(out)
-	var create, update, conflict int
+	var create, update, conflict, refuse int
 
 	fmt.Fprintln(out, "ferry would apply:")
 	for _, it := range plan {
@@ -1106,6 +1139,19 @@ func printPlan(out io.Writer, plan []planItem) {
 				}
 			}
 		case kindFile:
+			// Preview fidelity for the empty-over-substantial data-loss guard: apply
+			// ABORTS this write (the guard refuses to let an empty/near-empty repo
+			// source erase a substantial live file), so the preview must not promise
+			// a "would update" that cannot happen. The prediction reads the SAME
+			// predicate the guard enforces, so the two can never drift. It is
+			// domain-independent (the guard is), hence one check ahead of the
+			// per-domain arms. Read-only: it stats/reads the live file, writes
+			// nothing.
+			if !it.skip && emptyOverSubstantialPreview(it) {
+				refuse++
+				fmt.Fprintf(out, "  %-22s %s (empty repo source over a substantial live file; apply would abort — re-run with `--force` to overwrite anyway)\n", it.domain, colour(colRed, "would refuse"))
+				continue
+			}
 			// Converged FileDomain rendering (fn-5): all file targets share the
 			// three-way state lines; the owning domain (it.fileDomain) selects the
 			// locally-drifted / conflict guidance that used to be keyed on the kind —
@@ -1188,15 +1234,34 @@ func printPlan(out io.Writer, plan []planItem) {
 	}
 
 	// One-line summary footer, only counting the actionable states.
-	if summary := planSummary(create, update, conflict); summary != "" {
+	if summary := planSummary(create, update, refuse, conflict); summary != "" {
 		fmt.Fprintf(out, "\n%s\n", summary)
 	}
+}
+
+// emptyOverSubstantialPreview reports whether apply's empty-over-substantial
+// data-loss guard would REFUSE this item's write, so the preview can render the
+// refusal instead of a "would update" that aborts. It only asks the question for
+// the states that actually reach the write (a missing live file has nothing to
+// erase; a locally-drifted target is skipped; a conflict is already refused and
+// reported as such). The verdict comes from dotfile.WouldRefuseEmptyOverSubstantial
+// — the SAME predicate the write-time guard enforces — so the preview cannot
+// drift from the thresholds.
+func emptyOverSubstantialPreview(it planItem) bool {
+	if it.kind != kindFile || it.state != dotfile.StateRepoAhead {
+		return false
+	}
+	_, dangerous := dotfile.WouldRefuseEmptyOverSubstantial(it.target, it.content)
+	return dangerous
 }
 
 // planSummary renders a compact "N would create, M would update, K conflict"
 // footer from the counted states, omitting zero categories. Returns "" when there
 // is nothing actionable to summarise (all-clean plans are handled earlier).
-func planSummary(create, update, conflict int) string {
+// refuse counts the targets the empty-over-substantial data-loss guard would
+// abort on — reported after the conflicts, since it is the same "nothing will be
+// written" family.
+func planSummary(create, update, refuse, conflict int) string {
 	var parts []string
 	if create > 0 {
 		parts = append(parts, fmt.Sprintf("%d would create", create))
@@ -1206,6 +1271,9 @@ func planSummary(create, update, conflict int) string {
 	}
 	if conflict > 0 {
 		parts = append(parts, fmt.Sprintf("%d conflict", conflict))
+	}
+	if refuse > 0 {
+		parts = append(parts, fmt.Sprintf("%d would refuse", refuse))
 	}
 	return strings.Join(parts, ", ")
 }

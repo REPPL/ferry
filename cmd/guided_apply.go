@@ -173,6 +173,16 @@ func decideGuided(ctx *cmdContext, plan []planItem, force bool, gopts guidedOpts
 
 	for _, it := range plan {
 		if isGuidedKind(it.kind) && skipSet[itemKey(it)] {
+			// Only announce the exclusion when there is actually something to
+			// exclude. A skip-always target that ALREADY matches the repo has no
+			// pending work: reporting "skipped" every run is noise, and leaving it
+			// out of cleanCount made an otherwise in-sync machine claim "0 target(s)
+			// already match". It stays out of toApply either way — an excluded
+			// target is never written, and never adopted into last-applied.
+			if !planItemPending(it) {
+				res.cleanCount++
+				continue
+			}
 			fmt.Fprintf(out, "  %-22s skipped (skip-always on this machine; delete it from %s to re-enable)\n", it.domain, skipAlwaysRel)
 			continue
 		}
@@ -298,6 +308,20 @@ func groupRisky(risky []planItem) []riskyGroup {
 	return groups
 }
 
+// noOverwriteSuffix flags the risky items that confirming will NOT write. The
+// walkthrough prompt reads "Apply all N change(s)…", but a CONFLICT (edited
+// locally AND in the repo) is refused by the apply core without --force: it is
+// reported and left unchanged. The walkthrough still carries conflicts — they hold
+// the only diff view of the divergence — so the listing says out loud what "yes"
+// does here, rather than letting the prompt imply an overwrite. Empty for every
+// other item (those really are applied on "yes").
+func noOverwriteSuffix(it planItem) string {
+	if it.kind == kindFile && it.state == dotfile.StateConflict {
+		return ` — "yes" will NOT overwrite this item (` + "`ferry apply --force`" + ` does)`
+	}
+	return ""
+}
+
 // walkRisky is the interactive walkthrough over the risky changes, grouped by
 // domain. For each group the user confirms the whole group ("yes"), skips it this
 // run (anything else), or drills into per-item review ("details"). Every decision
@@ -310,7 +334,7 @@ func walkRisky(in *bufio.Reader, out io.Writer, risky []planItem, store *dotfile
 		g := groups[gi]
 		fmt.Fprintf(out, "\n%s — %d change(s) need review:\n", g.name, len(g.items))
 		for _, it := range g.items {
-			fmt.Fprintf(out, "  - %-22s %s\n", it.domain, it.riskReason)
+			fmt.Fprintf(out, "  - %-22s %s%s\n", it.domain, it.riskReason, noOverwriteSuffix(it))
 		}
 		ans, eof := readGuidedLine(in, out, fmt.Sprintf(
 			"Apply all %d change(s) in %s? Type \"yes\" to apply, \"details\" to review each, anything else to skip this run: ", len(g.items), g.name))
@@ -381,7 +405,7 @@ func remainingItems(groups []riskyGroup) []planItem {
 // live — consuming the Foundation snapshot) followed by what apply would write
 // (live vs the repo content).
 func showItemDiff(out io.Writer, it planItem, store *dotfile.Store) {
-	fmt.Fprintf(out, "\n  --- %s: %s ---\n", it.domain, it.riskReason)
+	fmt.Fprintf(out, "\n  --- %s: %s%s ---\n", it.domain, it.riskReason, noOverwriteSuffix(it))
 	if it.secretRouted {
 		fmt.Fprintln(out, "  (secret-routed: diff hidden so no secret value is printed)")
 		return

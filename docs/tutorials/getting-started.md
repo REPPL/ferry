@@ -203,12 +203,20 @@ ferry apply --deps        # install declared dependencies (needs brew and/or npm
 ```
 
 `ferry apply` is idempotent and safe to re-run: run it after every `git pull`. It
-never overwrites local edits you haven't captured: if a managed file has uncaptured
-changes, `apply` reports a conflict instead of clobbering it. It also refuses to
-replace a substantial existing file with an empty or blank repo source — that would
-erase your config, so `apply` stops and names the file instead. Pass `--force` to
-override (it warns and backs the file up first, so `ferry restore` can recover it),
-or run `ferry capture` to save the current file into the repo before applying.
+never overwrites local edits you haven't captured: a managed file with uncaptured
+changes is left alone rather than clobbered — it is a capture candidate. If the repo
+has changed that same file too, `apply` reports a conflict and refuses it until you
+pick a winner. It also refuses to replace a substantial existing file with an empty
+or blank repo source — that would erase your config, so `apply` stops and names the
+file instead. Pass `--force` to override (it warns and backs the file up first, so
+`ferry restore` can recover it), or run `ferry capture` to save the current file into
+the repo before applying.
+
+ferry manages a single-branch config repo: `ferry sync` integrates and pushes `main`
+and refuses any other checked-out branch. A repo whose default branch is named
+something else needs renaming on the remote side as well — `git branch -M main`,
+push that branch, and set it as the remote's default branch — because a local-only
+rename leaves every other machine's clone on the old default.
 
 ## Move to another account or machine offline
 

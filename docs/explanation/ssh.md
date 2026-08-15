@@ -24,11 +24,12 @@ Staying hands-off removes this entire class of risk rather than trying to mitiga
 
 ## The invariant
 
-`~/.ssh/` is untouchable across every ferry operation: `apply`, `capture`, `status`,
-`diff`, and `restore` all skip it. A write whose target resolves under `~/.ssh` — even
-through a symlinked parent directory — is refused by the containment check, so no ferry
-path can ever land a file there. `ferry doctor` can *report* (read-only) when key or
-directory permissions look wrong, but it never changes them.
+`~/.ssh/` is untouchable across every ferry operation: no command reads, writes, or
+captures anything under it. A write whose target resolves under `~/.ssh` — even
+through a symlinked parent directory — is refused by the containment check, so no
+ferry path can ever land a file there, and the `work` verbs refuse a cargo store that
+is, or resolves into, `~/.ssh` before touching it. `ferry doctor` can *report*
+(read-only) when key or directory permissions look wrong, but it never changes them.
 
 ## What about syncing config across machines?
 

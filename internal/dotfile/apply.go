@@ -414,6 +414,32 @@ func StripFerryOverlayDirective(content []byte) []byte {
 	return stripFerryOverlayDirective(content)
 }
 
+// WouldRefuseEmptyOverSubstantial reports whether deploying desired onto t.Home
+// is the empty-over-substantial data-loss transition the guard refuses without
+// --force: the user's managed source (ferry's injected overlay directive stripped
+// first) carries no significant bytes AND the live file carries at least
+// substantialThreshold of them. liveSize is the live file's significant-byte
+// count when dangerous is true (0 otherwise).
+//
+// It is the ONE predicate behind both the write-time refusal
+// (guardEmptyOverSubstantial) and the read-only preview (`ferry diff` /
+// `ferry status`, which render a "would refuse" line instead of promising an
+// update that aborts). Exported so the preview shares this definition rather
+// than re-deriving the thresholds and drifting from the guard.
+func WouldRefuseEmptyOverSubstantial(t Target, desired []byte) (liveSize int, dangerous bool) {
+	if !isNearEmpty(stripFerryOverlayDirective(desired)) {
+		return 0, false // user's managed source has real content: not the dangerous transition.
+	}
+	live, err := os.ReadFile(t.Home)
+	if err != nil {
+		return 0, false // can't read live as a regular file: leave it to the deploy path.
+	}
+	if !isSubstantial(live) {
+		return 0, false // live file is itself trivial: nothing meaningful to lose.
+	}
+	return significantBytes(live), true
+}
+
 // guardEmptyOverSubstantial enforces the empty-over-substantial data-loss guard
 // for a target whose live file exists and is about to be overwritten. It judges
 // the desired content against the live file (t.Home): when the desired content
@@ -432,22 +458,16 @@ func StripFerryOverlayDirective(content []byte) []byte {
 // the strength of ferry's OWN boilerplate. desired is the exact in-memory content
 // the apply would write, so the guard judges precisely the bytes at stake.
 func guardEmptyOverSubstantial(t Target, desired []byte, force, dryRun bool, res *Result) error {
-	if !isNearEmpty(stripFerryOverlayDirective(desired)) {
-		return nil // user's managed source has real content: not the dangerous transition.
-	}
-	live, err := os.ReadFile(t.Home)
-	if err != nil {
-		return nil // can't read live as a regular file: leave it to the deploy path.
-	}
-	if !isSubstantial(live) {
-		return nil // live file is itself trivial: nothing meaningful to lose.
+	liveSize, dangerous := WouldRefuseEmptyOverSubstantial(t, desired)
+	if !dangerous {
+		return nil
 	}
 	if !force {
 		res.Action = ActionConflict
 		return &EmptyOverSubstantialError{
 			Result:   *res,
 			Path:     t.Home,
-			LiveSize: significantBytes(live),
+			LiveSize: liveSize,
 		}
 	}
 	// --force: proceed, but flag the hazard so the caller warns. (dryRun never

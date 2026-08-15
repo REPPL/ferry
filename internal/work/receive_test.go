@@ -466,3 +466,39 @@ func TestReceive_MidWriteFailureLeavesRevertibleState(t *testing.T) {
 		t.Error("NEXT.md survived the revert of the partial receive")
 	}
 }
+
+// TestReleaseAllRunsEveryReleaseInReverseOrder pins the fix for the lock-release
+// leak in planReceive: the loop used to assign `unlock = release`, so a SECOND
+// union-merge item would overwrite the first item's release and strand its
+// O_EXCL .lock file forever (nothing would ever remove it, and every later
+// receive would refuse). Releases are now accumulated and run together, newest
+// first — the same order a stack of defers would unwind.
+//
+// The builtin registry carries exactly ONE union-merge item today
+// (ItemTranscripts) and is not injectable, so two locks cannot be driven through
+// planReceive itself; this pins the accumulator that makes the second one safe.
+func TestReleaseAllRunsEveryReleaseInReverseOrder(t *testing.T) {
+	if releaseAll(nil) != nil {
+		t.Errorf("no acquired lock must yield a nil unlock (callers test for nil)")
+	}
+
+	var order []string
+	first := func() { order = append(order, "first") }
+	second := func() { order = append(order, "second") }
+
+	// A release captured BEFORE later acquisitions must still run: the accumulator
+	// is snapshotted, so growing the slice afterwards cannot drop or duplicate it.
+	unlockAfterOne := releaseAll([]func(){first})
+	unlockAfterTwo := releaseAll([]func(){first, second})
+
+	unlockAfterTwo()
+	if got := strings.Join(order, ","); got != "second,first" {
+		t.Errorf("releases ran %q, want %q (reverse acquisition order)", got, "second,first")
+	}
+
+	order = nil
+	unlockAfterOne()
+	if got := strings.Join(order, ","); got != "first" {
+		t.Errorf("the earlier snapshot ran %q, want %q", got, "first")
+	}
+}

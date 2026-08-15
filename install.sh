@@ -131,7 +131,13 @@ else
     exit 1
   fi
   echo "ferry install: downloading ${asset} (${VERSION})..."
-  curl -fsSL "${base_url}/${asset}" -o "$tmp"
+  # Same fail-loud shape as the checksums fetch above: -s suppresses curl's own
+  # message, so a 404 (no asset for this target in this release) would otherwise
+  # kill the script under set -e with nothing on stderr to explain it.
+  if ! curl -fsSL "${base_url}/${asset}" -o "$tmp"; then
+    echo "ferry install: could not download ${asset} from the release; refusing to install" >&2
+    exit 1
+  fi
   from_network=1
 fi
 

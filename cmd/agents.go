@@ -43,8 +43,10 @@ never touched).
 Default mode (your own repo — tracked files): an AGENTS.md router stamped from
 the config repo's template ({{PROJECT}}/{{DATE}} substituted), CLAUDE.md and
 GEMINI.md as relative symlinks to AGENTS.md inside the repo, a committed
-.abcd/work/ (DECISIONS.md, CONTEXT.md), the docs/ hierarchy with its map
-(docs/README.md), and a pre-commit config when the repo has none.
+.abcd/work/ (DECISIONS.md, CONTEXT.md), the user-facing docs map (docs/README.md;
+the Diátaxis content dirs are created on first use), the .abcd/development/
+record dirs (plans, research, decisions), and a pre-commit config when the repo
+has none.
 
 --attribution (tracked mode only) marks a repo that REQUIRES AI disclosure,
 overriding the workspace no-attribution default: it installs the

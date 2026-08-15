@@ -272,6 +272,10 @@ func planReceive(lc Locator, m *Manifest, contents map[string]cargoContent, stat
 		baseline = state.Baseline.Files
 	}
 
+	// Every advisory lock this plan takes, in acquisition order; unlock is kept in
+	// step with it so an early error return still releases whatever was taken.
+	var releases []func()
+
 	for _, mi := range m.Items {
 		if !mi.Included {
 			continue
@@ -367,7 +371,13 @@ func planReceive(lc Locator, m *Manifest, contents map[string]cargoContent, stat
 				if err != nil {
 					return nil, nil, nil, unlock, err
 				}
-				unlock = release
+				// ACCUMULATE, never overwrite: a plain `unlock = release` would drop
+				// the previous item's release, stranding its O_EXCL .lock file forever
+				// (no later receive could ever take that lock again). The registry
+				// carries one union-merge item today, so this is byte-identical now and
+				// correct the moment a second one is added.
+				releases = append(releases, release)
+				unlock = releaseAll(releases)
 				writes = append(writes, trWrites...)
 			}
 
@@ -478,6 +488,26 @@ func hashDir(root string) (map[string]string, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+// releaseAll folds a set of acquired lock releases into ONE unlock func that runs
+// them all, newest first (the order a stack of defers would unwind). It snapshots
+// the slice, so a func returned mid-plan stays valid as later locks are appended.
+// Returns nil when nothing was acquired — planReceive's callers test unlock for
+// nil before deferring it.
+func releaseAll(releases []func()) func() {
+	if len(releases) == 0 {
+		return nil
+	}
+	snapshot := make([]func(), len(releases))
+	copy(snapshot, releases)
+	return func() {
+		for i := len(snapshot) - 1; i >= 0; i-- {
+			if snapshot[i] != nil {
+				snapshot[i]()
+			}
+		}
+	}
 }
 
 // acquireDirLock takes the advisory lock file in dir (creating dir first),

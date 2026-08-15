@@ -14,6 +14,7 @@ import (
 	"github.com/REPPL/ferry/internal/deps"
 	"github.com/REPPL/ferry/internal/dotfile"
 	"github.com/REPPL/ferry/internal/platform"
+	"github.com/REPPL/ferry/internal/secret"
 	"github.com/REPPL/ferry/internal/terminal"
 )
 
@@ -206,6 +207,7 @@ func terminalLiveDiffers(repo, domain string) bool {
 		return false
 	}
 	repoBytes, _ := os.ReadFile(statusSrc)
+	repoBytes = terminalRepoCompareBytes(terminalSecretStore(), repoBytes)
 	if domain == "iterm2" {
 		// iTerm2 ONLY: compare LIKE-FOR-LIKE by reducing BOTH sides to the allowlisted
 		// global keys. `defaults export` carries volatile machine state (window
@@ -216,6 +218,44 @@ func terminalLiveDiffers(repo, domain string) bool {
 		repoBytes = terminal.FilterAllowlist(repoBytes)
 	}
 	return string(repoBytes) != string(liveBlob)
+}
+
+// terminalRepoCompareBytes renders the repo blob's {{ferry.secret ...}}
+// placeholders EXACTLY as apply does (buildTerminalDomain -> renderSecrets) before
+// the blob is compared with the live export.
+//
+// A secret-routed terminal capture stores the whole export out of band and leaves
+// only a placeholder at the repo path. Comparing that placeholder RAW against the
+// live plist can never be equal, so the domain reported drift forever — status
+// re-flagged it, capture re-offered and re-gated it — while apply, which renders
+// before importing, considered the very same domain in sync. Rendering first makes
+// the two agree.
+//
+// CONSERVATIVE FALLBACK: a nil store, a render error, or a MISSING referenced
+// secret returns the repo bytes UNCHANGED, i.e. the previous raw compare. The
+// error case keeps its old behaviour rather than inventing a new one on a
+// read-only path, and a missing secret is real divergence to surface (apply would
+// SKIP the domain). A blob with no placeholders renders to itself, so every
+// non-secret domain compares exactly as before.
+func terminalRepoCompareBytes(store *secret.Store, repoBytes []byte) []byte {
+	if store == nil || len(repoBytes) == 0 {
+		return repoBytes
+	}
+	rendered, _, skip, err := renderSecrets(store, repoBytes)
+	if err != nil || skip {
+		return repoBytes
+	}
+	return rendered
+}
+
+// terminalSecretStore opens the out-of-repo secret store for the read-only
+// terminal comparison; a failure yields nil so the caller compares raw.
+func terminalSecretStore() *secret.Store {
+	store, err := secret.Open()
+	if err != nil {
+		return nil
+	}
+	return store
 }
 
 // terminalRepoStatusSource resolves the repo plist status compares the live domain

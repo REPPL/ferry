@@ -1121,67 +1121,86 @@ func scanWorktreeForSecret(repo string) (string, bool, error) {
 		// the default -unormal (the same shape backupOutOfBand walks for backup).
 		// Reading it as a file EISDIRs — which is neither a deletion nor a
 		// not-exist — so without this branch the fail-closed abort below wedges
-		// every sync after a capture creates a new repo subdirectory. Walk it and
-		// gate every regular file inside; symlinks are committed as link targets,
-		// not content, and stay covered by the push-range scan. FAIL CLOSED on a
-		// walk error: a file we cannot enumerate is a file we cannot scan.
+		// every sync after a capture creates a new repo subdirectory. Enumerate it
+		// and gate every regular file inside. FAIL CLOSED on an enumeration error:
+		// a file we cannot list is a file we cannot scan.
 		if strings.HasSuffix(path, "/") {
-			var hit string
-			werr := filepath.Walk(filepath.Join(repo, path), func(p string, info os.FileInfo, werr error) error {
-				if werr != nil {
-					// A path that vanished mid-walk is the same rename/delete
-					// race the single-file branch below tolerates; anything
-					// else stays fail-closed.
-					if os.IsNotExist(werr) {
-						return nil
-					}
-					return werr
-				}
-				if hit != "" || !info.Mode().IsRegular() {
-					return nil
-				}
-				rel, rerr := filepath.Rel(repo, p)
-				if rerr != nil {
-					return rerr
+			// Enumerate the set `git add -A` would actually STAGE, not everything on
+			// disk: `ls-files --others --exclude-standard` applies the ignore rules,
+			// so a gitignored file (ferry's own init writes an unanchored `local/`
+			// pattern) is never scanned, and a NESTED repository arrives as a single
+			// directory entry — git records it as a gitlink and never commits its
+			// contents, so its `.git/**` must not be scanned either. The pathspec is
+			// `:(literal)` so a directory whose name holds glob characters enumerates
+			// itself and not a wildcard match. FAIL CLOSED if the listing errors.
+			listing, lerr := gitSync(repo, "ls-files", "--others", "--exclude-standard", "-z", "--", ":(literal)"+path)
+			if lerr != nil {
+				return "", false, fmt.Errorf("could not scan the untracked directory %q: %s", ghcli.Redact(path), ghcli.Redact(strings.TrimSpace(listing)))
+			}
+			for _, rel := range strings.Split(listing, "\x00") {
+				// The empty trailing field after the final NUL, and a nested
+				// repository's single directory-shaped entry, carry no content.
+				if rel == "" || strings.HasSuffix(rel, "/") {
+					continue
 				}
 				rel = filepath.ToSlash(rel)
 				if secretInPath(rel) {
-					hit = rel
-					return nil
+					return rel, true, nil
 				}
-				data, rerr := os.ReadFile(p)
-				if rerr != nil {
-					if os.IsNotExist(rerr) {
-						return nil
-					}
-					return rerr
+				blocked, serr := scanRepoFileForSecret(repo, rel)
+				if serr != nil {
+					return "", false, fmt.Errorf("could not scan the untracked directory %q: %s", ghcli.Redact(path), ghcli.Redact(serr.Error()))
 				}
-				if secret.IsBlockedFromRepo(string(data)) {
-					hit = rel
+				if blocked {
+					return rel, true, nil
 				}
-				return nil
-			})
-			if werr != nil {
-				return "", false, fmt.Errorf("could not scan the untracked directory %q: %s", ghcli.Redact(path), ghcli.Redact(werr.Error()))
-			}
-			if hit != "" {
-				return hit, true, nil
 			}
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(repo, path))
-		if err != nil {
-			if os.IsNotExist(err) {
-				// A rename/delete race: the path is gone, nothing to scan.
-				continue
-			}
-			return "", false, fmt.Errorf("could not read changed file %q: %w", ghcli.Redact(path), err)
+		blocked, serr := scanRepoFileForSecret(repo, path)
+		if serr != nil {
+			return "", false, fmt.Errorf("could not read changed file %q: %w", ghcli.Redact(path), serr)
 		}
-		if secret.IsBlockedFromRepo(string(data)) {
+		if blocked {
 			return path, true, nil
 		}
 	}
 	return "", false, nil
+}
+
+// scanRepoFileForSecret gates ONE repo-relative path's CONTENT, scanning only a
+// REGULAR file. The mode is taken with Lstat, never by opening the path:
+//   - a SYMLINK is committed as its link TEXT, never the target's bytes, so
+//     following it would read a file the repo never carries — a link at
+//     `notes -> ~/.ssh/id_ed25519` would make sync read the private key, which the
+//     ~/.ssh boundary forbids outright. The link text itself stays covered by the
+//     push-range blob scan.
+//   - a DIRECTORY-shaped entry has no content to scan: a gitlink/submodule is
+//     recorded as type `commit`, which the push-range scan already skips, and its
+//     files are never committed by this repo.
+//
+// A path that vanished since `git status` is a rename/delete race, not a scan
+// failure. Any OTHER stat or read error is returned so the caller FAILS CLOSED.
+func scanRepoFileForSecret(repo, rel string) (bool, error) {
+	p := filepath.Join(repo, rel)
+	info, serr := os.Lstat(p)
+	if serr != nil {
+		if os.IsNotExist(serr) {
+			return false, nil
+		}
+		return false, serr
+	}
+	if !info.Mode().IsRegular() {
+		return false, nil
+	}
+	data, rerr := os.ReadFile(p)
+	if rerr != nil {
+		if os.IsNotExist(rerr) {
+			return false, nil
+		}
+		return false, rerr
+	}
+	return secret.IsBlockedFromRepo(string(data)), nil
 }
 
 // rollback restores the snapshot and returns the appropriate error. On a CLEAN

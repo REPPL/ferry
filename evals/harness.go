@@ -160,9 +160,12 @@ func (s *Sandbox) FerryWithInput(stdin string, args ...string) (stdoutStr, stder
 // ApplyConfirmed runs `ferry apply` (plus any extra args) through the v0.5.0
 // guided walkthrough with confirmation piped on stdin, so a RISKY change (a
 // first-touch adoption / overwrite of a pre-existing file, a secret-routed
-// deploy, a conflict) is confirmed rather than failing closed. Several "yes"
-// lines are piped so multi-domain (dotfiles + agents) walkthroughs are all
-// confirmed; extra lines are harmless. Use this wherever a test deliberately
+// deploy) is applied rather than failing closed. A CONFLICT is the exception:
+// confirming it only carries it past the risk gate — the apply core still
+// refuses to overwrite an uncaptured local edit without --force, so a confirmed
+// conflict is REPORTED and left unchanged. Several "yes" lines are piped so
+// multi-domain (dotfiles + agents) walkthroughs are all confirmed; extra lines
+// are harmless. Use this wherever a test deliberately
 // drives an overwrite/adoption that the risk gate now halts on; a plain
 // create-where-absent apply needs no confirmation and can still use Ferry.
 func (s *Sandbox) ApplyConfirmed(args ...string) (stdout, stderr string, exitCode int) {

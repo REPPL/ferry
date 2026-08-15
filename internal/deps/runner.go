@@ -1,6 +1,7 @@
 package deps
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -37,20 +38,74 @@ type ExecRunner struct{}
 // NOT a root rail (Homebrew refuses to run as root) and stays $PATH-resolved so
 // the eval harness can shadow it with a stub.
 func (ExecRunner) Run(args ...string) (string, error) {
+	cmd, err := managerCommand(args)
+	if err != nil {
+		return "", err
+	}
+	out, cmdErr := cmd.CombinedOutput()
+	return string(out), cmdErr
+}
+
+// SeparateRunner is the OPTIONAL capability a CommandRunner may also implement:
+// running a command with stdout and stderr captured SEPARATELY. It is optional on
+// purpose — CommandRunner itself stays a one-method interface so every existing
+// fake (in this package and in cmd/) keeps compiling — and callers that need
+// unfused streams type-assert for it and fall back to Run.
+//
+// It exists because combined output is WRONG for machine-parsed manager output:
+// `npm ls -g --json` exits non-zero on a peer-dependency problem while still
+// emitting valid JSON on stdout, but it writes `npm ERR!` lines to stderr at the
+// same time — fused, the buffer is never a single parseable JSON value, so the
+// tolerated "non-zero exit with usable JSON" path could never be taken. This is
+// the deps-rail counterpart of the same split in cmd's hardened git helper.
+type SeparateRunner interface {
+	RunSeparate(args ...string) (stdout, stderr string, err error)
+}
+
+// RunSeparate executes args[0] with the remaining args and returns stdout and
+// stderr as SEPARATE strings. Program resolution is identical to Run (root-rail
+// managers through the sanitized seam, everything else through PATH); only the
+// stream capture differs.
+func (ExecRunner) RunSeparate(args ...string) (string, string, error) {
+	cmd, err := managerCommand(args)
+	if err != nil {
+		return "", "", err
+	}
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	cmdErr := cmd.Run()
+	return stdout.String(), stderr.String(), cmdErr
+}
+
+// runQuery runs a read-only manager query with stdout and stderr apart. A runner
+// that implements SeparateRunner serves them genuinely separated; any other
+// CommandRunner (a test fake) has only its one fused buffer, which is returned as
+// BOTH streams — the pre-existing behaviour for such runners, so no fake changes
+// meaning, while production (ExecRunner) gets the real split.
+func runQuery(runner CommandRunner, args []string) (stdout, stderr string, err error) {
+	if sr, ok := runner.(SeparateRunner); ok {
+		return sr.RunSeparate(args...)
+	}
+	out, runErr := runner.Run(args...)
+	return out, out, runErr
+}
+
+// managerCommand builds the *exec.Cmd for a manager invocation, applying the
+// root-rail resolution rule shared by Run and RunSeparate.
+func managerCommand(args []string) (*exec.Cmd, error) {
 	if len(args) == 0 {
-		return "", errors.New("deps: Run called with no command")
+		return nil, errors.New("deps: Run called with no command")
 	}
 	prog := args[0]
 	if isRootRailManager(prog) {
 		resolved, err := lookManager(prog)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		prog = resolved
 	}
-	cmd := exec.Command(prog, args[1:]...) //nolint:gosec // prog is a fixed manager name (root rail: sanitized-absolute), not user input
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	return exec.Command(prog, args[1:]...), nil //nolint:gosec // prog is a fixed manager name (root rail: sanitized-absolute), not user input
 }
 
 // lookManager resolves a ROOT-RAIL manager binary (apt-get / dpkg-query) to a

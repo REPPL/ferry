@@ -352,7 +352,9 @@ func gateManagedContentBeforeCommit(plan *seedPlan) error {
 func plannedCommitContents(plan *seedPlan) map[string]string {
 	files := map[string]string{
 		config.SharedManifestName: plan.manifest,
-		".gitignore":              config.LocalManifestName + "\nlocal/\n",
+		// Rendered from the SAME pattern set ensureLocalLayerIgnored writes, so the
+		// gate's model of the initial commit can never drift from the real writer.
+		".gitignore": plannedGitignoreBody,
 	}
 	if plan.shared != nil {
 		files[dotfile.RepoSubdir+"/zshrc"] = string(plan.shared)

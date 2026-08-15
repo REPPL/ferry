@@ -35,7 +35,9 @@ Without `FERRY_BIN` the eval suite skips every behavioural test and passes.
 CI (`.github/workflows/ci.yml`) runs gofmt, build, the cross-compile of every
 release target, vet, `go test ./...`, race tests on the internal packages, the
 CLI-reference staleness check, the consistency lint, and the full eval suite
-against real Linux and macOS binaries.
+against real Linux and macOS binaries, plus a full-history secret scan
+(gitleaks) and an audit of the workflows themselves (zizmor) — both blocking,
+with no local equivalent.
 
 `make gen-docs` regenerates the committed CLI reference under
 `docs/reference/cli/` — run it after any command, flag, or help-text change,

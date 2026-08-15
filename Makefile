@@ -55,8 +55,14 @@ clean:
 	rm -rf $(BINDIR)
 
 # Write bin/checksums.txt: the SHA256 of every binary in sha256sum format.
-# Depends on build so the binaries exist. The release workflow uploads this file
-# as a release asset; install.sh fetches it from the release and verifies each
+# `build` is .PHONY, so the prerequisite does not merely ensure the binaries
+# exist — it REBUILDS all four with THIS invocation's VERSION, overwriting
+# whatever an earlier make left in bin/. An empty VERSION (the default) restamps
+# them with the in-source dev version, so hashing them yields a manifest that is
+# internally consistent but does NOT match the release: pass the version to this
+# same invocation (`make checksums VERSION=vX.Y.Z`) whenever the hashes are meant
+# to match a published release. The release workflow uploads this file as a
+# release asset; install.sh fetches it from the release and verifies each
 # download against it.
 checksums: build
 	@scripts/gen-checksums.sh

@@ -179,19 +179,26 @@ surgery; the overlay is purely file-level.
 App-wide iTerm2 settings that live outside any profile are carried as an
 **allowlisted** `defaults` plist. Enable it with `iterm2 = true`. On `capture`,
 ferry exports the live `com.googlecode.iterm2` domain and keeps **only** an
-allowlisted set of stable, machine-agnostic global keys (quit/close prompts, tab
-and window chrome behaviour, dimming, clipboard behaviour, the auto-update
-preference, the default-profile pointer). Everything else is dropped, so volatile
+allowlisted set of stable, machine-agnostic global keys (quit/close prompts,
+startup and window-restoration behaviour, tab and window chrome behaviour,
+dimming, clipboard behaviour, mouse/pointer bindings, the auto-update preference,
+the default-profile pointer). Everything else is dropped, so volatile
 machine state — window geometry, one-shot `NoSync…` dialog flags — can never reach
 the repo. The filtered plist is committed at `iterm2/com.googlecode.iterm2.plist`.
-(The allowlist is a curated starting point; extend it in your own repo review.)
+(The allowlist is compiled into ferry — `internal/terminal/allowlist.go` holds the
+authoritative set of keys — and is curated rather than configured from the
+manifest.)
 
 On `apply`, ferry imports that committed plist into the domain with
 `defaults import`, which **replaces** the whole `com.googlecode.iterm2` domain
 with the carried set — so any global key you have not allowlisted is reset. The
 dropped keys are the volatile ones (window geometry regenerates, `NoSync…` dialog
-flags are one-shot), but if you rely on a global setting the starter allowlist
-omits, add it to the allowlist so it is carried and preserved.
+flags are one-shot), but if you rely on a global setting the allowlist omits, add
+that key by hand to the committed `iterm2/com.googlecode.iterm2.plist` (or to the
+`local/` overlay described below): `apply` imports the committed bytes verbatim,
+so keys beyond the allowlist are carried and preserved. `capture` never re-adds
+such a key, and an accepted whole-domain capture rewrites the file back to the
+filtered set.
 
 **Quit iTerm2 first.** A running iTerm2 keeps its preferences in memory and
 rewrites the domain on quit, so mutating it while it runs is silently lost — both
@@ -473,6 +480,13 @@ that belong to one machine only. `ferry capture` re-dumps the Brewfile from
 `brew bundle dump`; `ferry apply --deps` installs it with `brew bundle` (shared
 first, then the `.local` overlay).
 
+The overlay is gitignored by the repos ferry creates — alongside
+`ferry.local.toml` and `local/` — so it stays on the machine that wrote it and is
+never synced, cloned, or bundled. Git's ignore rule covers untracked files only,
+so an overlay that is already tracked stays tracked until
+`git rm --cached deps/Brewfile.<os>.local` untracks it (the file itself stays on
+disk); `git add -f` publishes one deliberately.
+
 `ferry status` reports **Brewfile drift**: it compares the live `brew bundle
 dump` against the repo Brewfile and reports how many entries would be captured
 (installed locally but not recorded) or installed (recorded but not present).
@@ -556,7 +570,9 @@ Some settings should differ per machine on purpose: a colour scheme on your lapt
 machine-specific tool. Those live in the `.local` layer:
 
 - **In the repo**: gitignored, under `local/<domain>/` (e.g. `local/zsh/zshrc.local`,
-  `local/tmux/tmux.conf.local`, `local/git/gitconfig.local`).
+  `local/tmux/tmux.conf.local`, `local/git/gitconfig.local`). The dependency
+  overlay [`deps/Brewfile.<os>.local`](#homebrew) is gitignored the same way,
+  though it sits under `deps/` rather than `local/`.
 - **On the machine**: materialised to the real path (e.g. `~/.zshrc.local`, sourced
   last by the shared `~/.zshrc`; `~/.tmux.conf.local`, sourced last by the shared
   `~/.tmux.conf` via `source-file -q`; `~/.gitconfig.local`, pulled in last by the

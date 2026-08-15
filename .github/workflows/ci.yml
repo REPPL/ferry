@@ -87,12 +87,17 @@ jobs:
         run: go build ./...
 
       # `go build ./...` compiles only the host target, but a release ships all
-      # four Makefile TARGETS — and the first `make build` on the release path
-      # runs only AFTER auto-release has pushed the (immutable) tag, so a
-      # target-specific break would make that version permanently unreleasable.
-      # Cross-compile every target here, pre-tag. Output is gitignored, so the
-      # gen-docs staleness check above is unaffected; one leg suffices because
-      # cross-compilation is host-independent.
+      # four Makefile TARGETS, so cross-compile every one of them here. This
+      # catches a target-specific break on PR and branch runs — before the
+      # commit that would promote a version reaches main. It does NOT gate the
+      # tag: auto-release runs on the same main push, concurrently with this
+      # job, and tags within seconds; nothing sequences the two. release.yml's
+      # own `verify` re-runs `make build` post-tag, so a break that slips
+      # through spends the version number — see the spent-version recovery in
+      # docs/how-to/cutting-a-release.md (Manual / recovery flow).
+      # Output is gitignored, so the gen-docs staleness check above is
+      # unaffected; one leg suffices because cross-compilation is
+      # host-independent.
       - name: Cross-compile every release target (make build)
         if: matrix.os == 'ubuntu-latest'
         run: make build
@@ -236,4 +241,11 @@ jobs:
           # ferry is public, so zizmor uploads its SARIF to Code Scanning, surfacing
           # findings in the Security tab; the job also still gates on those findings.
           # The upload needs security-events: write from the job permissions above.
-          advanced-security: true
+          # A pull_request run from a FORK carries a read-only token, so the upload
+          # would 403 and redden a job the contributor has no way to fix. Disable
+          # the upload — and only the upload — on fork PRs: zizmor still runs and
+          # still fails the job on its findings, so the gate is unchanged; the
+          # findings simply appear in the job log rather than the Security tab.
+          # The expression is true for every non-PR event (push, schedule) and for
+          # a PR whose head repo IS this repo (a branch PR from a collaborator).
+          advanced-security: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}

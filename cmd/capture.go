@@ -1081,6 +1081,7 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 		return false, false, err
 	}
 	repoBytes, _ := os.ReadFile(compareSrc)
+	repoBytes = terminalRepoCompareBytes(cc.secretStore, repoBytes)
 	if domain == "iterm2" {
 		// Compare LIKE-FOR-LIKE: filter the repo side to the same allowlist so a repo
 		// plist that happens to carry stale volatile keys never registers as drift.
@@ -1112,10 +1113,9 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	// Route the accepted whole domain.
 	switch promptRoute(cc.in, cc.out) {
 	case secret.RouteShared:
-		if err := writeRepoFile(cc.repoPath, repoDest, liveBlob); err != nil {
+		if err := acceptTerminalShared(cc.out, cc.repoPath, domain, prefID, liveBlob); err != nil {
 			return false, true, err
 		}
-		fmt.Fprintf(cc.out, "  %s: captured -> shared (%s)\n", domain, relTo(cc.repoPath, repoDest))
 		return true, true, nil
 	case secret.RouteLocal:
 		// Guarantee the local layer is gitignored AT creation so the wholesale
@@ -1158,12 +1158,68 @@ func captureBlockedTerminal(cc captureCtx, domain, prefID, repoDest string, live
 	if err := cc.secretStore.Put(ref, string(liveBlob)); err != nil {
 		return false, fmt.Errorf("write to secret store: %w", err)
 	}
-	placeholder := secret.Placeholder(ref)
-	if err := writeRepoFile(cc.repoPath, repoDest, []byte(placeholder+"\n")); err != nil {
+	if err := writeRepoFile(cc.repoPath, repoDest, terminalPlaceholderBlob(ref)); err != nil {
 		return false, err
 	}
 	fmt.Fprintf(cc.out, "  %s: secret stored out-of-band in ~/.config/ferry/secrets-local; a placeholder was written to the repo\n", domain)
 	return true, nil
+}
+
+// acceptTerminalShared writes an accepted whole-domain export to the SHARED repo
+// path and SUPERSEDES any per-machine local overlay for the same domain, so the
+// shared accept actually converges.
+//
+// Every comparison of this domain (status's terminalLiveDiffers, capture's own
+// compare, apply's terminalExportBlob) resolves LOCAL-WINS: while an overlay
+// exists it shadows the shared copy. A shared capture written behind a surviving
+// overlay therefore changed nothing observable — status reported drift forever,
+// capture re-offered the domain forever, and apply kept importing the stale
+// overlay. The accept is an explicit instruction to make THESE bytes the ones
+// this machine carries, so the superseded overlay is removed and the removal is
+// reported by path and reason.
+//
+// A removal failure is an ERROR, never a silent continue: leaving the overlay in
+// place would keep the machine on the stale bytes while the capture reported
+// success. An overlay that ferry REFUSES to read (symlinked/escaping — see
+// regularRepoFile, which guards before it stats) never wins a comparison in the
+// first place, so it is left exactly as found.
+func acceptTerminalShared(out io.Writer, repo, domain, prefID string, blob []byte) error {
+	dest := terminalRepoDest(repo, domain, prefID)
+	if err := writeRepoFile(repo, dest, blob); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "  %s: captured -> shared (%s)\n", domain, relTo(repo, dest))
+	// Probe BOTH overlay names apply's terminalExportBlob accepts (<id>.plist and
+	// the extensionless <id>), so no spelling of the overlay is left to shadow the
+	// shared copy on the next apply.
+	for _, cand := range []string{
+		terminalLocalDest(repo, domain, prefID),
+		filepath.Join(repo, "local", domain, prefID),
+	} {
+		if !regularRepoFile(repo, cand) {
+			continue // absent, or refused: it never wins the comparison.
+		}
+		safe, err := safeRepoPath(repo, cand)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(safe); err != nil {
+			return fmt.Errorf("remove superseded local overlay %s: %w", relTo(repo, cand), err)
+		}
+		fmt.Fprintf(out, "  %s: removed the local overlay %s (superseded by this shared capture; it would otherwise keep winning over the shared copy)\n", domain, relTo(repo, cand))
+	}
+	return nil
+}
+
+// terminalPlaceholderBlob is the repo file a secret-routed terminal capture writes
+// in place of the exported preferences: the bare {{ferry.secret ...}} placeholder
+// with NO added newline, so rendering it reproduces the stored export BYTE FOR
+// BYTE. The trailing newline matters: the export already ends in one, and every
+// comparison of the unfiltered (Apple Terminal) domain is a byte compare of the
+// rendered repo blob against the live export — one extra byte and the domain
+// reports drift forever.
+func terminalPlaceholderBlob(ref string) []byte {
+	return []byte(secret.Placeholder(ref))
 }
 
 // terminalRepoDest is the committed repo plist path apply READS for a terminal
