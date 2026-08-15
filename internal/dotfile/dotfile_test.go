@@ -1288,3 +1288,56 @@ func TestStripFerryOverlayDirectivePrecision(t *testing.T) {
 		t.Errorf("ferry's own injected block should strip to near-empty, got %q", got)
 	}
 }
+
+// TestWouldRefuseEmptyOverSubstantial pins the EXPORTED preview predicate against
+// the same thresholds the write-time guard enforces, so `ferry diff` can predict
+// the refusal instead of promising a "would update" that aborts. It must agree
+// with guardEmptyOverSubstantial on every axis: the ferry overlay directive is
+// stripped before judging near-emptiness, a trivial live file is not worth
+// guarding, and an absent live file is nothing to erase.
+func TestWouldRefuseEmptyOverSubstantial(t *testing.T) {
+	substantial := "export PATH=/usr/local/bin:$PATH\nalias gs='git status'\nalias gd='git diff'\n"
+	if significantBytes([]byte(substantial)) < substantialThreshold {
+		t.Fatalf("test fixture is not substantial: %d bytes", significantBytes([]byte(substantial)))
+	}
+
+	cases := []struct {
+		name     string
+		live     string // "" means: no live file at all
+		liveMiss bool
+		desired  string
+		want     bool
+		wantSize bool // expect a non-zero reported live size
+	}{
+		{name: "empty repo source over substantial live", live: substantial, desired: "", want: true, wantSize: true},
+		{name: "comments-only repo source over substantial live", live: substantial, desired: "# nothing here\n\n", want: true, wantSize: true},
+		{
+			name:    "ferry's own overlay block is stripped before judging",
+			live:    substantial,
+			desired: "\n" + ferryOverlayMarker + "\n[ -f ~/.zshrc.local ] && source ~/.zshrc.local\n",
+			want:    true, wantSize: true,
+		},
+		{name: "real repo source is never refused", live: substantial, desired: substantial, want: false},
+		{name: "trivial live file is nothing to lose", live: "# just a comment\n", desired: "", want: false},
+		{name: "absent live file is nothing to erase", liveMiss: true, desired: "", want: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), ".zshrc")
+			if !tc.liveMiss {
+				if err := os.WriteFile(home, []byte(tc.live), 0o644); err != nil {
+					t.Fatalf("seed live: %v", err)
+				}
+			}
+			tgt := Target{Name: "zshrc", Home: home}
+			size, got := WouldRefuseEmptyOverSubstantial(tgt, []byte(tc.desired))
+			if got != tc.want {
+				t.Errorf("WouldRefuseEmptyOverSubstantial = %v, want %v", got, tc.want)
+			}
+			if tc.wantSize && size <= 0 {
+				t.Errorf("a predicted refusal must report the live significant-byte count, got %d", size)
+			}
+		})
+	}
+}
