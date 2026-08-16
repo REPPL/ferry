@@ -166,6 +166,17 @@ func Validate(path, expectedSHA256 string, includeLocalWanted bool) (*Validated,
 	var actualTotal uint64 // cumulative ACTUAL decompressed bytes, capped at maxTotalSize
 
 	for _, e := range manifest.Entries {
+		// Secret-shaped PATH gate FIRST, symmetric with export (which WITHHOLDS such
+		// a file, so no ferry-written bundle carries one — reaching here means the
+		// bundle was handcrafted). Refusing at import keeps a token-named file from
+		// being planted in the config repo, where it would later wedge sync's
+		// fail-closed push gate far from its cause. It runs ahead of every other
+		// per-entry check because those name the path in their refusals, and echoing
+		// a secret-shaped path re-leaks the token — so this one WITHHOLDS it, the
+		// same withholding export's report applies.
+		if secret.IsPathBlockedFromRepo(e.Path) {
+			return nil, fmt.Errorf("bundle: a manifest entry has a secret-shaped path component (path withheld) — refusing to import")
+		}
 		clean, err := canonicalRel(e.Path)
 		if err != nil {
 			return nil, fmt.Errorf("bundle: manifest entry %q: %w", e.Path, err)
