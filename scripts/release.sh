@@ -32,7 +32,8 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Functions (also sourced by tests; see the executed-directly guard at the end).
+# Functions. The executed-directly guard at the end lets a shell source this
+# file to exercise them in isolation without running main.
 # ---------------------------------------------------------------------------
 
 die() { echo "release: $*" >&2; exit 1; }
@@ -115,6 +116,17 @@ main() {
   [ "$local_main" = "$remote_main" ] || \
     die "local main ($local_main) != origin/main ($remote_main); pull/push to sync first"
 
+  # Step 7 regenerates .abcd/.work.local/NEXT.md after the tag push; check its
+  # carry markers here so a malformed local file fails the driver BEFORE the
+  # irreversible push, not after it. render_next_md re-checks at use.
+  local next_precheck="$ROOT/.abcd/.work.local/NEXT.md"
+  if [ -f "$next_precheck" ]; then
+    grep -qF 'next:carry:start' "$next_precheck" || \
+      die ".abcd/.work.local/NEXT.md is missing the '<!-- next:carry:start ... -->' marker; fix it before releasing (step 7 would fail after the tag push)"
+    grep -qF 'next:carry:end' "$next_precheck" || \
+      die ".abcd/.work.local/NEXT.md is missing the '<!-- next:carry:end -->' marker; fix it before releasing (step 7 would fail after the tag push)"
+  fi
+
   # -------------------------------------------------------------------------
   # Gate 2 — CHANGELOG: the version must be promoted out of [Unreleased].
   # -------------------------------------------------------------------------
@@ -122,7 +134,16 @@ main() {
   if ! grep -Eq "^## \[${dot_re}\] - " "$ROOT/CHANGELOG.md"; then
     die "CHANGELOG.md has no '## [${ver_no_v}] - <date>' section; promote it out of [Unreleased] first"
   fi
-  echo "release: gate CHANGELOG — '## [${ver_no_v}]' present."
+  # The version must also be the NEWEST dated section. The driver tags HEAD,
+  # so accepting an older still-untagged version would point an immutable tag
+  # at newer main code under an older name — the exact mis-pointing the
+  # automatic path refuses by tagging only the first dated heading.
+  local newest
+  newest="$(grep -E -m1 '^## \[[0-9]+\.[0-9]+\.[0-9]+\] - ' "$ROOT/CHANGELOG.md" | sed -E 's/^## \[([0-9.]+)\].*/\1/')"
+  if [ "$newest" != "$ver_no_v" ]; then
+    die "'${ver_no_v}' is not the newest dated CHANGELOG section (${newest:-none} is); tagging it at main HEAD would mis-point the tag"
+  fi
+  echo "release: gate CHANGELOG — '## [${ver_no_v}]' present and newest."
 
   # -------------------------------------------------------------------------
   # Gate 3 — docs currency (deterministic lint). The tool is maintainer-local
@@ -225,7 +246,7 @@ main() {
   echo "release: reset .abcd/.work.local/NEXT.md (carry region preserved)."
 }
 
-# Run main only when executed directly; when sourced (tests), just define the
+# Run main only when executed directly; when sourced, just define the
 # functions above so render_next_md can be exercised in isolation.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   main "$@"
