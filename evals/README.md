@@ -138,7 +138,7 @@ The remaining eval files, by feature area:
 | Agents capture | `capture_agents_test.go` |
 | Guided apply | `guided_apply_test.go` |
 | Terminal-adjacent domains | `emacs_test.go`, `tmux_test.go`, `keybindings_test.go`, `npmrc_test.go`, `iterm2_profiles_test.go`, `iterm2_staging_test.go`, `terminal_config_test.go` |
-| Dependency tracking | `deps_track_test.go` |
+| Dependency tracking | `deps_track_test.go`, `deps_local_overlay_ignore_test.go` (a fresh-init repo leaves `deps/Brewfile.<goos>.local` untracked across a real `sync`) |
 | Safety overlays and edge cases | `safety_apply_test.go`, `safety_overlay_bypass_test.go`, `edgecases_test.go`, `fn5_migration_test.go` |
 
 ## Related documentation

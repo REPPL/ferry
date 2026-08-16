@@ -2,7 +2,10 @@
 
 One manifest per platform/manager. `ferry` selects the right one on this machine
 by `runtime.GOOS` plus the detected package manager (`internal/deps.SelectManifest`),
-and the gated `ferry apply --deps` step installs from it. Default file-only
+and the gated `ferry apply --deps` step installs from it — but only when
+`brew = true` is declared under `[manage]` (see
+[Dependencies](../docs/reference/configuration.md#homebrew)); without that
+declaration `apply --deps` skips the OS package manager entirely. Default file-only
 `apply` never touches these — package installs may prompt, need `sudo`, or run
 remote scripts, so they are an explicit step.
 

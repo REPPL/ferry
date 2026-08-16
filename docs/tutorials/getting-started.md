@@ -135,8 +135,7 @@ If you have no `~/.zshrc` (and skip the starter), ferry seeds no shell source at
 file once you have one. A symlinked or unreadable `~/.zshrc` is left entirely alone:
 ferry declares it but does not manage, back up, or replace it.
 
-The wizard's plugin set is currently **zsh** (`~/.zshrc`); more config domains come
-with later releases.
+The wizard's plugin set is **zsh** (`~/.zshrc`).
 
 `ferry capture` is interactive and selective: it shows you each change and lets you
 route it **shared** (synced to every machine) or **local** (this machine only). Things

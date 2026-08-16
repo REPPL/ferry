@@ -48,9 +48,13 @@ Two details worth calling out:
 - **First-touch adoption is not a conflict.** The first time `apply` meets an
   in-scope file that ferry has never managed — one with no last-applied record —
   it takes ownership rather than refusing: it backs the live file up to an
-  immutable baseline and then deploys the repo content. Because there is no
-  last-applied record, there is no uncaptured edit to protect, so this is
-  treated as repo-ahead, not conflict. The backup keeps it reversible.
+  immutable baseline and then deploys the repo content. Adoption is still a
+  *risky* change, so it goes through [`apply`](../reference/commands.md)'s
+  risky-change gate: the guided walkthrough asks you to confirm it, while a
+  non-interactive run — or one with `--skip-wizard` — refuses it, listing it
+  unapplied and exiting non-zero. Because there is no last-applied record, there
+  is no uncaptured edit to protect, so this is treated as repo-ahead, not
+  conflict. The backup keeps it reversible.
 - **A conflict is reserved for the genuine case:** ferry *has* a last-applied
   record for the file, your live copy differs from it (you edited a file ferry
   manages, without capturing), *and* the repo has also moved on. Only

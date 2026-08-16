@@ -30,8 +30,9 @@ tag yet, it creates the annotated `vX.Y.Z` tag at that commit and invokes the
 [`release` workflow](../../.github/workflows/release.yml) directly as a reusable
 workflow. An ordinary push — no newly promoted CHANGELOG heading — tags nothing and
 does nothing. Tags are immutable: only the newest dated version is ever tagged, and an
-already-tagged version is re-released only if its GitHub Release is missing (a
-transient publish failure), built from the tagged commit, never a moved-on `main`.
+already-tagged version is re-released only if its GitHub Release is missing, still
+a draft, or short of its five assets (a transient publish failure), built from the
+tagged commit, never a moved-on `main`.
 
 Because the tag exists moments after the promotion commit lands, run the local gates
 **before** pushing that commit. The driver itself cannot run at this point — its
@@ -159,6 +160,13 @@ origin vX.Y.Z`. Note that on the automatic path above `auto-release` tags the
 promotion commit as soon as it is pushed, so a driver run started afterwards fails at
 its tag step on the existing tag — that is the expected outcome, not an error in the
 release: the gates have still run, and the tag already points at the right commit.
+
+After the tag push the driver does one last piece of housekeeping, all of it
+local: it archives `.abcd/.work.local/NEXT.md` into `.abcd/.work.local/history/`
+(as `NEXT-vX.Y.Z-<timestamp>.md`) and regenerates the file with its carry region
+preserved. Under `--dry-run` it prints the current-to-regenerated diff instead of
+writing anything, and a tree with no `NEXT.md` skips the step. Nothing here is
+staged, committed, or pushed — `.abcd/.work.local/` is local-only.
 
 To prepare a release-ready tree locally (e.g. to inspect the manifest before tagging, or
 if you publish by hand):
