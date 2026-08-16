@@ -36,7 +36,7 @@ var agentsScaffoldCmd = &cobra.Command{
 	Short: "Set a project repo up for the multi-tool agent pipeline",
 	Long: `Set a project repo up for the multi-tool agent pipeline.
 
-Both modes create the local-only runtime layout: .abcd/.work.local/{scratch,logs},
+Both modes create the local-only runtime layout: .abcd/.work.local/{NEXT.md,scratch,logs},
 hidden via the git info/exclude mechanism (never committed; .gitignore is
 never touched).
 
