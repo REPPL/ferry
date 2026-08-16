@@ -275,13 +275,12 @@ func isLocalLayerRel(slash string) bool {
 // secretInPath reports whether any component of a forward-slash relative path is a
 // high-confidence secret-shaped token (M10). Each component is scanned as an opaque
 // value so a token used as a filename is caught.
+//
+// It delegates to secret.IsPathBlockedFromRepo, the ONE owner of the predicate:
+// bundle import/validate applies the same function, so the export and import path
+// gates cannot drift apart.
 func secretInPath(slash string) bool {
-	for _, seg := range strings.Split(slash, "/") {
-		if secret.GateValue(seg).BlockedFromRepo {
-			return true
-		}
-	}
-	return false
+	return secret.IsPathBlockedFromRepo(slash)
 }
 
 // isProbablyText reports whether data is safe to run the text secret gate over. A

@@ -195,9 +195,30 @@ func inlineCloseIdx(raw string) int {
 	if open < 0 {
 		return -1
 	}
+	return closeBracketIdx(raw, open+1)
+}
+
+// closeBracketIdx returns the byte index of the `]` that closes a section header
+// in s, scanning from index from. A `]` inside a quoted subsection does not close
+// the header, and git's in-quote escapes are honoured: inside `"…"` a backslash
+// escapes the following byte (`\"` and `\\`), so that byte can neither close the
+// quote nor the header. The scan never crosses a newline and returns -1 when no
+// closing `]` is found.
+//
+// inlineCloseIdx (the physical-line split) and parseSectionHeader (the section /
+// subsection derivation) BOTH go through here so the two can never disagree about
+// where a header ends. It only ever computes indices — no byte is rewritten, so
+// the callers keep their Raw bytes and Reassemble(Parse(x)) == x holds.
+func closeBracketIdx(s string, from int) int {
 	inQuote := false
-	for i := open + 1; i < len(raw); i++ {
-		switch raw[i] {
+	for i := from; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			// A trailing backslash before the newline is git's value-continuation
+			// signal, so it is never consumed as an escape.
+			if inQuote && i+1 < len(s) && s[i+1] != '\n' {
+				i++
+			}
 		case '"':
 			inQuote = !inQuote
 		case ']':
@@ -279,7 +300,9 @@ func parseSectionHeader(trimmed string) (section, subsection string, ok bool) {
 		return "", "", false
 	}
 	inner := trimmed[1:]
-	if close := strings.IndexByte(inner, ']'); close >= 0 {
+	// Same quoting/escaping rule the inline split uses: a `]` inside the quoted
+	// subsection is part of the subsection, not the header's terminator.
+	if close := closeBracketIdx(inner, 0); close >= 0 {
 		inner = inner[:close]
 	}
 	inner = strings.TrimSpace(inner)

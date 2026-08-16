@@ -1097,7 +1097,7 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	// MANDATORY secret gate BEFORE any write: scan the WHOLE exported plist value. A
 	// high-confidence secret blocks every repo route (shared AND local); only reject
 	// / the out-of-repo secret store are offered.
-	gate := secret.GateValue(string(liveBlob))
+	gate := secret.GateValue(terminalGateInput(liveBlob))
 	if gate.BlockedFromRepo {
 		w, gerr := captureBlockedTerminal(cc, domain, prefID, repoDest, liveBlob)
 		return w, true, gerr
@@ -1135,6 +1135,62 @@ func captureTerminalDomain(cc captureCtx, domain string) (wrote bool, offered bo
 	}
 }
 
+// terminalGateInput reduces what the MANDATORY pre-write secret gate READS for a
+// whole-plist terminal domain (both Apple Terminal's raw export and iTerm2's
+// allowlist-filtered one): the base64 payload inside every XML plist
+// <data>…</data> element is masked out. Only the gate INPUT changes — the routes,
+// the gate's authority, and the bytes written on accept are all untouched; the
+// blob that reaches the repo is still the raw export.
+//
+// A <data> element is base64 of binary NSKeyedArchiver output — how Apple
+// Terminal stores every customised profile attribute (colours, font, cursor). The
+// TEXT scanner cannot read into base64 anyway: a token encoded there is
+// unmatchable by every named detector, so masking loses no real coverage. What it
+// does remove is a permanent false positive — wrapped base64 lines clear the
+// entropy detector's length and shape floors, so any customised Apple Terminal
+// profile blocked the whole domain from the repo forever, leaving only reject and
+// the (non-portable) secret store. <string> values, where a pasteable token would
+// actually live, stay fully scanned.
+func terminalGateInput(blob []byte) string {
+	const openTag, closeTag = "<data>", "</data>"
+	rest := string(blob)
+	var b strings.Builder
+	b.Grow(len(rest))
+	for {
+		open := strings.Index(rest, openTag)
+		if open < 0 {
+			break
+		}
+		payload := open + len(openTag)
+		end := strings.Index(rest[payload:], closeTag)
+		if end < 0 {
+			// UNTERMINATED <data>: the payload's extent is unknown, so nothing more
+			// is masked. Malformed input fails toward scanning MORE, never less.
+			break
+		}
+		b.WriteString(rest[:payload])
+		b.WriteString(maskBase64Payload(rest[payload : payload+end]))
+		rest = rest[payload+end:]
+	}
+	b.WriteString(rest)
+	return b.String()
+}
+
+// maskBase64Payload replaces every base64-alphabet character of a plist <data>
+// body with 'x', leaving whitespace (and anything else) in place so the masked
+// text keeps the original's line structure. A run of 'x' carries zero entropy and
+// no digit, so it trips neither the entropy heuristic nor any named detector.
+func maskBase64Payload(payload string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '+', r == '/', r == '=':
+			return 'x'
+		}
+		return r
+	}, payload)
+}
+
 // captureBlockedTerminal handles a terminal domain whose exported plist holds a
 // high-confidence secret. It is NEVER written to shared or local (both live in the
 // repo worktree); only reject or the out-of-repo secret store are offered, mirroring
@@ -1162,33 +1218,48 @@ func captureBlockedTerminal(cc captureCtx, domain, prefID, repoDest string, live
 		return false, err
 	}
 	fmt.Fprintf(cc.out, "  %s: secret stored out-of-band in ~/.config/ferry/secrets-local; a placeholder was written to the repo\n", domain)
+	// The placeholder lands at the SHARED repo path, so a surviving per-machine
+	// overlay from an earlier [l]ocal capture would keep winning every comparison
+	// and apply would keep importing the stale overlay instead. Drop it on the same
+	// terms the shared accept does (the stored secret is neither re-read nor
+	// re-written here).
+	if err := removeSupersededLocalOverlays(cc.out, cc.repoPath, domain, prefID); err != nil {
+		return true, err
+	}
 	return true, nil
 }
 
 // acceptTerminalShared writes an accepted whole-domain export to the SHARED repo
 // path and SUPERSEDES any per-machine local overlay for the same domain, so the
 // shared accept actually converges.
-//
-// Every comparison of this domain (status's terminalLiveDiffers, capture's own
-// compare, apply's terminalExportBlob) resolves LOCAL-WINS: while an overlay
-// exists it shadows the shared copy. A shared capture written behind a surviving
-// overlay therefore changed nothing observable — status reported drift forever,
-// capture re-offered the domain forever, and apply kept importing the stale
-// overlay. The accept is an explicit instruction to make THESE bytes the ones
-// this machine carries, so the superseded overlay is removed and the removal is
-// reported by path and reason.
-//
-// A removal failure is an ERROR, never a silent continue: leaving the overlay in
-// place would keep the machine on the stale bytes while the capture reported
-// success. An overlay that ferry REFUSES to read (symlinked/escaping — see
-// regularRepoFile, which guards before it stats) never wins a comparison in the
-// first place, so it is left exactly as found.
 func acceptTerminalShared(out io.Writer, repo, domain, prefID string, blob []byte) error {
 	dest := terminalRepoDest(repo, domain, prefID)
 	if err := writeRepoFile(repo, dest, blob); err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "  %s: captured -> shared (%s)\n", domain, relTo(repo, dest))
+	return removeSupersededLocalOverlays(out, repo, domain, prefID)
+}
+
+// removeSupersededLocalOverlays drops any per-machine local overlay for a terminal
+// domain after something has been written to that domain's SHARED repo path (an
+// accepted export, or the placeholder of a secret-routed capture).
+//
+// Every comparison of this domain (status's terminalLiveDiffers, capture's own
+// compare, apply's terminalExportBlob) resolves LOCAL-WINS: while an overlay
+// exists it shadows the shared copy. A shared write left behind a surviving
+// overlay therefore changes nothing observable — status reports drift forever,
+// capture re-offers the domain forever, and apply keeps importing the stale
+// overlay. The capture is an explicit instruction to make the shared bytes the
+// ones this machine carries, so the superseded overlay is removed and the removal
+// is reported by path and reason.
+//
+// A removal failure is an ERROR, never a silent continue: leaving the overlay in
+// place would keep the machine on the stale bytes while the capture reported
+// success. An overlay that ferry REFUSES to read (symlinked/escaping — see
+// regularRepoFile, which guards before it stats) never wins a comparison in the
+// first place, so it is left exactly as found.
+func removeSupersededLocalOverlays(out io.Writer, repo, domain, prefID string) error {
 	// Probe BOTH overlay names apply's terminalExportBlob accepts (<id>.plist and
 	// the extensionless <id>), so no spelling of the overlay is left to shadow the
 	// shared copy on the next apply.
@@ -1206,7 +1277,7 @@ func acceptTerminalShared(out io.Writer, repo, domain, prefID string, blob []byt
 		if err := os.Remove(safe); err != nil {
 			return fmt.Errorf("remove superseded local overlay %s: %w", relTo(repo, cand), err)
 		}
-		fmt.Fprintf(out, "  %s: removed the local overlay %s (superseded by this shared capture; it would otherwise keep winning over the shared copy)\n", domain, relTo(repo, cand))
+		fmt.Fprintf(out, "  %s: removed the local overlay %s (superseded by this capture of the shared copy; it would otherwise keep winning over the shared copy)\n", domain, relTo(repo, cand))
 	}
 	return nil
 }

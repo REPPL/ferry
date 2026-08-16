@@ -214,6 +214,10 @@ The `.local` layer applies whole-domain: a committed
 `local/iterm2/com.googlecode.iterm2.plist` is imported instead of the shared copy
 on machines that need a wholesale-divergent global set.
 
+A filtered export that trips the secret scan takes the same store route as the
+Apple Terminal plist below, with the same placeholder-and-skip consequences: see
+[Apple Terminal](#apple-terminal).
+
 ## Apple Terminal
 
 Apple Terminal's preferences are carried as a **whole-domain** `defaults`
@@ -229,7 +233,15 @@ Enable it with `terminal = true` (one character away from `terminals`, the
 config-file emulators above — they are different domains). On `capture`, ferry
 exports the live domain and offers the whole plist through the same accept and
 route flow as other captures — shared, local, or reject; a shared-routed
-capture commits it at `terminal/com.apple.Terminal.plist`. On `apply`, ferry
+capture commits it at `terminal/com.apple.Terminal.plist`. An export that trips
+the secret scan is barred from **both** repo routes and offered the out-of-repo
+secret store instead: the value is stored on this machine and the committed
+plist path carries a `{{ferry.secret …}}` placeholder in its place. `apply`
+renders that placeholder back before the import and `status` compares through
+it, so a stored secret does not read as drift. The value itself lives in the
+per-machine store, so the domain applies only on a machine that holds it;
+elsewhere `apply` skips the whole domain and names the missing reference rather
+than importing a placeholder. On `apply`, ferry
 imports the committed plist, which replaces the whole domain; relaunch
 Terminal for the change to take effect (`cfprefsd` may serve a cached copy
 until then). The domain is macOS-only and skips cleanly elsewhere. The `.local` layer applies
@@ -621,7 +633,11 @@ untracked, ignored, or editor-backup files). It never carries secrets, anything 
 `~/.ssh/`, or the per-machine `.local` layer.
 
 The per-machine local layer (`local/**`, `ferry.local.toml`) is **gitignored by
-design**, so it is not tracked and does not enter the bundle. `--include-local` adds
+design**, so it is not tracked and does not enter the bundle. Those two paths are
+exactly what the bundle's local-layer gate covers: `deps/Brewfile.<os>.local` is
+gitignored rather than gated, so a force-tracked overlay travels with the repo like
+any other tracked file, in the ordinary export set and without `--include-local`.
+`--include-local` adds
 back the local-layer files that are actually **tracked** in the repo (the same
 `git ls-files` set `bundle export` collects from) — so it bundles a local-layer file only if you
 have force-tracked it. The local layer lands on the other side only when you pass

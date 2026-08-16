@@ -263,13 +263,22 @@ func terminalSecretStore() *secret.Store {
 // (local/<domain>/<id>.plist) when present, else the shared committed copy
 // (iterm2/<id>.plist or terminal/<id>.plist).
 func terminalRepoStatusSource(repo, domain, prefID string) string {
-	local := filepath.Join(repo, "local", domain, prefID+".plist")
-	// Guard-first probe: regularRepoFile routes `local` through safeRepoPath BEFORE
-	// any stat, so a symlinked repo plist (or a symlinked PARENT into ~/.ssh) is
-	// never stat'd here — it refuses before the read. Falling through to the shared
-	// copy keeps status read-only and safe.
-	if regularRepoFile(repo, local) {
-		return local
+	// Probe BOTH overlay spellings apply's terminalExportBlob accepts (<id>.plist
+	// and the extensionless <id>): an overlay apply imports but this resolution
+	// skipped past left status reporting drift forever and capture re-offering the
+	// domain forever.
+	//
+	// Guard-first probe: regularRepoFile routes each candidate through safeRepoPath
+	// BEFORE any stat, so a symlinked repo plist (or a symlinked PARENT into
+	// ~/.ssh) is never stat'd here — it refuses before the read. Falling through to
+	// the shared copy keeps status read-only and safe.
+	for _, local := range []string{
+		filepath.Join(repo, "local", domain, prefID+".plist"),
+		filepath.Join(repo, "local", domain, prefID),
+	} {
+		if regularRepoFile(repo, local) {
+			return local
+		}
 	}
 	if domain == "iterm2" {
 		return filepath.Join(repo, "iterm2", prefID+".plist")

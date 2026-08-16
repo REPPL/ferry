@@ -357,11 +357,17 @@ func TestInstallApt_AlreadyInstalledNotRecorded(t *testing.T) {
 
 // aptStateRunner answers dpkg-query from a before/after status map and flips
 // after apt-get install runs. A package absent from the map is "not installed":
-// dpkg-query exits non-zero with empty output, which the prober reads as absent.
+// dpkg-query exits non-zero AND writes "no packages found matching <pkg>" to the
+// stream the runner returns — CommandRunner.Run returns COMBINED stdout+stderr,
+// so that diagnostic IS the returned output, and the prober reads it as absent.
+// probeFailBefore names a package whose BEFORE probe fails at the exec level
+// instead (empty output, error) — the shape a runner returns when the binary
+// cannot be resolved or forked.
 type aptStateRunner struct {
-	before, after map[string]string
-	installed     bool
-	installArgs   []string // argv of the apt-get install invocation, once seen
+	before, after   map[string]string
+	probeFailBefore string
+	installed       bool
+	installArgs     []string // argv of the apt-get install invocation, once seen
 }
 
 func (a *aptStateRunner) Run(args ...string) (string, error) {
@@ -377,13 +383,50 @@ func (a *aptStateRunner) Run(args ...string) (string, error) {
 		if a.installed {
 			m = a.after
 		}
+		if !a.installed && pkg == a.probeFailBefore {
+			// Exec-level failure: no output at all, only an error.
+			return "", errors.New("fake: dpkg-query could not be run")
+		}
 		if status, ok := m[pkg]; ok {
 			return status, nil
 		}
-		// Not installed: dpkg-query exits non-zero with empty status.
-		return "", errors.New("dpkg-query: no packages found matching " + pkg)
+		// Not installed: dpkg-query exits non-zero and its diagnostic is part of
+		// the combined output.
+		msg := "dpkg-query: no packages found matching " + pkg
+		return msg, errors.New(msg)
 	}
 	return "", nil
+}
+
+// TestInstallApt_FailedBeforeSnapshot_RecordsNothing is the apt counterpart of
+// TestInstallBrew_FailedBeforeSnapshot_RecordsNothing: a dpkg-query probe that
+// fails with NO output is an exec-level failure, not the "package absent"
+// signal. Reading it as absent would make a PRE-EXISTING package look newly
+// installed, so a later restore --packages would uninstall something the user
+// already had. The snapshot must be unreliable and nothing recorded.
+func TestInstallApt_FailedBeforeSnapshot_RecordsNothing(t *testing.T) {
+	dir := t.TempDir()
+	apt := filepath.Join(dir, "apt.txt")
+	writeFile(t, apt, "zsh\nzoxide\n")
+	m := Manifest{Manager: platform.ManagerApt, GOOS: "linux", Shared: apt}
+
+	// zsh is already installed, but its BEFORE probe fails at the exec level.
+	r := &aptStateRunner{
+		before:          map[string]string{"zsh": "install ok installed"},
+		after:           map[string]string{"zsh": "install ok installed", "zoxide": "install ok installed"},
+		probeFailBefore: "zsh",
+	}
+
+	res, err := install(m, r)
+	if err != nil {
+		t.Fatalf("install apt: %v", err)
+	}
+	if got := res.RecordedInstalledSet(); len(got) != 0 {
+		t.Errorf("failed before-probe must record nothing, got %v", got)
+	}
+	if !res.SnapshotUnreliable {
+		t.Errorf("failed before-probe must be flagged SnapshotUnreliable so the caller can tell the user the record was suppressed")
+	}
 }
 
 // TestInstallBrew_AbsentSharedBrewfileNotBundled checks fix #3: a shared

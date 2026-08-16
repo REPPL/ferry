@@ -240,9 +240,9 @@ func AdoptCandidates(in PlanInput) ([]AdoptCandidate, []string, error) {
 				return werr
 			}
 			if d.Type()&fs.ModeSymlink != 0 {
-				if d.IsDir() {
-					return fs.SkipDir // never descend through a symlinked dir into e.g. ~/.ssh
-				}
+				// WalkDir never follows symlinks (a symlinked entry reports
+				// IsDir() == false, so it is never descended into — e.g. a
+				// link into ~/.ssh); the entry is simply not adopted.
 				return nil
 			}
 			if d.IsDir() || !d.Type().IsRegular() {

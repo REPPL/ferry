@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -194,23 +193,14 @@ func (s *Store) readDomain(domain string) (map[string]string, error) {
 }
 
 // writeDomain writes a domain map back to its TOML file with mode 0600,
-// deterministically (keys sorted) so the file is stable across writes. The store
-// is treated as secret-bearing: perms are never loosened.
+// deterministically so the file is stable across writes (the TOML encoder
+// documents that map keys are sorted alphabetically). The store is treated as
+// secret-bearing: perms are never loosened.
 func (s *Store) writeDomain(domain string, m map[string]string) error {
 	path := s.domainFile(domain)
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
 	var b strings.Builder
 	enc := toml.NewEncoder(&b)
-	ordered := make(map[string]string, len(m))
-	for _, k := range keys {
-		ordered[k] = m[k]
-	}
-	if err := enc.Encode(ordered); err != nil {
+	if err := enc.Encode(m); err != nil {
 		return fmt.Errorf("encode secret domain %s: %w", path, err)
 	}
 	// Write atomically: a temp file in the SAME directory, fsync'd, then renamed

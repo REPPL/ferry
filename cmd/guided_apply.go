@@ -290,8 +290,11 @@ func groupRisky(risky []planItem) []riskyGroup {
 	for _, it := range risky {
 		name := it.fileDomain
 		if name == "" {
-			// Non-FileDomain items (terminal preference domains) carry no
-			// fileDomain; they keep their pre-existing dotfiles-bucket home.
+			// Defensive default for an item that reached the walkthrough
+			// without a fileDomain stamp. Unreachable today — the plan driver
+			// stamps every FileDomain item, and preference items are filtered
+			// out before grouping — but a future planner that forgets the
+			// stamp degrades to a visible bucket instead of an unnamed group.
 			name = "dotfiles"
 		}
 		if !slices.Contains(order, name) {

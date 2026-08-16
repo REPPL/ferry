@@ -283,6 +283,32 @@ func TestValidateSecretInEntry(t *testing.T) {
 	}
 }
 
+// TestValidateRejectsSecretShapedPath: import mirrors export's path gate. Export
+// withholds any tracked file with a secret-shaped path COMPONENT, so a bundle
+// carrying one is handcrafted; importing it would plant a token-named file that
+// later wedges sync's fail-closed push gate, diagnosed far from the cause. The
+// refusal must not echo the offending path (that would re-leak the token).
+func TestValidateRejectsSecretShapedPath(t *testing.T) {
+	dir := t.TempDir()
+	const secretComp = "AKIAIOSFODNN7EXAMPLEXYZ.txt"
+	body := []byte("harmless\n")
+	m := bundleManifest{FormatVersion: 1, FerryVersion: "v", Entries: []bundleEntry{
+		{Path: "conf/" + secretComp, Size: int64(len(body)), SHA256: hexSum(body)},
+	}}
+	path := filepath.Join(dir, "b.zip")
+	writeZip(t, path, manifestJSON(t, m), []member{{name: "conf/" + secretComp, data: body}})
+	_, err := Validate(path, "", false)
+	if err == nil {
+		t.Fatal("expected a secret-shaped path refusal")
+	}
+	if !strings.Contains(err.Error(), "secret-shaped path") {
+		t.Errorf("expected a secret-shaped path refusal, got %v", err)
+	}
+	if strings.Contains(err.Error(), secretComp) || strings.Contains(err.Error(), "AKIAIOSFODNN7EXAMPLE") {
+		t.Errorf("refusal echoed the secret-shaped path: %v", err)
+	}
+}
+
 func TestValidateEntryCountCap(t *testing.T) {
 	dir := t.TempDir()
 	m := bundleManifest{FormatVersion: 1, FerryVersion: "v"}

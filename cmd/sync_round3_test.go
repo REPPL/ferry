@@ -170,7 +170,8 @@ func TestScanWorktreeBlocksRealSecretInTerminals(t *testing.T) {
 }
 
 // MAJOR: an UNTRACKED directory (git status collapses it to one `?? dir/` entry at
-// the default -unormal) must be walked file-by-file, exactly as backupOutOfBand does:
+// the default -unormal) must be enumerated file-by-file (the gate uses
+// `git ls-files --others --exclude-standard`, scanning exactly the stageable set):
 // reading the entry as a file EISDIRs, which is neither a deletion nor a not-exist,
 // and the fail-closed abort wedges every `ferry sync` after a capture that creates a
 // new repo subdirectory (agents/, terminals/, ...) — with advice ("re-run once the

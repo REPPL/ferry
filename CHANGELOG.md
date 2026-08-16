@@ -46,6 +46,74 @@ called out in a **Breaking** section. See
 
 ### Fixed
 
+- **A customised Apple Terminal profile no longer trips the capture secret
+  gate.** The whole-plist export carries profile colours and fonts as base64
+  `<data>` archives, whose entropy the scanner read as credential material,
+  so any customised profile blocked both repo routes and offered only reject
+  or the out-of-repo store — leaving the domain effectively uncapturable, and
+  non-portable via the store. The gate scans a view of the plist with
+  `<data>` payloads masked: a pasteable token lives in a `<string>` value,
+  which stays fully scanned, while base64-encoded binary the text scanner
+  could never read into stops feeding the entropy detector. An unterminated
+  `<data>` element ends the masking, so malformed input is scanned in full.
+- **A secret-routed terminal capture supersedes the local overlay.** A
+  shared accept removes a superseded per-machine overlay, but the secret
+  route wrote its placeholder behind one, so `apply` kept importing the
+  stale overlay — silently reverting the settings the capture had just
+  routed out of band — while `status` and `capture` re-offered the domain
+  forever. The placeholder write removes the overlay exactly as a shared
+  accept does, reporting the removal; a symlinked overlay is left untouched.
+- **`status` and `capture` honour an extensionless terminal overlay.**
+  `apply` probes both overlay spellings (`<id>.plist` and bare `<id>`); the
+  status-side resolver probed only the `.plist` spelling, so a hand-authored
+  extensionless overlay was what `apply` imported while `status` and
+  `capture` compared against the shared copy. Both spellings are probed
+  everywhere.
+- **A failed apt probe cannot record a pre-existing package as
+  ferry-installed.** `dpkg-query` reports a not-installed package with a
+  diagnostic in its output; an exec-level probe failure returns no output at
+  all, which the installed-set prober read as "absent" — so a probe failure
+  in the before-snapshot could hand `restore --packages` a package the user
+  already had, and a lookup failure hitting both snapshots silently lost the
+  run's record with no warning. A probe error with no output marks the
+  snapshot unreliable, suppressing the restore record and saying so.
+- **`work pack --acknowledge` never echoes a withheld path.** A finding on a
+  secret-shaped file name renders as "(name withheld)", but the acknowledge
+  retry's "covered some findings, but not: …" list printed the raw path in
+  the same message. The unmatched list masks the secret-shaped component,
+  keeping the surrounding path visible so the finding stays identifiable.
+- **`bundle import` refuses a secret-shaped path component.** Export
+  withholds such entries, but import validated only the canonical path
+  shape, so a handcrafted bundle could plant a token-named file that wedged
+  every later `ferry sync` far from the cause. Import applies the same
+  per-component gate export uses — shared as one predicate so the two sides
+  cannot drift — refusing with the path withheld.
+- **gitconfig section headers honour backslash escapes.** The inline-header
+  split and the subsection derivation both mis-read a `\"` (and an unquoted
+  `]` inside quotes) in a quoted subsection name, swallowing a same-line
+  assignment into the header's raw bytes, where the identity firewall could
+  pass it through to the shared repo. One shared scanner honours git's
+  in-quote escapes for both; parsing stays total and reassembly byte-exact.
+- **`release.sh` refuses a version that is not the newest dated CHANGELOG
+  section.** The driver tags HEAD, so accepting an older still-untagged
+  version would point an immutable tag at newer main code under an older
+  name — the mis-pointing the automatic path already refuses. The driver
+  also checks NEXT.md's carry markers before the tag push, so a malformed
+  local file fails the run before the irreversible act instead of after it.
+- **`ferry sync`'s branch-rename hint covers the remote side.** The hint
+  named only the local `git branch -M main`; it adds setting `main` as the
+  remote's default branch so other clones follow.
+- **Docs corrected against the code.** The drift explanation subjects
+  first-touch adoption to the risky-change gate (confirmed interactively,
+  refused with a non-zero exit unattended); the scaffold help names NEXT.md
+  in the runtime layout both modes create; the release how-to documents the
+  driver's post-tag NEXT.md reset and the real re-release condition
+  (missing, still a draft, or short of its assets); the configuration
+  reference documents the terminal secret route and its placeholder, and
+  scopes the bundle's local-layer gate to `local/**` and `ferry.local.toml`;
+  deps/README names the `brew = true` gate; the evals file map lists the
+  deps-overlay eval; roadmap clauses leave the reference and tutorial; the
+  commands reference notes `init --fresh`.
 - **The pre-commit secret scan never reads through a repo symlink.**
   `ferry sync`'s changed-file scan opened paths with a symlink-following
   read, so an untracked or modified symlink in the config repo — for
@@ -60,13 +128,6 @@ called out in a **Breaking** section. See
   read aborted every sync with advice ("re-run once the file is readable")
   a directory can never satisfy. Such entries are skipped — a gitlink's
   content never enters the push range.
-- **The untracked-directory secret scan matches what `git add -A`
-  stages.** The walk over a collapsed untracked directory read every file
-  beneath it, including gitignored files and nested repositories' `.git`
-  internals, so a token in a file git would never commit blocked the sync
-  with no way forward. The directory is now enumerated with
-  `git ls-files --others --exclude-standard`, scanning exactly the
-  stageable set; a failed enumeration still aborts.
 - **A shared terminal capture behind a local overlay converges.**
   Accepting a terminal preference domain to shared wrote the shared
   plist, but the per-machine overlay from an earlier local capture kept
@@ -150,7 +211,6 @@ called out in a **Breaking** section. See
   the cargo-store guard; the scaffold help names exactly what it
   creates; AGENTS.md's CI list names the gitleaks and zizmor gates; the
   tutorial distinguishes local drift from a conflict.
-
 - **A cargo store under `~/.ssh` is refused.** The `[work] store` path is
   hand-configured, and every other configurable path ferry writes through — the
   repo path, `bundle import --out` — is guarded against resolving into `~/.ssh`
@@ -163,9 +223,11 @@ called out in a **Breaking** section. See
   collapsed entry, which the pre-commit secret gate tried to read as a file;
   the resulting fail-closed abort ("could not read a changed file … is a
   directory") recurred on every run, with advice a directory can never
-  satisfy, until the user staged the files by hand. The gate now walks a
-  collapsed directory and scans every file inside, exactly as the sync backup
-  pass already did.
+  satisfy, until the user staged the files by hand. The gate enumerates a
+  collapsed directory with `git ls-files --others --exclude-standard`,
+  scanning exactly the set `git add -A` would stage — gitignored files and
+  nested repositories' `.git` internals stay outside the gate — and a
+  failed enumeration still aborts.
 - **`ferry init <path>` naming the configured repo keeps `managed`.** The
   carry-forward shipped earlier keyed on the no-argument re-run route, so
   passing the already-configured repo's path positionally (`ferry init .` from
@@ -348,7 +410,6 @@ called out in a **Breaking** section. See
   set, `make release` documentation passes `VERSION=vX.Y.Z`, and
   CONTRIBUTING's commit-type list includes the `ci` type the history and
   auto-merge workflow already use.
-
 - **The configuration reference documents the Apple Terminal domain.** The
   `terminal` key has been implemented end-to-end — apply, capture, restore,
   and the eval suite — but appeared nowhere in the reference: the `[manage]`

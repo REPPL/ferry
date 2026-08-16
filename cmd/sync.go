@@ -290,7 +290,7 @@ func refuseInProgressGitOp(repo string) error {
 		return fmt.Errorf("sync: refusing to run on a detached HEAD — check out the `%s` branch first (`git checkout %s`), then re-run `ferry sync`", syncBranchName, syncBranchName)
 	}
 	if branch != syncBranchName {
-		return fmt.Errorf("sync: refusing to run — HEAD is on branch %q, but `ferry sync` integrates and pushes `%s`. Check out `%s` first (or rename this branch with `git -C <repo> branch -M %s`), then re-run", ghcli.Redact(branch), syncBranchName, syncBranchName, syncBranchName)
+		return fmt.Errorf("sync: refusing to run — HEAD is on branch %q, but `ferry sync` integrates and pushes `%s`. Check out `%s` first (or rename this branch with `git -C <repo> branch -M %s`, then set `%s` as the remote's default branch so other clones follow), then re-run", ghcli.Redact(branch), syncBranchName, syncBranchName, syncBranchName, syncBranchName)
 	}
 	return nil
 }

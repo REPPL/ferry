@@ -5,8 +5,10 @@ import "testing"
 // groupRisky once bucketed every FileDomain it did not name into "dotfiles",
 // so the walkthrough's group header and bulk consent named a domain the user
 // was not reviewing. These tests pin the fix: every domain groups under its
-// own name, in registry order, and only non-FileDomain items (which carry no
-// fileDomain) fall back to the dotfiles bucket.
+// own name, in registry order, and an item missing its fileDomain stamp
+// (unreachable in production — the plan driver stamps every FileDomain item,
+// and preference items are filtered out before grouping) degrades to the
+// visible dotfiles bucket instead of an unnamed group.
 func TestGroupRiskyGroupsEveryDomainUnderItsOwnName(t *testing.T) {
 	risky := []planItem{
 		{domain: "iterm2-profiles:p.json", fileDomain: "iterm2-profiles"},
@@ -44,12 +46,15 @@ func TestGroupRiskyNeverLumpsOtherDomainsIntoDotfiles(t *testing.T) {
 	}
 }
 
-func TestGroupRiskyFileDomainlessItemsKeepDotfilesBucket(t *testing.T) {
+func TestGroupRiskyUnstampedItemsDegradeToDotfilesBucket(t *testing.T) {
+	// Hand-built state: no production path emits a risky item without a
+	// fileDomain stamp. The defensive default must keep such an item visible
+	// under a named bucket rather than an unnamed group.
 	risky := []planItem{
-		{domain: "iterm2 preference domain", fileDomain: ""},
+		{domain: "unstamped item", fileDomain: ""},
 	}
 	groups := groupRisky(risky)
 	if len(groups) != 1 || groups[0].name != "dotfiles" {
-		t.Fatalf("fileDomain-less item grouped as %+v, want the pre-existing dotfiles bucket", groups)
+		t.Fatalf("unstamped item grouped as %+v, want the dotfiles fallback bucket", groups)
 	}
 }
