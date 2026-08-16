@@ -236,7 +236,15 @@ func runWorkPack(c *cobra.Command, args []string) error {
 		var unmatched []string
 		for _, f := range sge.Findings {
 			if !named[f.Item+"/"+f.Path] {
-				unmatched = append(unmatched, f.Item+"/"+f.Path)
+				// A PathSecret finding's name IS the secret, which the gate error
+				// itself withholds; the unmatched list must not re-leak it in the
+				// same message. Mask the secret-shaped COMPONENT only, so the rest
+				// of the path still tells the user which file to act on.
+				label := f.Item + "/" + f.Path
+				if f.PathSecret {
+					label = redactSecretPath(label)
+				}
+				unmatched = append(unmatched, label)
 				continue
 			}
 			ctx.state.Acks = append(ctx.state.Acks, work.Ack{
