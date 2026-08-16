@@ -241,10 +241,15 @@ func installApt(m Manifest, runner CommandRunner) (InstallResult, error) {
 // and whether the query was RELIABLE. We query each package with
 // `dpkg-query -W -f=${Status} <pkg>`: a "install ok installed" status means
 // present. dpkg-query exits non-zero for a not-installed package, which is the
-// normal absent signal — NOT a query failure — so absence is read from the
-// status text, and only an unexpected empty status with no error is treated as
-// present-unknown. ok is false only when we cannot tell (kept conservative so a
-// genuine tool failure suppresses recording rather than over-recording).
+// normal absent signal — NOT a query failure — but it says so: it writes
+// "dpkg-query: no packages found matching <pkg>" to the COMBINED stdout+stderr
+// the runner returns. So absence is only read from a FAILED probe that produced
+// output which does not read as installed; a probe that fails with NO output is
+// an exec-level failure (the binary could not be resolved or run) and must never
+// be mistaken for absence — an absent BEFORE snapshot would make a pre-existing
+// package look ferry-installed and let restore --packages uninstall it. ok is
+// false whenever we cannot tell (fail closed: suppress the record rather than
+// over-record).
 func aptInstalledSet(runner CommandRunner, pkgs []string) (set map[string]struct{}, ok bool) {
 	set = map[string]struct{}{}
 	for _, pkg := range pkgs {
@@ -254,10 +259,16 @@ func aptInstalledSet(runner CommandRunner, pkgs []string) (set map[string]struct
 		// (see runner.ExecRunner.Run) since this probe runs under `sudo ferry`.
 		out, err := runner.Run(dpkgQueryBin, "-W", "-f=${Status}", "--", pkg)
 		if err != nil {
+			// No output at all: the probe never ran (unresolvable binary, fork/exec
+			// failure). That is not the absent signal — dpkg-query always reports a
+			// missing package in its output — so the snapshot is unreliable.
+			if strings.TrimSpace(out) == "" {
+				return nil, false
+			}
 			// Not-installed packages make dpkg-query exit non-zero; treat that as
-			// "absent" only when the output confirms it (empty / no "installed").
-			// Any other error text we cannot interpret means an unreliable probe.
-			if strings.TrimSpace(out) == "" || !strings.Contains(out, "installed") {
+			// "absent" only when the output confirms it (no "installed"). Any other
+			// error text we cannot interpret means an unreliable probe.
+			if !strings.Contains(out, "installed") {
 				continue
 			}
 			return nil, false
