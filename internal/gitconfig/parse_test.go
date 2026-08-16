@@ -35,6 +35,8 @@ var realisticConfigs = []string{
 	"[core] editor = vim\n\tpager = less\n",
 	"[core] ; trailing comment\n",
 	"[url \"https://x]y/\"] insteadOf = git://x/\n", // ']' inside a quoted subsection
+	"[user \"a\\\"b\"] email = x@y.z\n",             // escaped '"' inside a quoted subsection
+	"[user \"a\\\\\"] email = x@y.z\n",              // escaped '\' closing a quoted subsection
 	// Backslash value-continuation (odd run continues, even run does not).
 	"[user]\n\temail = foo\\\nbar@example.com\n",
 	"[user]\n\temail = \\\nalice@example.com\n",
@@ -78,6 +80,50 @@ func TestParseIncludeIfContext(t *testing.T) {
 	lines := Parse([]byte("[includeIf \"gitdir:~/work/\"]\n\tpath = ~/work/.gitconfig\n"))
 	if lines[0].Section != "includeif" {
 		t.Errorf("includeIf section = %q, want includeif", lines[0].Section)
+	}
+}
+
+// TestParseInlineHeaderEscapedQuote: git escapes a '"' inside a quoted
+// subsection as \". The inline split must skip that escaped quote instead of
+// reading it as the closing one — otherwise the header never closes, the whole
+// physical line becomes ONE Section line with the assignment swallowed into its
+// Raw bytes, and for a non-includeIf section that line survives verbatim into
+// the shared repo, carrying the identity value with it.
+func TestParseInlineHeaderEscapedQuote(t *testing.T) {
+	const in = "[user \"a\\\"b\"] email = x@y.z\n"
+	lines := Parse([]byte(in))
+	if len(lines) != 2 {
+		t.Fatalf("want a Section line plus a KeyValue line, got %d: %+v", len(lines), lines)
+	}
+	if lines[0].Kind != Section || lines[0].Section != "user" {
+		t.Errorf("line 0 = %+v, want a `user` Section header", lines[0])
+	}
+	// Returned VERBATIM: escape handling moves indices only, it never rewrites bytes.
+	if want := `a\"b`; lines[0].Subsection != want {
+		t.Errorf("subsection = %q, want %q", lines[0].Subsection, want)
+	}
+	if lines[1].Kind != KeyValue || lines[1].FullKey() != "user.email" {
+		t.Errorf("line 1 = %+v, want the user.email assignment", lines[1])
+	}
+	if got := string(Reassemble(lines)); got != in {
+		t.Errorf("round-trip mismatch\n input: %q\noutput: %q", in, got)
+	}
+}
+
+// TestParseSubsectionWithBracket: a ']' inside the quoted subsection does not
+// close the header, so the subsection must be derived whole — the same quoting
+// rule the inline split already applies.
+func TestParseSubsectionWithBracket(t *testing.T) {
+	const in = "[user \"a]b\"] email = x\n"
+	lines := Parse([]byte(in))
+	if len(lines) != 2 || lines[0].Kind != Section {
+		t.Fatalf("want a Section line plus a KeyValue line, got %+v", lines)
+	}
+	if lines[0].Subsection != "a]b" {
+		t.Errorf("subsection = %q, want %q", lines[0].Subsection, "a]b")
+	}
+	if got := string(Reassemble(lines)); got != in {
+		t.Errorf("round-trip mismatch\n input: %q\noutput: %q", in, got)
 	}
 }
 
