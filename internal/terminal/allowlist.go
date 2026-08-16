@@ -23,8 +23,11 @@ import (
 // outside any profile.
 //
 // The set below is a curated STARTING POINT of stable, machine-agnostic global
-// behaviour keys; extend it to taste in the repo's own review. A key absent from
-// the list is simply not carried (a no-op), never an error.
+// behaviour keys. It is compiled in, not manifest-configurable, so extending it
+// means changing THIS file in ferry's own source repo and reviewing it here; a
+// user's config repo carries an extra key instead by committing it directly to
+// the domain's plist (apply imports the committed bytes verbatim). A key absent
+// from the list is simply not carried (a no-op), never an error.
 var ITerm2GlobalAllowlist = map[string]bool{
 	// Quit / close confirmations.
 	"PromptOnQuit":             true,

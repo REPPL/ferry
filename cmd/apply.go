@@ -1082,7 +1082,8 @@ func applyNpmGlobals(ctx *cmdContext, out io.Writer) error {
 	return nil
 }
 
-// printPlan renders the planned actions (diff / status). For dotfile/overlay
+// printPlan renders the planned actions (diff, and init's closing plan
+// preview; status renders its own report). For dotfile/overlay
 // targets it prints the REAL three-way classification computed during planning
 // (it.state) — the same resolution apply acts on — rather than a blanket "would
 // deploy": a clean target is shown clean, a conflict as conflict, a missing

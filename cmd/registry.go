@@ -143,9 +143,10 @@ type dotfilesFileDomain struct{}
 func (dotfilesFileDomain) Name() string { return "dotfiles" }
 
 // Overlay reports the per-machine overlay strategy for a bare dotfile name. The
-// include-style names — the zsh family (zshrc/zshenv/zprofile) and tmux
-// (tmux.conf) — compose their overlay as a sourced sidecar (their format has a
-// real include point: shell `source`, tmux `source-file`); every other dotfile
+// include-style names — the zsh family (zshrc/zshenv/zprofile), tmux
+// (tmux.conf) and git (gitconfig) — compose their overlay as a sourced sidecar
+// (their format has a real include point: shell `source`, tmux `source-file`,
+// git's native `[include]`); every other dotfile
 // is a whole-file replace. This is the authoritative replacement for the isZsh()
 // oracle, and the single trigger the two-strip contract keys off (via
 // usesIncludeSidecar).

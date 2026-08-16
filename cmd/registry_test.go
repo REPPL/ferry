@@ -83,10 +83,10 @@ func TestFileDomainCaptures(t *testing.T) {
 }
 
 // TestBuildRegistryOrder pins the LOAD-BEARING registry order: FileDomains are
-// [dotfiles, agents, terminals, keybindings] and ResourceDomains are
-// [iterm2, terminal], matching the pre-fn-5 dispatch sequence so
-// plan/status/diff/capture output ordering is unchanged (keybindings appends
-// last, after terminals, so existing ordering is unchanged). Each FileDomain must
+// [dotfiles, agents, terminals, keybindings, emacs, iterm2-profiles] and
+// ResourceDomains are [iterm2, terminal], matching the pre-fn-5 dispatch
+// sequence so plan/status/diff/capture output ordering is unchanged (new
+// domains append last, so existing ordering is unchanged). Each FileDomain must
 // also satisfy the cmd filePlanner upcast the plan driver relies on.
 func TestBuildRegistryOrder(t *testing.T) {
 	reg := buildRegistry(&cmdContext{RepoPath: t.TempDir()})

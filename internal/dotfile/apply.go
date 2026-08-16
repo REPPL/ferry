@@ -422,10 +422,11 @@ func StripFerryOverlayDirective(content []byte) []byte {
 // count when dangerous is true (0 otherwise).
 //
 // It is the ONE predicate behind both the write-time refusal
-// (guardEmptyOverSubstantial) and the read-only preview (`ferry diff` /
-// `ferry status`, which render a "would refuse" line instead of promising an
-// update that aborts). Exported so the preview shares this definition rather
-// than re-deriving the thresholds and drifting from the guard.
+// (guardEmptyOverSubstantial) and the read-only preview (`ferry diff` and
+// `ferry init`'s plan preview, which render a "would refuse" line instead of
+// promising an update that aborts). Exported so the preview shares this
+// definition rather than re-deriving the thresholds and drifting from the
+// guard.
 func WouldRefuseEmptyOverSubstantial(t Target, desired []byte) (liveSize int, dangerous bool) {
 	if !isNearEmpty(stripFerryOverlayDirective(desired)) {
 		return 0, false // user's managed source has real content: not the dangerous transition.
