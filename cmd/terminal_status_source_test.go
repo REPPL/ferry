@@ -60,3 +60,21 @@ func TestTerminalRepoStatusSourceIgnoresSymlinkedOverlay(t *testing.T) {
 		t.Errorf("symlinked overlay must be refused, source = %q, want shared %q", got, shared)
 	}
 }
+
+// Apply's terminalExportBlob accepts BOTH overlay spellings (<id>.plist and the
+// extensionless <id>), so the resolution status and capture share must probe both
+// too: an extensionless overlay that apply imports but status resolved past made
+// status report drift forever while capture re-offered the domain forever.
+func TestTerminalRepoStatusSourceAcceptsExtensionlessOverlay(t *testing.T) {
+	repo := t.TempDir()
+	local := filepath.Join(repo, "local", "terminal", "com.apple.Terminal")
+	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("overlay"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := terminalRepoStatusSource(repo, "terminal", "com.apple.Terminal"); got != local {
+		t.Errorf("with an extensionless local overlay present, source = %q, want the overlay %q (apply imports it)", got, local)
+	}
+}

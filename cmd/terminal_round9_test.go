@@ -17,6 +17,7 @@ package cmd
 // coverage here is at the extracted helper seams both platforms compile.
 
 import (
+	"bufio"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -168,5 +169,93 @@ func TestTerminalPlaceholderBlob_RoundTripsExport(t *testing.T) {
 		if string(rendered) != live {
 			t.Errorf("placeholder blob rendered to %q, want the exported blob %q", rendered, live)
 		}
+	}
+}
+
+// A secret-routed capture converges the same way a shared one does: the
+// placeholder lands at the SHARED repo path apply reads, so a per-machine local
+// overlay left over from an earlier [l]ocal capture must not survive to shadow
+// it — while it exists, apply keeps importing the stale overlay and status and
+// capture disagree about the domain forever.
+func TestCaptureBlockedTerminal_SupersedesLocalOverlay(t *testing.T) {
+	repo := t.TempDir()
+	const prefID = "com.apple.Terminal"
+	overlay := terminalLocalDest(repo, "terminal", prefID)
+	if err := os.MkdirAll(filepath.Dir(overlay), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overlay, []byte("stale overlay\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cc := captureCtx{
+		out:         &out,
+		in:          bufio.NewReader(strings.NewReader("x\n")),
+		repoPath:    repo,
+		secretStore: secret.OpenAt(t.TempDir()),
+	}
+	shared := terminalRepoDest(repo, "terminal", prefID)
+	wrote, err := captureBlockedTerminal(cc, "terminal", prefID, shared, []byte(syntheticExport))
+	if err != nil {
+		t.Fatalf("captureBlockedTerminal: %v", err)
+	}
+	if !wrote {
+		t.Fatal("the secret route reported nothing written")
+	}
+
+	// The placeholder is written BYTE-EXACT at the shared path.
+	got, rerr := os.ReadFile(shared)
+	if rerr != nil {
+		t.Fatalf("placeholder not written at %s: %v", shared, rerr)
+	}
+	if want := string(terminalPlaceholderBlob(prefID + ".captured")); string(got) != want {
+		t.Errorf("shared copy = %q, want the placeholder %q", got, want)
+	}
+	// And the overlay that would otherwise keep winning every comparison is gone.
+	if _, serr := os.Lstat(overlay); !os.IsNotExist(serr) {
+		t.Errorf("the local overlay %s survived the secret-routed capture (apply would keep importing the stale bytes): stat err = %v", overlay, serr)
+	}
+	if src := terminalRepoStatusSource(repo, "terminal", prefID); src != shared {
+		t.Errorf("after the secret-routed capture the compare source = %q, want the shared copy %q", src, shared)
+	}
+	msg := out.String()
+	if !strings.Contains(msg, relTo(repo, overlay)) || !strings.Contains(msg, "superseded") {
+		t.Errorf("the removed overlay is not reported by path and reason:\n%s", msg)
+	}
+}
+
+// A refused (symlinked) overlay never wins a comparison, so the secret-routed
+// capture leaves it exactly as found — and does not turn the refusal into an error.
+func TestCaptureBlockedTerminal_LeavesSymlinkedOverlay(t *testing.T) {
+	repo := t.TempDir()
+	const prefID = "com.apple.Terminal"
+	outside := filepath.Join(t.TempDir(), "elsewhere.plist")
+	if err := os.WriteFile(outside, []byte("outside\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	overlay := terminalLocalDest(repo, "terminal", prefID)
+	if err := os.MkdirAll(filepath.Dir(overlay), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, overlay); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cc := captureCtx{
+		out:         &out,
+		in:          bufio.NewReader(strings.NewReader("x\n")),
+		repoPath:    repo,
+		secretStore: secret.OpenAt(t.TempDir()),
+	}
+	if _, err := captureBlockedTerminal(cc, "terminal", prefID, terminalRepoDest(repo, "terminal", prefID), []byte(syntheticExport)); err != nil {
+		t.Fatalf("captureBlockedTerminal: %v", err)
+	}
+	if _, serr := os.Lstat(overlay); serr != nil {
+		t.Errorf("a refused (symlinked) overlay was removed; it never wins the comparison: %v", serr)
+	}
+	if _, serr := os.Lstat(outside); serr != nil {
+		t.Errorf("the symlink target outside the repo was touched: %v", serr)
 	}
 }
